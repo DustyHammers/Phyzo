@@ -205,7 +205,10 @@ void testEngine() {
     std::vector<float> l(256), rr(256);
     std::vector<Msg> virtOut, hostOut;
     size_t hi = 0;
-    for (int blk = 0; blk < 1200; ++blk) {               // 6.4 s at 48 kHz / 256: time for 3000+ bytes at 31250 baud
+    // Until every echo is back (the feeder thread may be slower than these blocks), at most 30 s of audio.
+    std::atomic<bool> fed{false};
+    std::thread watcher([&] { feeder.join(); fed = true; });
+    for (int blk = 0; blk < 6000 && !(fed && virtOut.size() >= vmsgs.size() + hmsgs.size()); ++blk) {
         std::vector<Engine::MidiEvent> ev;
         if (blk % 3 == 0 && hi < hmsgs.size()) { ev.push_back({17, hmsgs[hi].data(), int(hmsgs[hi].size())}); ++hi; }
         e.process(l.data(), rr.data(), 256, ev.data(), int(ev.size()));
@@ -215,7 +218,7 @@ void testEngine() {
         }
         while (e.virtualMidiOut().peekSize()) { Msg m; e.virtualMidiOut().pop([&](uint8_t x) { m.push_back(x); }); virtOut.push_back(m); }
     }
-    feeder.join();
+    watcher.join();
     CHECK(hi == hmsgs.size());
     // Both outputs carry the same echo; it holds each source's messages whole and in order.
     CHECK(virtOut == hostOut);
