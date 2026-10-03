@@ -16,6 +16,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include "midi_stream.h"
 #include "resampler.h"
 
 class Machine;
@@ -74,6 +75,26 @@ public:
     const BlockTimes& lastBlockTimes() const { return times_; }
     void setProfiling(bool on) { profiling_ = on; }   // per-part timing (a few clock reads per sample)
 
+    // ---- virtual MIDI port (the plugin's CoreMIDI binding)
+    // MIDI in: raw bytes as they arrive, from one producer thread (the port's receive thread). They are cut into whole
+    // messages here and passed to the audio thread through a lock-free queue; each block delivers the waiting
+    // messages to the emulated MIDI port at the block's start (ahead of that block's host events, timed like them),
+    // never inside another message. Running status is expanded; SysEx stays whole.
+    void virtualMidiIn(const uint8_t* bytes, size_t n);
+    // MIDI out: the OS's MIDI output as whole messages, for one consumer thread (the port's sender).
+    MessageRing& virtualMidiOut() { return vout_; }
+    void setVirtualPort(bool on) { virtualOn_ = on; }
+    void setMidiToHost(bool on) { hostOutOn_ = on; }
+    // The OS's MIDI output of the last process() for the host (empty unless MIDI to host is on). Audio thread, read
+    // right after process(): whole messages at sample offsets within the block.
+    struct MidiOutEvent { int offset; uint32_t start, size; };
+    const std::vector<MidiOutEvent>& hostMidiEvents() const { return hostEvents_; }
+    const uint8_t* hostMidiBytes() const { return hostBytes_.data(); }
+    uint64_t virtualInDropped() const { return vinDropped_.load(); }   // incomplete, oversized or no room
+    uint64_t virtualOutDropped() const { return voutDropped_.load(); }
+    static constexpr size_t kMaxMidiMessage = size_t(512) << 10;   // longest SysEx passed whole (512 KB)
+    static constexpr size_t kVirtualBacklog = 16384;   // virtual messages wait while this many port bytes are unread
+
     // ---- tests
     std::vector<uint8_t> machineStateForTest();
     uint32_t peekForTest(uint32_t addr, int size);
@@ -104,6 +125,8 @@ private:
     void sendControls(Machine& m);
     void serveSnapshot(Machine& m);
     void publishLeds(const Machine& m);
+    void midiOut(Machine& m, int n);
+    void emitMidiOut(const uint8_t* d, size_t size, int offset);
 
     // ROMs (message thread)
     std::string osPath_, wavePath_, osMd5_, waveMd5_;
@@ -129,6 +152,17 @@ private:
     BlockTimes times_;
     std::atomic<bool> profiling_{false};
     uint64_t midiCount_ = 0, lateMidi_ = 0;
+
+    // MIDI ports: virtual port in (producer thread -> audio thread), OS output (audio thread -> sender, host)
+    MidiParser vinParser_{kMaxMidiMessage};           // producer thread
+    MessageRing vin_{size_t(1) << 20}, vout_{size_t(1) << 20};
+    MidiParser outParser_{kMaxMidiMessage};           // audio thread
+    std::vector<uint8_t> scratch_ = std::vector<uint8_t>(size_t(1) << 20);
+    std::vector<uint8_t> hostBytes_ = std::vector<uint8_t>(size_t(1) << 20);
+    std::vector<MidiOutEvent> hostEvents_;
+    size_t hostUsed_ = 0;
+    std::atomic<bool> virtualOn_{false}, hostOutOn_{false};
+    std::atomic<uint64_t> vinDropped_{0}, voutDropped_{0}, hostOutDropped_{0};
 
     // status
     std::atomic<State> state_{State::NoRoms};

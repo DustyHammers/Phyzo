@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <deque>
+#include "ring_deque.h"
 #include <map>
 #include <string>
 #include <type_traits>
@@ -30,6 +31,12 @@ public:
     template <typename A, typename B> void deq(const std::deque<std::pair<A, B>>& d) {
         put(uint64_t(d.size()));
         for (const auto& x : d) { put(x.first); put(x.second); }
+    }
+    // RingDeque: written as the std::deque it replaced (count, then the entries)
+    template <typename T> void deq(const RingDeque<T>& d) { put(uint64_t(d.size())); for (size_t i = 0; i < d.size(); ++i) put(d[i]); }
+    template <typename A, typename B> void deq(const RingDeque<std::pair<A, B>>& d) {
+        put(uint64_t(d.size()));
+        for (size_t i = 0; i < d.size(); ++i) { put(d[i].first); put(d[i].second); }
     }
     template <typename K, typename V> void map(const std::map<K, V>& m) {
         put(uint64_t(m.size()));
@@ -88,6 +95,18 @@ public:
         for (uint64_t i = 0; i < n && ok_; ++i) d.push_back(get<T>());
     }
     template <typename A, typename B> void deq(std::deque<std::pair<A, B>>& d) {
+        const uint64_t n = get<uint64_t>();
+        if (!ok_ || n * (sizeof(A) + sizeof(B)) > size_t(end_ - p_)) { fail(); return; }
+        d.clear();
+        for (uint64_t i = 0; i < n && ok_; ++i) { A a = get<A>(); B b = get<B>(); d.emplace_back(a, b); }
+    }
+    template <typename T> void deq(RingDeque<T>& d) {
+        const uint64_t n = get<uint64_t>();
+        if (!ok_ || n * sizeof(T) > size_t(end_ - p_)) { fail(); return; }
+        d.clear();
+        for (uint64_t i = 0; i < n && ok_; ++i) d.push_back(get<T>());
+    }
+    template <typename A, typename B> void deq(RingDeque<std::pair<A, B>>& d) {
         const uint64_t n = get<uint64_t>();
         if (!ok_ || n * (sizeof(A) + sizeof(B)) > size_t(end_ - p_)) { fail(); return; }
         d.clear();

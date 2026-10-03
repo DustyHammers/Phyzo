@@ -119,6 +119,16 @@ The **Built-in** skin shows:
 Play Phyzo from a MIDI track. Everything the synth does (including the selected preset, any edits made over
 MIDI and the knob positions) is saved with the REAPER project and restored when you open it.
 
+## 8. MIDI ports
+
+Each Phyzo instance opens a virtual MIDI port pair named **Phyzo** (a second instance: **Phyzo 2**, then
+**Phyzo 3**). Other apps on the Mac see it as a MIDI device: send to the **Phyzo** destination to play or edit the
+synth, receive from the **Phyzo** source to get what the synth sends (arpeggiator notes, knob CCs, SysEx replies and
+dumps). MIDI from REAPER and from the virtual port are merged message by message; a SysEx dump stays whole.
+
+The synth's MIDI output also goes to REAPER's MIDI out of the track when **Send MIDI to host** is on (off by default).
+VST3 does not carry SysEx reliably; use the virtual port or the AU version for dumps.
+
 ## Uninstalling
 
 Quit REAPER and move `Phyzo.vst3` and `Phyzo.component` (in `~/Library/Audio/Plug-Ins/...` or

@@ -11,6 +11,7 @@
 #include "engine.h"
 #include "rom_id.h"
 #include "skin_port.h"
+#include "VirtualMidiPort.h"
 
 class PhyzoProcessor : public juce::AudioProcessor, private juce::Timer {
 public:
@@ -28,7 +29,7 @@ public:
 
     const juce::String getName() const override { return JucePlugin_Name; }
     bool acceptsMidi() const override { return true; }
-    bool producesMidi() const override { return false; }
+    bool producesMidi() const override { return true; }
     bool isMidiEffect() const override { return false; }
     double getTailLengthSeconds() const override { return 0.0; }
 
@@ -49,6 +50,9 @@ public:
     // The synth as the skins see it (thread-safe: used by the skin render thread).
     skin::PanelPort& panelPort() { return port_; }
     double hostRate() const { return hostRate_.load(); }
+    // MIDI port settings (global): applied to every open instance.
+    static void applyMidiSettingsToAll();
+    const VirtualMidiPort& virtualPort() const { return vport_; }
     bool showDebug = true;
     std::atomic<float> editorScale{0};               // window size of this project (0: not set); saved with it
 
@@ -95,9 +99,12 @@ private:
 
     void timerCallback() override;
     void scanRoms();
+    void applyMidiSettings();
+    static void virtualBytes(void* self, const uint8_t* bytes, size_t n) { static_cast<PhyzoProcessor*>(self)->engine_.virtualMidiIn(bytes, n); }
 
     Engine engine_;
     Port port_{engine_};
+    VirtualMidiPort vport_{engine_.virtualMidiOut(), &PhyzoProcessor::virtualBytes, this};   // after engine_: closed first
     juce::File dataFolder_;
     romid::ScanResult scan_;
     int timerTicks_ = 0;

@@ -2,7 +2,7 @@
 cmake_minimum_required(VERSION 3.22)
 
 set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
-project(Phyzo VERSION 0.4.5 LANGUAGES C CXX)
+project(Phyzo VERSION 0.5.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -51,7 +51,7 @@ juce_add_plugin(Phyzo
   FORMATS ${PHYZO_FORMATS}
   IS_SYNTH TRUE
   NEEDS_MIDI_INPUT TRUE
-  NEEDS_MIDI_OUTPUT FALSE
+  NEEDS_MIDI_OUTPUT TRUE
   IS_MIDI_EFFECT FALSE
   VST3_CATEGORIES Instrument Synth
   AU_MAIN_TYPE kAudioUnitType_MusicDevice
@@ -60,12 +60,22 @@ juce_add_plugin(Phyzo
 target_sources(Phyzo PRIVATE
   Source/PluginProcessor.cpp
   Source/PluginEditor.cpp
-  Source/RmlSkinComponent.cpp)
+  Source/RmlSkinComponent.cpp
+  Source/VirtualMidiPort.cpp)
 
 target_compile_definitions(Phyzo PUBLIC
   JUCE_VST3_CAN_REPLACE_VST2=0      # part of the identity: there was never a VST2 version (fixes the VST3 class ID)
   JUCE_WEB_BROWSER=0
   JUCE_USE_CURL=0)
+
+if(APPLE)
+  target_link_libraries(Phyzo PRIVATE "-framework CoreMIDI")
+
+  # Loopback test of the virtual MIDI port (CoreMIDI, no ROMs): run in CI after the plugin build.
+  add_executable(midi_port_test tests/midi_port_test.cpp Source/VirtualMidiPort.cpp)
+  target_include_directories(midi_port_test PRIVATE Source)
+  target_link_libraries(midi_port_test PRIVATE phyzo_core "-framework CoreMIDI" "-framework CoreFoundation")
+endif()
 
 target_link_libraries(Phyzo
   PRIVATE

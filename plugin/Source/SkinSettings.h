@@ -40,4 +40,11 @@ inline float scale() {
 }
 inline void setScale(float v) { set("scale", juce::String(v, 4)); }
 
+// MIDI ports (plugin settings, not synth parameters): the virtual port pair (default on) and the OS's MIDI output
+// to the host (default off).
+inline bool virtualMidiPort() { const juce::String s = get("midiVirtualPort"); return s.isEmpty() || s.getIntValue() != 0; }
+inline void setVirtualMidiPort(bool on) { set("midiVirtualPort", on ? 1 : 0); }
+inline bool midiToHost() { return get("midiToHost").getIntValue() != 0; }
+inline void setMidiToHost(bool on) { set("midiToHost", on ? 1 : 0); }
+
 }  // namespace SkinSettings
