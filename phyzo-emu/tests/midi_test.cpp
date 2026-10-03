@@ -205,10 +205,12 @@ void testEngine() {
     std::vector<float> l(256), rr(256);
     std::vector<Msg> virtOut, hostOut;
     size_t hi = 0;
-    // Until every echo is back (the feeder thread may be slower than these blocks), at most 30 s of audio.
+    // Until every echo is back: blocks run while the feeder thread sends (it may be slower than these blocks), then
+    // at most 30 s of audio more.
     std::atomic<bool> fed{false};
     std::thread watcher([&] { feeder.join(); fed = true; });
-    for (int blk = 0; blk < 6000 && !(fed && virtOut.size() >= vmsgs.size() + hmsgs.size()); ++blk) {
+    for (int blk = 0, after = 0; after < 6000 && !(fed && virtOut.size() >= vmsgs.size() + hmsgs.size()); ++blk) {
+        if (fed) ++after;
         std::vector<Engine::MidiEvent> ev;
         if (blk % 3 == 0 && hi < hmsgs.size()) { ev.push_back({17, hmsgs[hi].data(), int(hmsgs[hi].size())}); ++hi; }
         e.process(l.data(), rr.data(), 256, ev.data(), int(ev.size()));
