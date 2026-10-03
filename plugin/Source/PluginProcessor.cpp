@@ -1,11 +1,16 @@
 #include "PluginProcessor.h"
 #include <chrono>
 #include "PluginEditor.h"
+#include "SkinSettings.h"
+#include <algorithm>
 
 namespace {
 constexpr uint32_t kStateMagic = 0x505A4850;     // "PHZP" (little-endian)
 constexpr uint32_t kStateVersion = 3;          // 2: + skin knob positions; 3: + window size (older still read)
 constexpr int kTimerMs = 100, kScanEveryTicks = 20;   // rescan the ROM folder every 2 s while something is missing
+
+std::mutex g_instancesMtx;
+std::vector<PhyzoProcessor*> g_instances;            // open instances (for global settings)
 }
 
 PhyzoProcessor::PhyzoProcessor()
@@ -15,10 +20,28 @@ PhyzoProcessor::PhyzoProcessor()
     dataFolder_.getChildFile("skins").createDirectory();
     events_.reserve(4096);
     scanRoms();
+    applyMidiSettings();
+    { std::lock_guard<std::mutex> lk(g_instancesMtx); g_instances.push_back(this); }
     startTimer(kTimerMs);
 }
 
-PhyzoProcessor::~PhyzoProcessor() { stopTimer(); }
+PhyzoProcessor::~PhyzoProcessor() {
+    stopTimer();
+    { std::lock_guard<std::mutex> lk(g_instancesMtx); g_instances.erase(std::find(g_instances.begin(), g_instances.end(), this)); }
+    vport_.close();
+}
+
+// Virtual port on/off and MIDI to host, from the global settings (message thread).
+void PhyzoProcessor::applyMidiSettings() {
+    if (SkinSettings::virtualMidiPort()) vport_.open(); else vport_.close();
+    engine_.setVirtualPort(vport_.isOpen());
+    engine_.setMidiToHost(SkinSettings::midiToHost());
+}
+
+void PhyzoProcessor::applyMidiSettingsToAll() {
+    std::lock_guard<std::mutex> lk(g_instancesMtx);
+    for (PhyzoProcessor* p : g_instances) p->applyMidiSettings();
+}
 
 void PhyzoProcessor::scanRoms() {
     scan_ = romid::scanFolder(romFolder().getFullPathName().toStdString());
@@ -54,8 +77,11 @@ void PhyzoProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
     for (const auto meta : midi)
         if (events_.size() < events_.capacity()) events_.push_back({meta.samplePosition, meta.data, meta.numBytes});
     midi.clear();
-    if (buffer.getNumChannels() >= 2) engine_.process(buffer.getWritePointer(0), buffer.getWritePointer(1), n, events_.data(), int(events_.size()));
-    else buffer.clear();
+    if (buffer.getNumChannels() >= 2) {
+        engine_.process(buffer.getWritePointer(0), buffer.getWritePointer(1), n, events_.data(), int(events_.size()));
+        for (const auto& e : engine_.hostMidiEvents())   // the OS's MIDI output (only when MIDI to host is on)
+            midi.addEvent(engine_.hostMidiBytes() + e.start, int(e.size), e.offset);
+    } else buffer.clear();
 
     // CPU per block: processing time against the block's real-time duration.
     const double used = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();

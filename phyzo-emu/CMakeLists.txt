@@ -71,7 +71,7 @@ endforeach()
 # One static library with the Musashi core inside (the core and our glue call each other).
 add_library(phyzo_core STATIC
   src/machine.cpp src/mc68340.cpp src/esp2_stub.cpp src/esp2_core.cpp src/voice_core.cpp src/panel_model.cpp
-  src/os_image.cpp src/rom_id.cpp src/musashi_glue.cpp src/resampler.cpp src/engine.cpp
+  src/os_image.cpp src/rom_id.cpp src/musashi_glue.cpp src/resampler.cpp src/engine.cpp src/midi_stream.cpp
   ${MUSASHI_SOURCES})
 target_include_directories(phyzo_core PUBLIC src PRIVATE "${MUSASHI_DIR}" "${MUSASHI_DIR}/softfloat" "${GENERATED_DIR}")
 find_package(Threads REQUIRED)
@@ -173,6 +173,11 @@ add_executable(engine_test tests/engine_test.cpp)
 target_link_libraries(engine_test PRIVATE phyzo_core)
 target_compile_options(engine_test PRIVATE -Wall -Wextra)
 add_test(NAME engine COMMAND engine_test)
+
+add_executable(midi_test tests/midi_test.cpp)
+target_link_libraries(midi_test PRIVATE phyzo_core)
+target_compile_options(midi_test PRIVATE -Wall -Wextra)
+add_test(NAME midi COMMAND midi_test)
 add_executable(panel_test tests/panel_test.cpp src/panel_model.cpp)
 target_include_directories(panel_test PRIVATE src)
 target_compile_options(panel_test PRIVATE -Wall -Wextra)

@@ -94,6 +94,8 @@ jobs:
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build/plugin
           ccache --show-stats
+      - name: Virtual MIDI port loopback test (CoreMIDI, no ROMs)
+        run: build/plugin/midi_port_test
       - name: Ad-hoc sign
         run: |
           cd build/plugin/Phyzo_artefacts/Release

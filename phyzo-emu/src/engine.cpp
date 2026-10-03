@@ -32,6 +32,7 @@ bool unpackBlob(const std::vector<uint8_t>& data, Blob& b) {
 
 Engine::Engine() {
     snap_.reserve(size_t(4) << 20);                 // machine state is about 0.8 MB: snapshots never allocate
+    hostEvents_.reserve(8192);
     for (int i = 0; i < 26; ++i) { controls_[size_t(i)] = PanelModel::kFreshControls[size_t(i)]; positions_[size_t(i)] = controls_[size_t(i)]; }
 }
 
@@ -339,7 +340,9 @@ void Engine::process(float* left, float* right, int n, const MidiEvent* events, 
         return;
     }
     Machine& m = *live_;
+    hostEvents_.clear(); hostUsed_ = 0;
     if (retime_) {
+        outParser_.reset();
         resampler_.reset();
         m.audio.clear(); m.wet.clear();
         anchorSample_ = m.samplesProduced();
@@ -355,12 +358,26 @@ void Engine::process(float* left, float* right, int n, const MidiEvent* events, 
 
     // MIDI: each event goes to the MIDI port at its exact time plus the constant latency.
     const double r = 44100.0 / hostRate_, cyclesPerSample = m.config().cpuHz / 44100.0;
+    // Virtual port first: whole messages at the block's start, while the port is not backed up (a message larger
+    // than the backlog limit goes alone into an empty port).
+    if (vin_.peekSize()) {
+        const double s = double(anchorSample_) + double(hostPos_) * r + resampler_.lookahead() + marginIn_;
+        uint64_t at = uint64_t(s * cyclesPerSample);
+        if (at < m.cycles()) at = m.cycles();
+        while (const size_t sz = vin_.peekSize()) {
+            const size_t backlog = m.serial.rxBacklog(1);
+            if (backlog > 0 && backlog + sz > kVirtualBacklog) break;
+            size_t k = 0;
+            vin_.pop([&](uint8_t b) { if (k < scratch_.size()) scratch_[k++] = b; });
+            m.serial.queueRx(1, scratch_.data(), k, at);
+        }
+    }
     for (int i = 0; i < numEvents; ++i) {
         const double s = double(anchorSample_) + double(hostPos_ + events[i].offset) * r + resampler_.lookahead() + marginIn_;
         uint64_t at = uint64_t(s * cyclesPerSample);
         if (at < m.cycles()) { at = m.cycles(); ++lateMidi_; }
         midiTimes_[midiCount_++ % midiTimes_.size()] = at;
-        m.serial.queueRx(1, std::vector<uint8_t>(events[i].data, events[i].data + events[i].size), at);
+        m.serial.queueRx(1, events[i].data, size_t(events[i].size), at);
     }
 
     const auto tq1 = Clock::now();
@@ -394,6 +411,7 @@ void Engine::process(float* left, float* right, int n, const MidiEvent* events, 
         inR_[i] = float(m.wet[2 * i + 1]) * (1.0f / 8388608.0f);
     }
     resampler_.push(inL_.data(), inR_.data(), int(got));
+    midiOut(m, n);
     m.wet.clear(); m.audio.clear(); m.midiOut.clear();
     resampler_.produce(left, right, n);
     if (prof) {
@@ -409,6 +427,36 @@ void Engine::process(float* left, float* right, int n, const MidiEvent* events, 
     hostPos_ += n;
     publishDisplay(m);
     serveSnapshot(m);
+}
+
+// ------------------------------------------------------------------ MIDI ports
+
+void Engine::virtualMidiIn(const uint8_t* bytes, size_t n) {
+    const uint64_t parserDrops = vinParser_.dropped();
+    for (size_t i = 0; i < n; ++i)
+        if (vinParser_.feed(bytes[i]) && !vin_.push(vinParser_.data(), vinParser_.size())) ++vinDropped_;
+    vinDropped_ += vinParser_.dropped() - parserDrops;
+}
+
+// The OS's MIDI output of this block: whole messages to the virtual port and, at the time their audio plays, to the
+// host. A machine sample T sounds at host sample (T - anchor + lookahead) / r.
+void Engine::midiOut(Machine& m, int n) {
+    if (m.midiOut.empty()) return;
+    const double r = 44100.0 / hostRate_, cyclesPerSample = m.config().cpuHz / 44100.0;
+    for (const auto& e : m.midiOut) {
+        if (!outParser_.feed(e.second)) continue;
+        const double h = (double(e.first) / cyclesPerSample - double(anchorSample_) + resampler_.lookahead()) / r - double(hostPos_);
+        emitMidiOut(outParser_.data(), outParser_.size(), std::clamp(int(h), 0, n - 1));
+    }
+}
+
+void Engine::emitMidiOut(const uint8_t* d, size_t size, int offset) {
+    if (virtualOn_.load(std::memory_order_relaxed) && !vout_.push(d, size)) ++voutDropped_;
+    if (!hostOutOn_.load(std::memory_order_relaxed)) return;
+    if (hostUsed_ + size > hostBytes_.size() || hostEvents_.size() == hostEvents_.capacity()) { ++hostOutDropped_; return; }
+    std::memcpy(hostBytes_.data() + hostUsed_, d, size);
+    hostEvents_.push_back({offset, uint32_t(hostUsed_), uint32_t(size)});
+    hostUsed_ += size;
 }
 
 // ------------------------------------------------------------------ tests

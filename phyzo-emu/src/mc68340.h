@@ -4,6 +4,7 @@
 #pragma once
 #include <cstdint>
 #include <deque>
+#include "ring_deque.h"
 #include <string>
 #include <vector>
 
@@ -57,8 +58,8 @@ struct SerialChannel {
     bool holdFull = false; uint8_t hold = 0;
     bool shiftBusy = false; uint8_t shiftByte = 0; uint64_t shiftDone = kNever;
     // receiver: 3-byte FIFO fed by a paced input queue
-    std::deque<uint8_t> fifo;
-    std::deque<std::pair<uint64_t, uint8_t>> pending;
+    RingDeque<uint8_t> fifo{16};
+    RingDeque<std::pair<uint64_t, uint8_t>> pending{32768};   // room for a large SysEx without allocating
     uint64_t lastArrival = 0;
     uint8_t lastRead = 0;
     uint64_t byteCycles = 5120;   // set by the machine
@@ -76,6 +77,7 @@ public:
     uint8_t vector() const { return ivr; }
     uint8_t isr() const;
     void queueRx(int ch, const std::vector<uint8_t>& bytes, uint64_t earliest);
+    void queueRx(int ch, const uint8_t* bytes, size_t n, uint64_t earliest);
     void save(StateWriter& w) const;
     void load(StateReader& r);
     bool rxIdle(int ch) const { return ch_[ch].pending.empty() && ch_[ch].fifo.empty(); }

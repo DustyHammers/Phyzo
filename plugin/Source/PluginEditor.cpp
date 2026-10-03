@@ -394,9 +394,29 @@ void PhyzoEditor::showMenu(const juce::MouseEvent&) {
         debugger_ = !debugger_;
         if (rml_) rml_->setDebugger(debugger_);
     });
+    // MIDI ports (approved mockup): global settings, applied to every open instance.
+    juce::PopupMenu midi;
+    const VirtualMidiPort& vp = proc.virtualPort();
+    const bool portWanted = SkinSettings::virtualMidiPort();
+    const juce::String portLabel = vp.isOpen() ? "Virtual port \"" + juce::String(vp.name()) + "\""
+                                   : portWanted ? juce::String("Virtual port (unavailable)") : juce::String("Virtual port");
+    midi.addItem(portLabel, true, vp.isOpen(), [this, portWanted] {
+        SkinSettings::setVirtualMidiPort(!portWanted);
+        PhyzoProcessor::applyMidiSettingsToAll();
+        const VirtualMidiPort& p = proc.virtualPort();
+        if (!portWanted && !p.isOpen()) {
+            const juce::String why = "The virtual MIDI port could not be opened: " + juce::String(p.error());
+            if (rml_) rml_->showMessage(why); else if (builtin_) builtin_->setNotice(why);
+        }
+    });
+    midi.addItem("Send MIDI to host", true, SkinSettings::midiToHost(), [] {
+        SkinSettings::setMidiToHost(!SkinSettings::midiToHost());
+        PhyzoProcessor::applyMidiSettingsToAll();
+    });
     menu.addSubMenu("Skin", skins);
     menu.addItem("Reload skin    F5", fileSkin, false, [this] { if (rml_) rml_->reload(); });
     menu.addSubMenu("Zoom", zoom);
+    menu.addSubMenu("MIDI", midi);
     menu.addSeparator();
     menu.addSubMenu("Developer", dev);
     menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition());

@@ -261,8 +261,10 @@ void Serial::advance(uint64_t now) {
     if (changed) host.irqChanged();
 }
 
-void Serial::queueRx(int c, const std::vector<uint8_t>& bytes, uint64_t earliest) {
-    for (uint8_t b : bytes) ch_[c].pending.emplace_back(earliest, b);
+void Serial::queueRx(int c, const std::vector<uint8_t>& bytes, uint64_t earliest) { queueRx(c, bytes.data(), bytes.size(), earliest); }
+
+void Serial::queueRx(int c, const uint8_t* bytes, size_t n, uint64_t earliest) {
+    for (size_t i = 0; i < n; ++i) ch_[c].pending.emplace_back(earliest, bytes[i]);
     host.reschedule();
 }
 
