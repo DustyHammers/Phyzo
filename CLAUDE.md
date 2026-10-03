@@ -51,7 +51,9 @@ owner step by step through anything they must do by hand on github.com or on the
 - Owner's install guide: `docs/INSTALL_MAC.md`.
 - Plugin architecture: `phyzo-emu/src/engine.*` (no JUCE) runs the machine per host block, boots/restores on a worker
   thread, delivers MIDI sample-accurately with a constant reported latency, and converts 44.1 kHz to the host rate
-  (`resampler.*`). `plugin/` wraps it (JUCE) and scans `~/Documents/Phyzo/roms/`. Musashi has one global CPU:
+  (`resampler.*`); the optional Audio In bus goes the other way into the ESP2's serial input (SER0), aligned like
+  MIDI. MIDI ports: a CoreMIDI virtual pair per instance (`plugin/Source/VirtualMidiPort.*`), merged into the emulated
+  MIDI input as whole messages (`midi_stream.*`). `plugin/` wraps it (JUCE) and scans `~/Documents/Phyzo/roms/`. Musashi has one global CPU:
   machines take turns on it per 68k slice under a lock (`Machine::becomeCpuOwner`); each machine's devices (timers,
   serial, voice chip, ESP2) run outside the lock, in parallel across instances. Project state = complete machine state
   (`Machine::saveState`), tied to the ROM checksums.

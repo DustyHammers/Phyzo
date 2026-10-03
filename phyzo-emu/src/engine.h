@@ -11,6 +11,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -64,8 +65,17 @@ public:
     uint8_t displayDots() const { return uint8_t(dots_.load()); }
 
     // ---- audio thread
-    void prepare(double hostRate, int maxBlock);
-    void process(float* left, float* right, int n, const MidiEvent* events, int numEvents);
+    // audioIn: the plugin's Audio In bus is active. Its signal is converted to 44.1 kHz (same converter quality as
+    // the output) and fed to the ESP2's serial input (SER0 L/R, 24-bit, 0 dBFS = full scale), aligned like MIDI:
+    // host sample H reaches the machine at anchor + H * 44100/hostRate + the same constant latency. The converter's
+    // look-ahead can make that latency a little longer than without the input (reported by latencySamples()).
+    void prepare(double hostRate, int maxBlock, bool audioIn = false);
+    void process(float* left, float* right, int n, const MidiEvent* events, int numEvents,
+                 const float* inLeft = nullptr, const float* inRight = nullptr);
+    // Input Clip LED: lit while the input reaches the shell's clip level (|word| >= 0x7FFFF0), held 100 ms.
+    bool inputClip() const { return inputClip_.load(std::memory_order_relaxed); }
+    static constexpr int32_t kClipWord = 0x7FFFF0;
+    static constexpr uint64_t kClipHoldSamples = 4410;   // 100 ms at 44.1 kHz
     int latencySamples() const { return latency_.load(); }   // host samples, valid after prepare()
 
     // Time spent in the last process() call by part (seconds; audio thread, read right after process()).
@@ -105,6 +115,8 @@ public:
     // Longest time the audio thread waited for the engine lock (microseconds), since prepare().
     double maxLockWaitUs() const { return maxLockWaitUs_.load(); }
     uint64_t anchorForTest();
+    void withMachineForTest(const std::function<void(Machine&)>& f);
+    uint64_t inputUnderrunsForTest() const;
     double cpuHzForTest();
 
     static constexpr double kBootLimitMs = 8000, kSettleMs = 500;
@@ -152,6 +164,15 @@ private:
     BlockTimes times_;
     std::atomic<bool> profiling_{false};
     uint64_t midiCount_ = 0, lateMidi_ = 0;
+
+    // Audio In: host rate -> 44.1 kHz -> a FIFO the machine takes one frame from per sample period
+    struct InputFifo;
+    std::unique_ptr<InputFifo> fifo_;
+    Resampler inRes_;
+    bool inputActive_ = false;
+    int prefill_ = 0;
+    std::vector<float> inConvL_, inConvR_;
+    std::atomic<bool> inputClip_{false};
 
     // MIDI ports: virtual port in (producer thread -> audio thread), OS output (audio thread -> sender, host)
     MidiParser vinParser_{kMaxMidiMessage};           // producer thread

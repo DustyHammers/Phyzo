@@ -14,7 +14,9 @@ std::vector<PhyzoProcessor*> g_instances;            // open instances (for glob
 }
 
 PhyzoProcessor::PhyzoProcessor()
-    : AudioProcessor(BusesProperties().withOutput("Output", juce::AudioChannelSet::stereo(), true)) {
+    : AudioProcessor(BusesProperties()
+                         .withInput("Audio In", juce::AudioChannelSet::stereo(), false)   // ESP2 line input; off by default
+                         .withOutput("Output", juce::AudioChannelSet::stereo(), true)) {
     dataFolder_ = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile("Phyzo");
     dataFolder_.getChildFile("roms").createDirectory();
     dataFolder_.getChildFile("skins").createDirectory();
@@ -60,13 +62,19 @@ void PhyzoProcessor::timerCallback() {
 void PhyzoProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) {
     hostRate_ = sampleRate;
     meter.worstMs = 0; meter.overruns = 0;
-    engine_.prepare(sampleRate, samplesPerBlock);
+    const auto* in = getBus(true, 0);
+    inputActive_ = in != nullptr && in->isEnabled() && in->getNumberOfChannels() > 0;
+    inL_.assign(size_t(std::max(1, samplesPerBlock)), 0.0f); inR_.assign(inL_.size(), 0.0f);
+    engine_.prepare(sampleRate, samplesPerBlock, inputActive_);
     engine_.setProfiling(true);                      // per-part times for the debug overlay (output unchanged)
     setLatencySamples(engine_.latencySamples());
 }
 
+// Output stereo; Audio In off, mono (fed to both sides) or stereo.
 bool PhyzoProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const {
-    return layouts.getMainInputChannelSet().isDisabled() && layouts.getMainOutputChannelSet() == juce::AudioChannelSet::stereo();
+    const auto in = layouts.getMainInputChannelSet();
+    return layouts.getMainOutputChannelSet() == juce::AudioChannelSet::stereo() &&
+           (in.isDisabled() || in == juce::AudioChannelSet::mono() || in == juce::AudioChannelSet::stereo());
 }
 
 void PhyzoProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi) {
@@ -77,8 +85,19 @@ void PhyzoProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
     for (const auto meta : midi)
         if (events_.size() < events_.capacity()) events_.push_back({meta.samplePosition, meta.data, meta.numBytes});
     midi.clear();
+    // Audio In shares the buffer with the output (in place): copy it out first.
+    const float* inL = nullptr; const float* inR = nullptr;
+    if (inputActive_ && n <= int(inL_.size())) {
+        const auto inBus = getBusBuffer(buffer, true, 0);
+        if (inBus.getNumChannels() > 0) {
+            std::copy(inBus.getReadPointer(0), inBus.getReadPointer(0) + n, inL_.begin());
+            const float* r = inBus.getReadPointer(inBus.getNumChannels() > 1 ? 1 : 0);
+            std::copy(r, r + n, inR_.begin());
+            inL = inL_.data(); inR = inR_.data();
+        }
+    }
     if (buffer.getNumChannels() >= 2) {
-        engine_.process(buffer.getWritePointer(0), buffer.getWritePointer(1), n, events_.data(), int(events_.size()));
+        engine_.process(buffer.getWritePointer(0), buffer.getWritePointer(1), n, events_.data(), int(events_.size()), inL, inR);
         for (const auto& e : engine_.hostMidiEvents())   // the OS's MIDI output (only when MIDI to host is on)
             midi.addEvent(engine_.hostMidiBytes() + e.start, int(e.size), e.offset);
     } else buffer.clear();

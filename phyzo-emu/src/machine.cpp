@@ -227,7 +227,8 @@ void Machine::advanceDevices() {
                     esp2.voicePort[2 * c + side] = int32_t(v) * 16;
                 }
             esp2.voicePort[31] = 0;                // status word read by the shell (meaning Open)
-            if (!audioIn.empty()) {
+            if (liveIn) liveIn->next(esp2.serialIn[0], esp2.serialIn[1]);
+            else if (!audioIn.empty()) {
                 for (int i = 0; i < 2; ++i) {
                     float x = std::clamp(audioIn[(audioInPos + i) % audioIn.size()], -1.0f, 1.0f);
                     esp2.serialIn[i] = int32_t(x * 8388607.0f);
