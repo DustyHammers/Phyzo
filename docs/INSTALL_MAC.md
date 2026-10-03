@@ -129,6 +129,9 @@ dumps). MIDI from REAPER and from the virtual port are merged message by message
 The synth's MIDI output also goes to REAPER's MIDI out of the track when **Send MIDI to host** is on (off by default).
 VST3 does not carry SysEx reliably; use the virtual port or the AU version for dumps.
 
+Both are switched in the right-click menu under **MIDI**: **Virtual port "Phyzo"** (the name shows which port this
+window has) and **Send MIDI to host**. They are remembered for all projects and apply to every open Phyzo.
+
 ## Uninstalling
 
 Quit REAPER and move `Phyzo.vst3` and `Phyzo.component` (in `~/Library/Audio/Plug-Ins/...` or
