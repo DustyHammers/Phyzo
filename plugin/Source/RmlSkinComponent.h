@@ -39,6 +39,11 @@ public:
     std::function<void(int phase, juce::Point<int> offset)> onCornerResize;
     static constexpr int kCornerSize = 24;
 
+    // Frames drawn so far (GL thread; for tests and the UI rate log).
+    uint64_t framesDrawn() const { return framesDrawn_.load(); }
+    // True while the window can be seen: showing, not minimised and, on macOS, not fully covered by other windows.
+    bool visibleOnScreen() const;
+
     void paint(juce::Graphics&) override;
     void resized() override;
     void mouseMove(const juce::MouseEvent&) override;
@@ -78,4 +83,17 @@ private:
     juce::String message_, persistent_;
     juce::uint32 messageUntil_ = 0;
     juce::String glError_;
+
+    // Frames only when needed (B-11, F-27): the timer asks for one when the synth's panel changed (engine UI
+    // counter), input arrived, or the skin's next wake time came, and never while the window cannot be seen.
+    std::atomic<bool> frameWanted_{true};
+    std::atomic<double> nextWake_{0};
+    uint32_t lastSerial_ = 0;
+    std::atomic<uint64_t> framesDrawn_{0};
+    // UI rate log (message thread): counts at the start of the current second
+    double rateStart_ = 0;
+    uint64_t rateFrames_ = 0, rateMessages_ = 0, rateLua_ = 0, rateChanged_ = 0;
+    uint32_t rateSerial_ = 0;
+    std::atomic<uint64_t> luaCalls_{0}, changedFrames_{0};   // copied from the view by the GL thread
+    void logRates(double now);
 };

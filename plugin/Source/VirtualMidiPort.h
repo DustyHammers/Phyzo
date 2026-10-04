@@ -28,7 +28,14 @@ public:
     uint32_t destinationRef() const { return dest_; }      // CoreMIDI endpoint refs (tests)
     uint32_t sourceRef() const { return src_; }
 
-    static void receive(void* self, const uint8_t* bytes, size_t n);   // from the CoreMIDI read proc
+    // CoreMIDI calls the port's read proc through a gate: close() clears it, disposes the endpoints and waits until no
+    // callback is inside, so nothing reaches the receiver (the engine) after close() returns. A gate is never freed (a
+    // few bytes per open), so even a callback CoreMIDI delivers late finds valid memory and does nothing.
+    struct Gate {
+        std::atomic<int> active{0};
+        std::atomic<VirtualMidiPort*> port{nullptr};
+    };
+    static void receive(Gate* gate, const uint8_t* bytes, size_t n);   // from the CoreMIDI read proc
 
 private:
     void senderLoop();
@@ -42,5 +49,6 @@ private:
     uint32_t dest_ = 0, src_ = 0;
     std::thread sender_;
     std::atomic<bool> run_{false};
+    Gate* gate_ = nullptr;
     std::vector<uint8_t> msg_, packets_;
 };

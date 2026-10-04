@@ -115,12 +115,20 @@ void BuiltinView::setNotice(const juce::String& text) {
     repaint();
 }
 
+// Repaints only when something shown changed: display and LEDs (engine UI counter), status, notice, ROM scan, and
+// the Debug meters (once a second, as they are measured).
 void BuiltinView::timerCallback() {
-    const bool running = proc.engine().state() == Engine::State::Running;
+    const Engine::State st = proc.engine().state();
+    const bool running = st == Engine::State::Running;
     minus.setEnabled(running);
     plus.setEnabled(running);
     if (notice_.isNotEmpty() && juce::Time::getMillisecondCounter() > noticeUntil_) notice_.clear();
-    repaint();
+    const std::size_t sig = std::hash<std::string>()(proc.engine().message()) ^
+                            (std::hash<std::string>()(notice_.toStdString()) << 1) ^
+                            (std::size_t(proc.engine().uiSerial()) << 3) ^ (std::size_t(st) << 40) ^
+                            (std::size_t(proc.romScan().complete()) << 44) ^ (std::size_t(proc.showDebug) << 45) ^
+                            (proc.showDebug ? std::size_t(proc.meter.head.load()) << 48 : 0) ^ std::size_t(proc.hostRate() * 10);
+    if (sig != lastSignature_) { lastSignature_ = sig; repaint(); }
 }
 
 void BuiltinView::paint(juce::Graphics& g) {

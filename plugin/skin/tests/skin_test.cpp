@@ -2,6 +2,8 @@
 // recording fake synth, then drives every custom element and the Lua API.
 #include <RmlUi/Core.h>
 #include <chrono>
+#include <cmath>
+#include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -10,6 +12,7 @@
 #include <vector>
 #include "skin_discovery.h"
 #include "skin_elements.h"
+#include "skin_system.h"
 #include "skin_view.h"
 
 using namespace skin;
@@ -310,6 +313,56 @@ int main() {
         CHECK(v.load(kSkins + "/test", "test", err));
         v.update(1.0);
         CHECK_EQ(v.evalForTest("events[1]"), std::string("load"));
+    }
+
+    // UI batching (B-11): the panel is read once per frame, latest state wins; Lua hears only real changes; a still
+    // panel needs no frames.
+    {
+        FakePort p2;
+        SkinView v(p2, {"Phyzo", "DHammers", "9.9.9"}, nullptr);
+        std::string err;
+        CHECK(v.load(kSkins + "/test", "test", err));
+        Rml::ElementDocument* doc = v.context()->GetDocument(0);
+        { ViewScope scope(&v); doc->RemoveAttribute("onframe"); }                  // no frame handler
+        double t = 50.0;
+        v.update(t);
+        v.update(t += 0.02);
+        CHECK(std::isinf(v.nextWake()));                                         // nothing to animate: no frames
+        auto count = [&](const std::string& e) { return v.evalForTest("(function() local n = 0 for _, x in ipairs(events) do if x == '" + e + "' then n = n + 1 end end return n end)()"); };
+        // 120 LED messages between two frames (on/off/on ...), ending on: one onLed call with the final state.
+        const auto lua0 = v.stats().luaCalls;
+        for (int i = 0; i < 120; ++i) p2.ledReports[0x21].mode = (i % 2) ? LedMode::Off : LedMode::On;
+        p2.ledReports[0x21].mode = LedMode::On;
+        v.update(t += 0.02);
+        CHECK_EQ(count("led21 1"), std::string("1"));
+        CHECK_EQ(int(v.stats().luaCalls - lua0), 1);
+        v.update(t += 0.02);                                                       // unchanged: no call, no change
+        CHECK_EQ(count("led21 1"), std::string("1"));
+        const auto changed0 = v.stats().changedFrames;
+        v.update(t += 0.02);
+        CHECK_EQ(int(v.stats().changedFrames - changed0), 0);
+        CHECK(std::isinf(v.nextWake()));
+        // A flashing LED wakes the view at its next toggle (2.5 Hz: every 0.2 s), not every frame.
+        p2.ledReports[0x22].mode = LedMode::Flash;
+        v.update(t = 60.05);
+        CHECK(std::fabs(v.nextWake() - 60.2) < 1e-9);
+        p2.ledReports[0x22].mode = LedMode::Off;
+        v.update(t += 0.02);
+        CHECK(std::isinf(v.nextWake()));
+        // panel.setKnob with the value already sent: no message, no onKnob.
+        v.evalForTest("panel.setKnob(11, 600)");
+        v.evalForTest("panel.setKnob(11, 600)");
+        CHECK_EQ(count("knob11 600"), std::string("1"));
+        CHECK_EQ(int(std::count(p2.sent.begin(), p2.sent.end(), std::string("cc 11 600"))), 1);
+        // panel.press twice without a release: one press edge.
+        v.evalForTest("panel.press(0x13)"); v.evalForTest("panel.press(0x13)"); v.evalForTest("panel.release(0x13)");
+        CHECK_EQ(count("button13 true"), std::string("1"));
+        CHECK_EQ(count("button13 false"), std::string("1"));
+        // The display: one onDisplay per change, however often it was rewritten in between.
+        p2.segs = {1, 2, 3, 4};
+        v.update(t += 0.02);
+        v.update(t += 0.02);
+        CHECK_EQ(count("display 01 02 03 04"), std::string("1"));
     }
 
     std::printf("skin_test: %s\n", failures ? "FAILED" : "passed");

@@ -4,6 +4,10 @@
 #include "skin_system.h"
 #include "skin_view.h"
 
+#if JUCE_MAC
+bool phyzoWindowVisible(void* nsView);           // MacWindow.mm
+#endif
+
 namespace {
 constexpr float kWheelNotch = 0.14f;      // JUCE wheel delta of one mouse-wheel notch (about)
 
@@ -34,8 +38,9 @@ RmlSkinComponent::RmlSkinComponent(PhyzoProcessor& p) : proc_(p), logFile_(p.ski
     gl_.setOpenGLVersionRequired(juce::OpenGLContext::openGL3_2);
     gl_.setRenderer(this);
     gl_.setComponentPaintingEnabled(true);      // the message banner is painted over the skin
-    gl_.setContinuousRepainting(true);
+    gl_.setContinuousRepainting(false);            // frames only when something changed (timerCallback)
     gl_.attachTo(*this);
+    startTimerHz(60);
 }
 
 RmlSkinComponent::~RmlSkinComponent() {
@@ -44,8 +49,11 @@ RmlSkinComponent::~RmlSkinComponent() {
 }
 
 void RmlSkinComponent::post(std::function<void()> f) {
-    std::lock_guard<std::mutex> lk(queueMtx_);
-    queue_.push_back(std::move(f));
+    {
+        std::lock_guard<std::mutex> lk(queueMtx_);
+        queue_.push_back(std::move(f));
+    }
+    frameWanted_ = true;                           // input, loading, debugger: draw the result
 }
 
 void RmlSkinComponent::loadSkin(const juce::File& folder, const juce::String& name) {
@@ -63,7 +71,6 @@ void RmlSkinComponent::setDebugger(bool on) {
 void RmlSkinComponent::showMessage(const juce::String& text, int seconds) {
     message_ = text;
     messageUntil_ = juce::Time::getMillisecondCounter() + juce::uint32(seconds * 1000);
-    if (text.isNotEmpty()) startTimer(250);
     repaint();
 }
 
@@ -73,12 +80,50 @@ void RmlSkinComponent::setPersistentMessage(const juce::String& text) {
     repaint();
 }
 
+bool RmlSkinComponent::visibleOnScreen() const {
+    if (!isShowing()) return false;
+    auto* peer = getPeer();
+    if (peer == nullptr || peer->isMinimised()) return false;
+#if JUCE_MAC
+    return phyzoWindowVisible(peer->getNativeHandle());
+#else
+    return true;
+#endif
+}
+
+// 60 times a second on the message thread: a frame only when the panel changed, input arrived or the skin's next
+// wake time came, and never while the window cannot be seen.
 void RmlSkinComponent::timerCallback() {
     if (message_.isNotEmpty() && juce::Time::getMillisecondCounter() > messageUntil_) {
         message_.clear();
         repaint();
     }
-    if (message_.isEmpty()) stopTimer();
+    const double now = juce::Time::getMillisecondCounterHiRes() / 1000.0;
+    logRates(now);
+    if (!visibleOnScreen()) return;
+    const uint32_t serial = proc_.engine().uiSerial();
+    if (frameWanted_.exchange(false) || serial != lastSerial_ || now >= nextWake_.load()) {
+        lastSerial_ = serial;
+        gl_.triggerRepaint();
+    }
+}
+
+// The skin log gets one line per second in which the panel was active: the OS's panel messages, panel changes seen
+// by the window (engine UI counter), frames drawn, frames with a change, Lua callbacks.
+void RmlSkinComponent::logRates(double now) {
+    if (now - rateStart_ < 1.0) return;
+    const uint64_t frames = framesDrawn_.load(), messages = proc_.engine().panelMessages(), lua = luaCalls_.load(),
+                   changed = changedFrames_.load();
+    const uint32_t serial = proc_.engine().uiSerial();
+    if (rateStart_ > 0 && (frames != rateFrames_ || messages != rateMessages_)) {
+        char b[200];
+        std::snprintf(b, sizeof b, "ui rates (%.1f s): %llu panel messages, %u panel changes, %llu frames drawn (%llu with a change), %llu Lua callbacks%s",
+                      now - rateStart_, (unsigned long long)(messages - rateMessages_), serial - rateSerial_,
+                      (unsigned long long)(frames - rateFrames_), (unsigned long long)(changed - rateChanged_),
+                      (unsigned long long)(lua - rateLua_), visibleOnScreen() ? "" : " (window not visible)");
+        writeLog(this, b);
+    }
+    rateStart_ = now; rateFrames_ = frames; rateMessages_ = messages; rateLua_ = lua; rateChanged_ = changed; rateSerial_ = serial;
 }
 
 // Skin log: ~/Documents/Phyzo/skin-log.txt (warnings, Lua errors and Log.Message output of the loaded skin).
@@ -140,10 +185,14 @@ void RmlSkinComponent::renderOpenGL() {
         view_->setViewport(w, h, dp);
     }
     view_->update(juce::Time::getMillisecondCounterHiRes() / 1000.0);
+    nextWake_ = view_->nextWake();
+    const skin::SkinView::Stats st = view_->stats();
+    luaCalls_ = st.luaCalls; changedFrames_ = st.changedFrames;
     std::lock_guard<std::recursive_mutex> lk(skin::skinLock());      // RmlUi's shared state, also used by the renderer
     renderer_->beginFrame(w, h);
     view_->render();
     renderer_->endFrame();
+    ++framesDrawn_;
 }
 
 void RmlSkinComponent::openGLContextClosing() {
@@ -175,7 +224,7 @@ void RmlSkinComponent::paint(juce::Graphics& g) {
     }
 }
 
-void RmlSkinComponent::resized() { width_ = getWidth(); height_ = getHeight(); }
+void RmlSkinComponent::resized() { width_ = getWidth(); height_ = getHeight(); frameWanted_ = true; }
 
 int RmlSkinComponent::toPx(float v) const { return juce::roundToInt(v * scale_.load()); }
 

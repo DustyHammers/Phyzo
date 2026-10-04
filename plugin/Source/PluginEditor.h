@@ -49,6 +49,7 @@ private:
     juce::ToggleButton debugToggle{"Debug"};
     juce::String notice_;
     juce::uint32 noticeUntil_ = 0;
+    std::size_t lastSignature_ = 0;                  // what was last painted (repaint only on change)
 };
 
 class PhyzoEditor : public juce::AudioProcessorEditor, private juce::Timer {
