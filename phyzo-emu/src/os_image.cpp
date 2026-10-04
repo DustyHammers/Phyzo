@@ -1,4 +1,5 @@
 #include "os_image.h"
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -58,11 +59,188 @@ std::string md5Hex(const uint8_t* data, size_t len) {
     return std::string(out, 32);
 }
 
+const char* osFormName(OsForm f) {
+    switch (f) {
+    case OsForm::UpdateMidiFile: return "OS update file (MIDI file)";
+    case OsForm::UpdateSysex: return "OS update file (SysEx)";
+    default: return "OS image";
+    }
+}
+
+namespace osupdate {
+
+bool looksLikeUpdate(const std::vector<uint8_t>& file, OsForm& form) {
+    if (file.size() >= 4 && std::memcmp(file.data(), "MThd", 4) == 0) { form = OsForm::UpdateMidiFile; return true; }
+    if (!file.empty() && file[0] == 0xF0) { form = OsForm::UpdateSysex; return true; }
+    return false;
+}
+
+namespace {
+// MIDI file variable-length quantity; false past the end or longer than 4 bytes.
+bool readVlq(const std::vector<uint8_t>& b, size_t& i, size_t end, uint32_t& v) {
+    v = 0;
+    for (int n = 0; n < 4; ++n) {
+        if (i >= end) return false;
+        const uint8_t c = b[i++];
+        v = (v << 7) | (c & 0x7F);
+        if (!(c & 0x80)) return true;
+    }
+    return false;
+}
+
+bool midiFileSysex(const std::vector<uint8_t>& b, std::vector<std::vector<uint8_t>>& out, std::string& err) {
+    auto be32 = [&](size_t o) { return uint32_t(b[o]) << 24 | uint32_t(b[o + 1]) << 16 | uint32_t(b[o + 2]) << 8 | b[o + 3]; };
+    size_t pos = 0;
+    bool open = false;                               // a SysEx message continues in the next F7 packet
+    while (pos + 8 <= b.size()) {
+        const uint32_t len = be32(pos + 4);
+        const size_t start = pos + 8, end = start + len;
+        if (end > b.size() || end < start) { err = "the MIDI file is cut short"; return false; }
+        if (std::memcmp(&b[pos], "MTrk", 4) == 0) {
+            size_t i = start;
+            uint8_t running = 0;
+            while (i < end) {
+                uint32_t delta, n;
+                if (!readVlq(b, i, end, delta) || i >= end) { err = "the MIDI file has a damaged track"; return false; }
+                uint8_t st = b[i];
+                if (st == 0xFF) {                            // meta event
+                    if (i + 2 > end) { err = "the MIDI file has a damaged track"; return false; }
+                    i += 2;
+                    if (!readVlq(b, i, end, n) || n > end - i) { err = "the MIDI file has a damaged track"; return false; }
+                    i += n;
+                } else if (st == 0xF0 || st == 0xF7) {       // SysEx, or a continuation / escape packet
+                    ++i;
+                    if (!readVlq(b, i, end, n) || n > end - i) { err = "the MIDI file has a damaged track"; return false; }
+                    if (st == 0xF0) { out.push_back({0xF0}); open = true; }
+                    if (open) {
+                        out.back().insert(out.back().end(), b.begin() + long(i), b.begin() + long(i + n));
+                        open = out.back().back() != 0xF7;
+                    }
+                    i += n;
+                    running = 0;
+                } else {                                     // channel message, possibly in running status
+                    if (st & 0x80) { running = st; ++i; }
+                    if (!running) { err = "the MIDI file has a damaged track"; return false; }
+                    const int data = (running & 0xE0) == 0xC0 ? 1 : 2;
+                    if (i + size_t(data) > end) { err = "the MIDI file has a damaged track"; return false; }
+                    i += size_t(data);
+                }
+            }
+        }
+        pos = end;                                           // other chunks (and MThd) are skipped
+    }
+    if (open) { err = "a SysEx message in the MIDI file is not terminated"; return false; }
+    return true;
+}
+
+bool rawSysex(const std::vector<uint8_t>& b, std::vector<std::vector<uint8_t>>& out, std::string& err) {
+    bool open = false;
+    for (uint8_t c : b) {
+        if (c == 0xF0) {
+            if (open) { err = "a SysEx message is not terminated"; return false; }
+            out.push_back({0xF0}); open = true;
+        } else if (open) {
+            out.back().push_back(c);
+            if (c == 0xF7) open = false;
+            else if (c & 0x80) { err = "a SysEx message contains a status byte"; return false; }
+        }
+    }
+    if (open) { err = "the last SysEx message is not terminated"; return false; }
+    return true;
+}
+
+// The manufacturer's 4-to-5 encoding of a 32-bit value.
+uint32_t value5(const uint8_t* p) {
+    return uint32_t(p[0]) | uint32_t(p[1]) << 7 | uint32_t(p[2]) << 14 | uint32_t(p[3]) << 21 | uint32_t(p[4] & 0x0F) << 28;
+}
+}  // namespace
+
+bool sysexMessages(const std::vector<uint8_t>& file, OsForm form, std::vector<std::vector<uint8_t>>& out, std::string& err) {
+    out.clear();
+    return form == OsForm::UpdateMidiFile ? midiFileSysex(file, out, err) : rawSysex(file, out, err);
+}
+
+namespace {
+struct Block { uint32_t addr; std::vector<uint8_t> data; };
+
+// One data block: F0, 0F 11 01 00 17, address (5), length (5), payload in 7-bit groups, trailer (5), F7.
+bool decodeBlock(const std::vector<uint8_t>& m, int number, Block& bl, std::string& err) {
+    const std::string which = "data block " + std::to_string(number);
+    if (m.size() < 1 + 5 + 10 + 5 + 1) { err = which + " is too short"; return false; }
+    const uint32_t length = value5(&m[11]);
+    bl.addr = value5(&m[6]);
+    bl.data.clear();
+    const size_t p0 = 16, p1 = m.size() - 1 - 5;
+    bl.data.reserve((p1 - p0) * 7 / 8 + 7);
+    for (size_t g = p0; g < p1; g += 8) {                    // 8 bytes of 7 bits -> 7 bytes, little-endian
+        const size_t n = std::min<size_t>(8, p1 - g);
+        uint64_t v = 0;
+        for (size_t j = 0; j < n; ++j) v |= uint64_t(m[g + j] & 0x7F) << (7 * j);
+        for (size_t j = 0; j < n * 7 / 8; ++j) bl.data.push_back(uint8_t(v >> (8 * j)));
+    }
+    if (bl.data.size() < length) {
+        err = which + " holds " + std::to_string(bl.data.size()) + " bytes, fewer than its stated length " + std::to_string(length);
+        return false;
+    }
+    bl.data.resize(length);
+    return true;
+}
+
+// The blocks concatenated in address order.
+bool assemble(std::vector<Block> blocks, std::vector<uint8_t>& image, std::string& err) {
+    uint64_t total = 0;
+    for (const Block& bl : blocks) total += bl.data.size();
+    if (total > 0x100000 - OsImage::kLoadAddress) { err = "the decoded OS is larger than the flash"; return false; }
+    std::stable_sort(blocks.begin(), blocks.end(), [](const Block& a, const Block& b) { return a.addr < b.addr; });
+    image.clear();
+    image.reserve(size_t(total));
+    for (const Block& bl : blocks) image.insert(image.end(), bl.data.begin(), bl.data.end());
+    return true;
+}
+}  // namespace
+
+bool decode(const std::vector<uint8_t>& file, std::vector<uint8_t>& image, OsForm& form, std::string& err) {
+    image.clear();
+    if (!looksLikeUpdate(file, form)) { err = "not a MIDI file or a SysEx file"; return false; }
+    std::vector<std::vector<uint8_t>> msgs;
+    if (!sysexMessages(file, form, msgs, err)) return false;
+    std::vector<Block> blocks;
+    for (size_t k = 0; k < msgs.size(); ++k) {
+        const std::vector<uint8_t>& m = msgs[k];
+        if (m.size() < 3 || m[1] != kManufacturer) {
+            char id[8]; std::snprintf(id, sizeof id, "0x%02X", m.size() > 1 ? m[1] : 0);
+            err = "SysEx message " + std::to_string(k + 1) + " is from another manufacturer (ID " + id + ")";
+            return false;
+        }
+        if (m.size() < 7 || m[5] != kDataBlock) continue;    // start, end and other messages
+        blocks.emplace_back();
+        if (!decodeBlock(m, int(blocks.size()), blocks.back(), err)) return false;
+    }
+    if (blocks.empty()) { err = "it contains no data blocks"; return false; }
+    return assemble(std::move(blocks), image, err);
+}
+
+}  // namespace osupdate
+
 bool OsImage::load(const std::string& p, std::string& err) {
     std::ifstream f(p, std::ios::binary);
     if (!f) { err = "cannot open OS image: " + p; return false; }
-    bytes.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+    std::vector<uint8_t> file((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     path = p;
+    form = OsForm::Image;
+    OsForm updateForm;
+    if (osupdate::looksLikeUpdate(file, updateForm)) {           // decoded here, in memory; never written anywhere
+        std::vector<uint8_t> image;
+        std::string why;
+        if (!osupdate::decode(file, image, updateForm, why)) { err = "OS update file: " + why; return false; }
+        form = updateForm;
+        return setImage(std::move(image), err);
+    }
+    return setImage(std::move(file), err);
+}
+
+bool OsImage::setImage(std::vector<uint8_t> image, std::string& err) {
+    bytes = std::move(image);
     if (bytes.size() < 16) { err = "OS image too small"; return false; }
     if (bytes.size() > 0x100000 - kLoadAddress) { err = "OS image larger than flash"; return false; }
     md5 = md5Hex(bytes.data(), bytes.size());

@@ -71,8 +71,10 @@ If REAPER reports that the plugin failed to load, repeat step 4 and restart REAP
 ## 6. Put your ROM files in place
 
 Phyzo looks for its two ROM files in one fixed folder: **Documents > Phyzo > roms**
-(`/Users/<you>/Documents/Phyzo/roms/`). The plugin creates the folder the first time it opens. Copy the OS image and
-the native wave image into it. File names do not matter: each file is recognised by its checksum. While a file is
+(`/Users/<you>/Documents/Phyzo/roms/`). The plugin creates the folder the first time it opens. Copy the OS and the
+native wave image into it. For the OS, either the decoded OS image or the original manufacturer's OS update file v1.10
+as you have it (`.mid` or `.syx`) works: Phyzo decodes the update file in memory each time it starts, so no
+conversion step is needed. File names do not matter: each file is recognised by its checksum. While a file is
 missing, the plugin window says which one and checks the folder again every two seconds, so the synth starts by
 itself a moment after you copy the files in; there is no need to reload the plugin.
 

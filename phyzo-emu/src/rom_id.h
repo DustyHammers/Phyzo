@@ -1,9 +1,12 @@
 // Finds the user's two ROM files in a folder by MD5 checksum, whatever their file names.
 // Only checksums live here; the files themselves are user-supplied and never committed.
+// The OS is accepted as our decoded image or as the original manufacturer's OS update file (MIDI file or SysEx),
+// which is decoded in memory and identified by the MD5 of the decoded image.
 #pragma once
 #include <cstdint>
 #include <string>
 #include <vector>
+#include "os_image.h"
 
 namespace romid {
 
@@ -23,7 +26,8 @@ struct Expected {
 
 struct Rejected {
     std::string name;    // file name inside the folder
-    std::string md5;     // empty: not hashed (size cannot match either ROM)
+    std::string md5;     // empty: not hashed (size cannot match either ROM); for an update file, of the decoded OS
+    std::string reason;  // an update file that could not be decoded: why
 };
 
 struct ScanResult {
@@ -31,6 +35,7 @@ struct ScanResult {
     Expected expected;
     bool folderExists = false;
     std::string osPath, wavePath;          // empty when not found
+    OsForm osForm = OsForm::Image;         // the form the OS was found in
     std::vector<Rejected> rejected;        // files that are not one of the two ROMs
 
     bool hasOs() const { return !osPath.empty(); }

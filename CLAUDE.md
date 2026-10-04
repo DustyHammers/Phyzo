@@ -16,6 +16,8 @@ owner step by step through anything they must do by hand on github.com or on the
    "Planned dependencies" entry for each dependency (full licence text and version) when it is added.
 6. **Identify ROMs by checksum, never by file name** (`phyzo-emu/src/rom_id.*`):
    OS image MD5 `8de06f48bfb0d847cacab05b763e22c5`, native wave image MD5 `42a974e31e48b05815d07554d0063171`.
+   The OS may also be the original manufacturer's OS update file (MIDI file or SysEx), decoded in memory
+   (`os_image.*`, `osupdate::`) and identified by the decoded image's MD5; the decoded image is never written to disk.
 7. **Never commit skins, images or fonts.** Skins live in `~/Documents/Phyzo/skins/<name>/` on the owner's Mac; the
    repo has only the skin engine and the text-only test skin (`plugin/skin/tests/skins/`). CI rejects image and font
    files and .rml/.rcss files outside the test skin. Gearmulator's skinning and Lua docs are a design reference
@@ -23,7 +25,9 @@ owner step by step through anything they must do by hand on github.com or on the
 
 ## Naming and identity
 
-- No product or maker names of the original instrument outside THIRD_PARTY_NOTICES.md. Deliberately kept names are
+- Never write the original synth's name or its maker's name anywhere in this repository or on GitHub (code, comments,
+  file names, docs, tests, commit messages, branch names, PR titles and descriptions, issues, CI names). Use neutral
+  terms: the original synth, the original manufacturer, the OS, the update file. Other deliberately kept names are
   listed in PACKAGE_CONTENTS.md. Chip part numbers MC68340, ES5506 and ESP2 stay. Say "table sweep", not the
   original technique's brand-like name.
 - The five realtime performance knobs are named by function in code: perf1 (System Controller 3, effect modulation),
