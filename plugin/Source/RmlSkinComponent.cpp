@@ -1,4 +1,5 @@
 #include "RmlSkinComponent.h"
+#include "SkinSettings.h"
 #include <RmlUi/Core/Input.h>
 #include "gl/RmlGLRenderer.h"
 #include "skin_system.h"
@@ -145,8 +146,10 @@ void RmlSkinComponent::logRates(double now) {
     rateStart_ = now; rateFrames_ = frames; rateMessages_ = messages; rateLua_ = lua; rateChanged_ = changed; rateSerial_ = serial;
 }
 
-// Skin log: ~/Documents/Phyzo/skin-log.txt (warnings, Lua errors and Log.Message output of the loaded skin).
+// Skin log: ~/Documents/Phyzo/skin-log.txt (warnings, Lua errors and Log.Message output of the loaded skin), written
+// only while Developer > Write skin log is on; otherwise no file is created.
 void RmlSkinComponent::writeLog(void* self, const std::string& line) {
+    if (!SkinSettings::skinLog()) return;
     auto* c = static_cast<RmlSkinComponent*>(self);
     if (c->logFile_.getSize() > (1 << 20)) c->logFile_.replaceWithText({});
     c->logFile_.appendText(juce::String::fromUTF8(line.c_str()) + "\n", false, false, "\n");

@@ -419,6 +419,7 @@ void PhyzoEditor::showMenu(const juce::MouseEvent&) {
         debugger_ = !debugger_;
         if (rml_) rml_->setDebugger(debugger_);
     });
+    dev.addItem("Write skin log", true, SkinSettings::skinLog(), [] { SkinSettings::setSkinLog(!SkinSettings::skinLog()); });
     // MIDI ports (approved mockup): global settings, applied to every open instance.
     juce::PopupMenu midi;
     const VirtualMidiPort& vp = proc.virtualPort();

@@ -29,7 +29,8 @@ The plugin is ad-hoc signed (not notarised by Apple). That is why step 3 is need
 6. Files Phyzo uses (in your Documents folder):
      ~/Documents/Phyzo/roms/            the two ROM files (any file names; found by checksum)
      ~/Documents/Phyzo/skins/<name>/    skins: a folder <name> containing <name>.rml (plus its files)
-     ~/Documents/Phyzo/skin-log.txt     skin messages and script errors
+     ~/Documents/Phyzo/skin-log.txt     skin messages and script errors, only while
+                                        Developer > Write skin log is on (off by default)
    Right-click the plugin window for Skin, Reload skin (F5), Zoom and Developer.
 
 Third-party software in Phyzo: JUCE, RmlUi, Lua and FreeType (see THIRD_PARTY_NOTICES.md in the repository).

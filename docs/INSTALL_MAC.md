@@ -93,7 +93,8 @@ Right-click anywhere in the window for the menu (the same in every skin):
 The skin is a global setting (every Phyzo window and project). The window size is remembered twice: globally, for
 new instances, and in each project, so a project reopens at the size it was saved with.
 If the chosen skin is missing or cannot be loaded, Phyzo shows "rack" instead (then Built-in) with a message saying
-why. Skin messages and script errors are written to `~/Documents/Phyzo/skin-log.txt`. How to write a skin:
+why. With **Developer > Write skin log** on (off by default), skin messages and script errors are written to
+`~/Documents/Phyzo/skin-log.txt`. How to write a skin:
 `docs/SKINS.md` in the repository.
 
 In a skin: drag a knob up or down (hold Shift for fine steps) or use the mouse wheel; click a button to press it;

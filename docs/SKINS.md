@@ -151,8 +151,9 @@ end
 - **F5** (with the plugin window focused) or **Reload skin** in the right-click menu reloads the skin from disk;
   knob positions are kept.
 - **Developer > RmlUi debugger** shows RmlUi's element inspector and event log.
-- The skin log is `~/Documents/Phyzo/skin-log.txt`: warnings (missing files, CSS problems), Lua errors with their
-  traceback, and `Log.Message` output.
+- **Developer > Write skin log** (off by default; a global setting for all instances) writes the skin log,
+  `~/Documents/Phyzo/skin-log.txt`: warnings (missing files, CSS problems), Lua errors with their traceback,
+  `Log.Message` output and the UI rates. Turn it on while writing a skin; with it off no file is created.
 - If a skin is missing or cannot be loaded, the plugin shows "rack" instead (then Built-in) and says why.
 
 ## Testing without a skin
