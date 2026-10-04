@@ -132,6 +132,21 @@ VST3 does not carry SysEx reliably; use the virtual port or the AU version for d
 Both are switched in the right-click menu under **MIDI**: **Virtual port "Phyzo"** (the name shows which port this
 window has) and **Send MIDI to host**. They are remembered for all projects and apply to every open Phyzo.
 
+## 9. Audio input
+
+Phyzo has an optional stereo input, **Audio In**, that feeds the synth's effects processor the way the hardware's line
+input did. The synth's own programs decide what to do with it (for example the vocoder presets); Phyzo does not
+route it anywhere else. While the input is in use the plugin's latency grows a little (about 0.5 ms at 48 kHz) and
+REAPER compensates for it. The **Input Clip** LED of a skin lights while the input reaches full scale.
+
+To send a track (for example speech) into Phyzo in REAPER:
+
+1. On the speech track, click **Route** and add a send to the Phyzo track.
+2. In the send, set **Audio** to **1/2 → 3/4** (the speech arrives on the Phyzo track's channels 3/4).
+3. On the Phyzo track, click **Route** and set the track to **4 channels**.
+4. In Phyzo's FX window, click **2 in 2 out** (the pin connector) and connect **Audio In L / R** to channels **3 / 4**.
+   Leave the outputs on 1/2.
+
 ## Uninstalling
 
 Quit REAPER and move `Phyzo.vst3` and `Phyzo.component` (in `~/Library/Audio/Plug-Ins/...` or

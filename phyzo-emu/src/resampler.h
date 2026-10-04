@@ -17,6 +17,7 @@ public:
     int lookahead() const { return bypass() ? 0 : half_; }   // input frames needed beyond the current position
 
     int64_t inputNeeded(int nOut) const;             // input frames to push before produce(nOut)
+    int64_t available() const;                       // outputs that the input pushed so far allows
     void push(const float* left, const float* right, int n);
     void produce(float* left, float* right, int nOut);
 

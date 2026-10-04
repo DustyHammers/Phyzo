@@ -84,6 +84,7 @@ private:
             return {skin::LedMode(i.mode), i.beats, i.beatIntervalMs};
         }
         std::array<uint8_t, 4> segments() override { return engine.segments(); }
+        bool audioClip() override { return engine.inputClip(); }
         bool knobPosition(const std::string& id, int& raw) override {
             std::lock_guard<std::mutex> lk(mtx);
             auto it = knobs.find(id);
@@ -110,6 +111,8 @@ private:
     int timerTicks_ = 0;
     std::atomic<double> hostRate_{0};
     std::vector<Engine::MidiEvent> events_;
+    bool inputActive_ = false;                       // Audio In bus enabled by the host (set in prepareToPlay)
+    std::vector<float> inL_, inR_;                   // Audio In copied out of the in-place buffer
     // meter accumulation (audio thread only)
     double winTime_ = 0, winBudget_ = 0, winPeak_ = 0;
     std::array<double, Meter::kParts> winPart_{}, winPartPeak_{};

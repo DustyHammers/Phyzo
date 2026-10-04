@@ -189,7 +189,24 @@ void BuiltinView::paintStatus(juce::Graphics& g, int y) {
         }
         line2 = juce::String(proc.engine().message());
     }
-    g.drawText(line1, 100, y, kWidth - 110, 18, juce::Justification::centredLeft);
+    // Input Clip LED (approved mockup): right end of the Status row; lit while Audio In reaches the clip level. Not
+    // while a ROM is missing (that message needs the whole row).
+    g.drawText(line1, 100, y, kWidth - (s.complete() ? 190 : 110), 18, juce::Justification::centredLeft);
+    if (s.complete()) {
+        const bool clip = proc.engine().inputClip();
+        const juce::Rectangle<float> dot(float(kWidth) - 92, float(y) + 5, 8, 8);
+        if (clip) {
+            g.setColour(kRed.withAlpha(0.3f)); g.fillEllipse(dot.expanded(3));   // glow
+            g.setColour(kRed); g.fillEllipse(dot);
+        } else {
+            g.setColour(kGhost); g.fillEllipse(dot);
+            g.setColour(kRed.withAlpha(0.6f)); g.drawEllipse(dot, 1.0f);
+        }
+        g.setColour(kRed.withAlpha(clip ? 1.0f : 0.45f));
+        g.setFont(uiFont(11, true));
+        g.drawText("IN CLIP", kWidth - 78, y, 66, 18, juce::Justification::centredLeft);
+        g.setColour(kRed);
+    }
     g.setFont(uiFont(12));
     if (line2.isNotEmpty()) g.drawFittedText(line2, 100, y + 18, kWidth - 110, 16, juce::Justification::topLeft, 1);
     if (notice_.isNotEmpty()) g.drawFittedText(notice_, 20, y + 36, kWidth - 30, 28, juce::Justification::topLeft, 2, 0.9f);

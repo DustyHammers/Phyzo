@@ -30,7 +30,29 @@ bool unpackBlob(const std::vector<uint8_t>& data, Blob& b) {
 }
 }  // namespace
 
-Engine::Engine() {
+// Audio In FIFO (single thread: the audio thread fills it before running the machine, the machine empties it).
+struct Engine::InputFifo : Machine::LiveInput {
+    std::vector<float> l = std::vector<float>(size_t(1) << 16), r = std::vector<float>(size_t(1) << 16);
+    const uint64_t mask = (uint64_t(1) << 16) - 1;
+    uint64_t head = 0, tail = 0, taken = 0, lastClip = 0, underruns = 0, overflows = 0;
+    bool clipped = false;
+    void reset(int prefill) { head = tail = 0; for (int i = 0; i < prefill; ++i) push(0.0f, 0.0f); }
+    void push(float a, float b) {
+        if (head - tail > mask) { ++overflows; return; }
+        l[head & mask] = a; r[head & mask] = b; ++head;
+    }
+    static int32_t word(float x) { return int32_t(std::clamp(x, -1.0f, 1.0f) * 8388607.0f); }   // as the play tool's input
+    void next(int32_t& wl, int32_t& wr) override {
+        float a = 0, b = 0;
+        if (tail < head) { a = l[tail & mask]; b = r[tail & mask]; ++tail; } else ++underruns;
+        wl = word(a); wr = word(b);
+        if (wl >= kClipWord || wl <= -kClipWord || wr >= kClipWord || wr <= -kClipWord) { lastClip = taken; clipped = true; }
+        ++taken;
+    }
+    bool clipLit() const { return clipped && taken - lastClip <= kClipHoldSamples; }
+};
+
+Engine::Engine() : fifo_(std::make_unique<InputFifo>()) {
     snap_.reserve(size_t(4) << 20);                 // machine state is about 0.8 MB: snapshots never allocate
     hostEvents_.reserve(8192);
     for (int i = 0; i < 26; ++i) { controls_[size_t(i)] = PanelModel::kFreshControls[size_t(i)]; positions_[size_t(i)] = controls_[size_t(i)]; }
@@ -300,13 +322,21 @@ void Engine::publishDisplay(Machine& m) {
 
 // ------------------------------------------------------------------ audio thread
 
-void Engine::prepare(double hostRate, int maxBlock) {
+void Engine::prepare(double hostRate, int maxBlock, bool audioIn) {
     std::lock_guard<std::mutex> lk(mtx_);
     maxLockWaitUs_ = 0;
     hostRate_ = hostRate;
     resampler_.setup(44100, int(std::lround(hostRate)));
     retime_ = true;
     const double r = 44100.0 / hostRate;
+    // MIDI (and Audio In) reach the machine lookahead + margin samples after their host time. With the input on, the
+    // margin must also cover the input converter's look-ahead (64 machine samples at 48 kHz) so the input is never
+    // late: then latency grows by the difference. Without it, nothing changes.
+    inputActive_ = audioIn;
+    inRes_.setup(int(std::lround(hostRate)), 44100);
+    marginIn_ = audioIn ? std::max(48, int(std::ceil(inRes_.lookahead() * r)) + 3) : 48;
+    prefill_ = resampler_.lookahead() + marginIn_;
+    inConvL_.assign(size_t(std::ceil(maxBlock * r)) + 4096, 0.0f); inConvR_.assign(inConvL_.size(), 0.0f);
     const size_t cap = size_t(std::ceil(maxBlock * r)) + size_t(resampler_.lookahead()) + 4096;
     inL_.assign(cap, 0.0f); inR_.assign(cap, 0.0f);
     latency_ = int(std::ceil((resampler_.lookahead() + marginIn_) / r));
@@ -328,7 +358,7 @@ void Engine::drainButtons(Machine& m) {
     btnTail_.store(tail, std::memory_order_release);
 }
 
-void Engine::process(float* left, float* right, int n, const MidiEvent* events, int numEvents) {
+void Engine::process(float* left, float* right, int n, const MidiEvent* events, int numEvents, const float* inLeft, const float* inRight) {
     const auto t0 = std::chrono::steady_clock::now();
     std::unique_lock<std::mutex> lk(mtx_);
     const auto t1 = std::chrono::steady_clock::now();
@@ -343,6 +373,7 @@ void Engine::process(float* left, float* right, int n, const MidiEvent* events, 
     hostEvents_.clear(); hostUsed_ = 0;
     if (retime_) {
         outParser_.reset();
+        if (inputActive_) { inRes_.reset(); fifo_->reset(prefill_); }
         resampler_.reset();
         m.audio.clear(); m.wet.clear();
         anchorSample_ = m.samplesProduced();
@@ -380,6 +411,21 @@ void Engine::process(float* left, float* right, int n, const MidiEvent* events, 
         m.serial.queueRx(1, events[i].data, size_t(events[i].size), at);
     }
 
+    // Audio In: this block's input, converted to 44.1 kHz, queued for the ESP2's serial input.
+    if (inputActive_) {
+        if (inLeft && inRight) inRes_.push(inLeft, inRight, n);
+        else {
+            std::fill(inConvL_.begin(), inConvL_.end(), 0.0f);
+            for (int done = 0; done < n;) { const int c = std::min(n - done, int(inConvL_.size())); inRes_.push(inConvL_.data(), inConvL_.data(), c); done += c; }
+        }
+        for (int64_t k = inRes_.available(); k > 0;) {
+            const int c = int(std::min<int64_t>(k, int64_t(inConvL_.size())));
+            inRes_.produce(inConvL_.data(), inConvR_.data(), c);
+            for (int i = 0; i < c; ++i) fifo_->push(inConvL_[size_t(i)], inConvR_[size_t(i)]);
+            k -= c;
+        }
+    }
+    m.liveIn = inputActive_ ? fifo_.get() : nullptr;
     const auto tq1 = Clock::now();
     const double host0 = m.hostSeconds, voice0 = m.profVoice, esp20 = m.profEsp2;
 
@@ -412,6 +458,7 @@ void Engine::process(float* left, float* right, int n, const MidiEvent* events, 
     }
     resampler_.push(inL_.data(), inR_.data(), int(got));
     midiOut(m, n);
+    inputClip_.store(inputActive_ && fifo_->clipLit(), std::memory_order_relaxed);
     m.wet.clear(); m.audio.clear(); m.midiOut.clear();
     resampler_.produce(left, right, n);
     if (prof) {
@@ -478,5 +525,7 @@ std::vector<uint64_t> Engine::midiQueueForTest() {
         t.push_back(midiTimes_[i % midiTimes_.size()]);
     return t;
 }
+void Engine::withMachineForTest(const std::function<void(Machine&)>& f) { std::lock_guard<std::mutex> lk(mtx_); if (live_) f(*live_); }
+uint64_t Engine::inputUnderrunsForTest() const { return fifo_->underruns; }
 uint64_t Engine::anchorForTest() { std::lock_guard<std::mutex> lk(mtx_); return anchorSample_; }
 double Engine::cpuHzForTest() { std::lock_guard<std::mutex> lk(mtx_); return live_ ? live_->config().cpuHz : 0; }

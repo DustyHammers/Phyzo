@@ -58,6 +58,15 @@ int64_t Resampler::inputNeeded(int nOut) const {
     return std::max<int64_t>(0, last + 1 - pushed_);
 }
 
+int64_t Resampler::available() const {
+    if (bypass()) return std::max<int64_t>(0, pushed_ - ip_);
+    const int64_t m = pushed_ - 1 - half_ - ip_;           // furthest step from ip_ still covered by pushed input
+    if (m < 0) return 0;
+    int64_t k = ((m + 1) * outRate_ - 1 - frac_) / inRate_ + 1;
+    while (k > 0 && inputNeeded(int(k)) > 0) --k;          // (exact check; the estimate is at most one too high)
+    return k;
+}
+
 void Resampler::push(const float* left, const float* right, int n) {
     histL_.insert(histL_.end(), left, left + n);
     histR_.insert(histR_.end(), right, right + n);

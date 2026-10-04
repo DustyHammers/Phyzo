@@ -58,7 +58,8 @@ A front-panel button by its panel id. `led` is optional.
 
 ### `<led code="0xNN">` and `<led source="audioclip">`
 
-Class `lit` follows the LED. `audioclip` is the Input Clip LED; it stays unlit until the audio input is added.
+Class `lit` follows the LED. `audioclip` is the Input Clip LED: lit while the plugin's Audio In reaches the synth's
+clip level (24-bit word at or beyond 0x7FFFF0), held 100 ms; unlit while Audio In is off.
 
 ### `<vfdigit pos="0..3">`
 

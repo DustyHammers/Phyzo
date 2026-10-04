@@ -85,6 +85,10 @@ public:
     Esp2Stub esp2stub;                   // boot-milestone placeholder (--esp2-stub)
     // ESP2 effect path: DAC samples (24-bit, interleaved L,R) captured alongside the dry voice sum
     std::vector<int32_t> wet;
+    // Live audio input (the plugin's Audio In): one 24-bit word pair per sample period, in order, for the ESP2's
+    // serial input. When set, it replaces audioIn. Not part of the machine state.
+    struct LiveInput { virtual ~LiveInput() = default; virtual void next(int32_t& l, int32_t& r) = 0; };
+    LiveInput* liveIn = nullptr;
     std::vector<float> audioIn;          // optional mic/line test signal (interleaved L,R, +/-1.0), looped
     size_t audioInPos = 0;
     uint64_t voicePortClips = 0;         // channel words clamped to the 20-bit range at the voice-chip output
