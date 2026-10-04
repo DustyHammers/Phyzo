@@ -219,29 +219,32 @@ SkinView::Stats SkinView::stats() const { return {frames_.load(), changedFrames_
 
 void SkinView::computeNextWake() {
     double wake = std::numeric_limits<double>::infinity();
+    Wake source = Wake::None;
+    auto earlier = [&](double t, Wake w) { if (t < wake) { wake = t; source = w; } };
     if (document_) {
         auto ledWake = [&](int code) {
             if (code < 0 || code > 255) return;
             const LedReport& r = leds[size_t(code)];
             if (r.mode == LedMode::Flash) {
                 const double half = 0.5 / kFlashHz;
-                wake = std::min(wake, (std::floor(now_ / half) + 1) * half);
+                earlier((std::floor(now_ / half) + 1) * half, Wake::Flash);
             } else if (r.mode == LedMode::Beat) {
                 double litMs = kBeatLitMs;
                 if (r.beatIntervalMs > 0) litMs = std::min(litMs, double(r.beatIntervalMs) / 2);
                 const double off = beatSeen_[size_t(code)] + litMs / 1000.0;
-                if (off > now_) wake = std::min(wake, off);
+                if (off > now_) earlier(off, Wake::Beat);
             }
         };
         for (LedElement* e : leds_) if (!e->audioClip()) ledWake(e->code());
         for (PButtonElement* b : buttons_) ledWake(b->ledCode());
-        if (hasFrameHandler_) wake = std::min(wake, lastFrameEvent_ + 1.0 / kFrameEventHz);
+        if (hasFrameHandler_) earlier(lastFrameEvent_ + 1.0 / kFrameEventHz, Wake::Frame);
     }
     if (context_) {
         const double d = context_->GetNextUpdateDelay();         // animations, transitions (0: next frame)
-        if (d >= 0 && d < 1e9) wake = std::min(wake, now_ + d);
+        if (d >= 0 && d < 1e9) earlier(now_ + d, Wake::Animation);
     }
     nextWake_ = wake;
+    wakeSource_ = source;
 }
 
 void SkinView::render() {

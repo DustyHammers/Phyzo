@@ -121,7 +121,9 @@ Each skin window has its own global variables; two Phyzo instances never see eac
 - The panel is read once per frame and only its latest state counts: `panel.onLed`, `onDisplay`, `onKnob` and
   `onButton` are called only when the value changed, never once per panel message.
 - The skin log notes the UI rates for each second in which the panel was active (panel messages, panel changes,
-  frames drawn, Lua callbacks).
+  frames drawn, Lua callbacks) and what asked for the frames: input, a panel change, a flashing or beat LED, `onframe`,
+  an RmlUi animation or transition (an `animation` with `infinite` in the skin's RCSS redraws for as long as the skin
+  is shown), or JUCE/the system on its own.
 - Inline event code receives `event`, `element` and `document`. Pass `document` on if a function in a script file
   needs it: `<body onload="onLoad(document)">`.
 - RmlUi's Lua API is available (`document:GetElementById`, `element:SetClass`, `element.inner_rml`, …), and

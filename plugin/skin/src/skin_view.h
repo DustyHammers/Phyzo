@@ -58,6 +58,10 @@ public:
     // when the panel is still. Valid after update(). A host draws a frame only then, or when the synth or input
     // changed something, never continuously for an unchanged panel.
     double nextWake() const { return nextWake_; }
+    // What set nextWake() (for the UI rate log): a flashing LED, a beat LED going out, the onframe handler, or an
+    // RmlUi animation or transition.
+    enum class Wake { None, Flash, Beat, Frame, Animation };
+    Wake nextWakeSource() const { return wakeSource_; }
     // Counts for the UI rate log: frames updated, frames in which something on the panel changed, Lua callbacks.
     struct Stats { uint64_t frames = 0, changedFrames = 0, luaCalls = 0; };
     Stats stats() const;
@@ -168,6 +172,7 @@ private:
     bool changed_ = false;                    // something on the panel changed in this update
     bool hasFrameHandler_ = false;            // the document has onframe
     double nextWake_ = 0;
+    Wake wakeSource_ = Wake::None;
     std::atomic<uint64_t> frames_{0}, changedFrames_{0}, luaCalls_{0};
 };
 

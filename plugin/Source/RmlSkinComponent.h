@@ -88,12 +88,18 @@ private:
     // counter), input arrived, or the skin's next wake time came, and never while the window cannot be seen.
     std::atomic<bool> frameWanted_{true};
     std::atomic<double> nextWake_{0};
+    std::atomic<int> wakeSource_{0};                       // skin::SkinView::Wake of nextWake_
     uint32_t lastSerial_ = 0;
     std::atomic<uint64_t> framesDrawn_{0};
     // UI rate log (message thread): counts at the start of the current second
     double rateStart_ = 0;
     uint64_t rateFrames_ = 0, rateMessages_ = 0, rateLua_ = 0, rateChanged_ = 0;
     uint32_t rateSerial_ = 0;
+    // why frames were asked for in the current second: mouse/keys/loading, panel change, flashing LED, beat LED,
+    // onframe, RmlUi animation or transition; and mouse events received
+    enum { kWhyInput, kWhyPanel, kWhyFlash, kWhyBeat, kWhyFrame, kWhyAnimation, kWhyCount };
+    uint32_t why_[kWhyCount] = {};
+    uint32_t mouseEvents_ = 0;
     std::atomic<uint64_t> luaCalls_{0}, changedFrames_{0};   // copied from the view by the GL thread
     void logRates(double now);
 };

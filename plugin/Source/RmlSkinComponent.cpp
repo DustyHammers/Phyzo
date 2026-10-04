@@ -102,8 +102,20 @@ void RmlSkinComponent::timerCallback() {
     logRates(now);
     if (!visibleOnScreen()) return;
     const uint32_t serial = proc_.engine().uiSerial();
-    if (frameWanted_.exchange(false) || serial != lastSerial_ || now >= nextWake_.load()) {
+    int why = -1;
+    if (frameWanted_.exchange(false)) why = kWhyInput;
+    else if (serial != lastSerial_) why = kWhyPanel;
+    else if (now >= nextWake_.load()) {
+        switch (skin::SkinView::Wake(wakeSource_.load())) {
+            case skin::SkinView::Wake::Flash: why = kWhyFlash; break;
+            case skin::SkinView::Wake::Beat: why = kWhyBeat; break;
+            case skin::SkinView::Wake::Frame: why = kWhyFrame; break;
+            default: why = kWhyAnimation; break;
+        }
+    }
+    if (why >= 0) {
         lastSerial_ = serial;
+        ++why_[why];
         gl_.triggerRepaint();
     }
 }
@@ -116,13 +128,20 @@ void RmlSkinComponent::logRates(double now) {
                    changed = changedFrames_.load();
     const uint32_t serial = proc_.engine().uiSerial();
     if (rateStart_ > 0 && (frames != rateFrames_ || messages != rateMessages_)) {
-        char b[200];
-        std::snprintf(b, sizeof b, "ui rates (%.1f s): %llu panel messages, %u panel changes, %llu frames drawn (%llu with a change), %llu Lua callbacks%s",
+        uint32_t asked = 0;
+        for (uint32_t w : why_) asked += w;
+        char b[400];
+        std::snprintf(b, sizeof b, "ui rates (%.1f s): %llu panel messages, %u panel changes, %llu frames drawn (%llu with a change), %llu Lua callbacks%s;"
+                      " frames asked for by: input %u (mouse events %u), panel %u, flashing LED %u, beat LED %u, onframe %u, animation/transition %u; drawn without our asking (JUCE/system) %lld",
                       now - rateStart_, (unsigned long long)(messages - rateMessages_), serial - rateSerial_,
                       (unsigned long long)(frames - rateFrames_), (unsigned long long)(changed - rateChanged_),
-                      (unsigned long long)(lua - rateLua_), visibleOnScreen() ? "" : " (window not visible)");
+                      (unsigned long long)(lua - rateLua_), visibleOnScreen() ? "" : " (window not visible)",
+                      why_[kWhyInput], mouseEvents_, why_[kWhyPanel], why_[kWhyFlash], why_[kWhyBeat], why_[kWhyFrame], why_[kWhyAnimation],
+                      std::max(0LL, (long long)(frames - rateFrames_) - (long long)asked));   // (requests made while one is pending draw once)
         writeLog(this, b);
     }
+    for (uint32_t& w : why_) w = 0;
+    mouseEvents_ = 0;
     rateStart_ = now; rateFrames_ = frames; rateMessages_ = messages; rateLua_ = lua; rateChanged_ = changed; rateSerial_ = serial;
 }
 
@@ -186,6 +205,7 @@ void RmlSkinComponent::renderOpenGL() {
         view_->setViewport(w, h, dp);
     }
     view_->update(juce::Time::getMillisecondCounterHiRes() / 1000.0);
+    wakeSource_ = int(view_->nextWakeSource());
     nextWake_ = view_->nextWake();
     const skin::SkinView::Stats st = view_->stats();
     luaCalls_ = st.luaCalls; changedFrames_ = st.changedFrames;
@@ -235,6 +255,7 @@ int RmlSkinComponent::mods(const juce::ModifierKeys& m) {
 }
 
 void RmlSkinComponent::mouseMove(const juce::MouseEvent& e) {
+    ++mouseEvents_;
     const bool corner = onCornerResize && e.x >= getWidth() - kCornerSize && e.y >= getHeight() - kCornerSize;
     setMouseCursor(corner ? juce::MouseCursor::BottomRightCornerResizeCursor : juce::MouseCursor::NormalCursor);
     const int x = toPx(e.position.x), y = toPx(e.position.y), m = mods(e.mods);
@@ -242,6 +263,7 @@ void RmlSkinComponent::mouseMove(const juce::MouseEvent& e) {
 }
 
 void RmlSkinComponent::mouseDrag(const juce::MouseEvent& e) {
+    ++mouseEvents_;
     if (cornerDrag_) { if (onCornerResize) onCornerResize(1, e.getScreenPosition() - cornerStart_); return; }
     mouseMove(e);
 }
