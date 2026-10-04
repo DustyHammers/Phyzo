@@ -1,7 +1,8 @@
 // Editor open/close test (F-27, no ROMs): the plugin's editor with the text-only test skin (OpenGL) is opened, shown
 // until it has drawn, hidden (it must draw nothing then), and closed, 50 times. Reports process memory after the first
 // and the last cycle (on macOS the physical footprint, which includes the GPU allocations made for the process) and
-// CPU time while the editor is open but hidden; fails if memory grows or a hidden editor draws.
+// CPU time while the editor is open but hidden; fails if memory grows (beyond what the system keeps for plain OpenGL
+// views on macOS, measured alongside) or a hidden editor draws.
 //
 //   editor_cycle_test <test skin folder>
 #include <juce_audio_processors/juce_audio_processors.h>
@@ -163,7 +164,24 @@ int main(int argc, char** argv) {
     if (!glFrames && !builtin) { std::printf("editor_cycle_test: no OpenGL frames in this environment (no GPU/display): memory check only\n"); }
     if (hiddenFrames != 0) { std::printf("FAIL: the hidden editor drew frames\n"); ++failures; }
     // Memory must not grow once the GL driver has warmed up (compiled shaders, pools: done in the first cycles).
-    if (memLast - memFirst > 8.0) { std::printf("FAIL: memory grew by more than 8 MB after the 5th cycle\n"); ++failures; }
+    // macOS: some systems (the CI's virtual machines) keep memory for every OpenGL view ever opened, ours or not
+    // (about 12 MB each there). That cost is measured here with plain NSOpenGLViews, no JUCE, and subtracted.
+    double allowed = 8.0;
+#if JUCE_MAC
+    if (!builtin) {
+        for (int i = 0; i < 5; ++i) phyzoRawGLCycle();
+        const double r0 = memoryMB();
+        const int rawCycles = cycles - std::min(5, cycles - 1);
+        for (int i = 0; i < rawCycles; ++i) phyzoRawGLCycle();
+        const double system = std::max(0.0, memoryMB() - r0);
+        std::printf("editor_cycle_test: the system's own cost for %d plain OpenGL views (no JUCE, no skin): %+.1f MB\n", rawCycles, system);
+        allowed += system * 1.05;                     // the system cost varies a few % between runs
+    }
+#endif
+    if (memLast - memFirst > allowed) {
+        std::printf("FAIL: memory grew by %.1f MB after the 5th cycle (allowed %.1f MB)\n", memLast - memFirst, allowed);
+        ++failures;
+    }
     std::printf("editor_cycle_test: %s\n", failures ? "FAILED" : "passed");
     return failures ? 1 : 0;
 }
