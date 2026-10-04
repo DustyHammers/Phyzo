@@ -328,6 +328,17 @@ int main() {
         v.update(t);
         v.update(t += 0.02);
         CHECK(std::isinf(v.nextWake()));                                         // nothing to animate: no frames
+        // An empty or blank onframe is no handler: no frame events, no frames.
+        for (const char* blank : {"", "  \t "}) {
+            const auto luaBlank = v.stats().luaCalls;
+            { ViewScope scope(&v); doc->SetAttribute("onframe", Rml::String(blank)); }
+            v.update(t += 0.02);
+            v.update(t += 0.02);
+            CHECK(std::isinf(v.nextWake()));
+            CHECK_EQ(int(v.stats().luaCalls - luaBlank), 0);
+        }
+        { ViewScope scope(&v); doc->RemoveAttribute("onframe"); }
+        v.update(t += 0.02);
         auto count = [&](const std::string& e) { return v.evalForTest("(function() local n = 0 for _, x in ipairs(events) do if x == '" + e + "' then n = n + 1 end end return n end)()"); };
         // 120 LED messages between two frames (on/off/on ...), ending on: one onLed call with the final state.
         const auto lua0 = v.stats().luaCalls;

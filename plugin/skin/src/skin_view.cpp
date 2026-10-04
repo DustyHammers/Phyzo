@@ -202,7 +202,9 @@ void SkinView::update(double now) {
             pollLeds();
             pollDisplay();
             if (applyLedClasses()) changed_ = true;
-            hasFrameHandler_ = document_->HasAttribute("onframe");
+            // Frame events only for a handler with code in it: an absent, empty or blank onframe asks for no frames.
+            const std::string onframe = document_->GetAttribute<Rml::String>("onframe", "");
+            hasFrameHandler_ = onframe.find_first_not_of(" \t\r\n") != std::string::npos;
             if (hasFrameHandler_ && now_ - lastFrameEvent_ >= 1.0 / kFrameEventHz - 0.001) {
                 lastFrameEvent_ = now_;
                 if (document_) document_->DispatchEvent("frame", Rml::Dictionary());

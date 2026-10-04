@@ -115,7 +115,7 @@ Each skin window has its own global variables; two Phyzo instances never see eac
 - `<body onload="...">` runs once the document is loaded; `<body onframe="...">` runs every displayed frame, at most
   60 times a second; any element with `onshow="..."` gets a `show` event when the skin is shown.
 - Frames are drawn only when something changed: an LED, the display, a knob, input, a flashing or beat LED's next
-  step, or an RmlUi animation or transition. A skin with `onframe` is drawn up to 60 times a second for as long as it
+  step, or an RmlUi animation or transition. A skin with a non-empty `onframe` is drawn up to 60 times a second for as long as it
   is shown (use it only for animation the panel cannot express). Nothing is drawn while the window is hidden,
   minimised or covered.
 - The panel is read once per frame and only its latest state counts: `panel.onLed`, `onDisplay`, `onKnob` and
