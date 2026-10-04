@@ -101,6 +101,8 @@ jobs:
       - name: Editor open/close test (50 cycles, OpenGL, no ROMs)
         run: |
           build/plugin/editor_cycle_test plugin/skin/tests/skins/test builtin   # windows only, for comparison
+          build/plugin/editor_cycle_test x bare                                  # diagnostics: JUCE OpenGL alone
+          build/plugin/editor_cycle_test x barepaint
           build/plugin/editor_cycle_test plugin/skin/tests/skins/test
       - name: Ad-hoc sign
         run: |
