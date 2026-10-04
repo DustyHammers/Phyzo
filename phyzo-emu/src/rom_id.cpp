@@ -56,7 +56,7 @@ ScanResult scanFolder(const std::string& folder, const Expected& expected) {
         if (maybeUpdate && osupdate::looksLikeUpdate(bytes, form)) {
             std::vector<uint8_t> image;
             std::string why;
-            if (!osupdate::decodeFor(bytes, expected.osMd5, image, form, why)) { r.rejected.push_back({name, "", why}); continue; }
+            if (!osupdate::decode(bytes, image, form, why)) { r.rejected.push_back({name, "", why}); continue; }
             const std::string md5 = md5Hex(image.data(), image.size());
             if (md5 == expected.osMd5) { if (!r.hasOs()) { r.osPath = p.u8string(); r.osForm = form; } }
             else r.rejected.push_back({name, md5, ""});

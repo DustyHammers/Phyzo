@@ -1,5 +1,4 @@
 #include "os_image.h"
-#include "rom_id.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -164,7 +163,7 @@ bool sysexMessages(const std::vector<uint8_t>& file, OsForm form, std::vector<st
 namespace {
 struct Block { uint32_t addr; std::vector<uint8_t> data; };
 
-// One data block: F0, 5 header bytes, address (5), length (5), payload in 7-bit groups, trailer (5), F7.
+// One data block: F0, 0F 11 01 00 17, address (5), length (5), payload in 7-bit groups, trailer (5), F7.
 bool decodeBlock(const std::vector<uint8_t>& m, int number, Block& bl, std::string& err) {
     const std::string which = "data block " + std::to_string(number);
     if (m.size() < 1 + 5 + 10 + 5 + 1) { err = which + " is too short"; return false; }
@@ -200,52 +199,30 @@ bool assemble(std::vector<Block> blocks, std::vector<uint8_t>& image, std::strin
 }
 }  // namespace
 
-bool decode(const std::vector<uint8_t>& file, std::vector<std::vector<uint8_t>>& images, OsForm& form, std::string& err) {
-    images.clear();
+bool decode(const std::vector<uint8_t>& file, std::vector<uint8_t>& image, OsForm& form, std::string& err) {
+    image.clear();
     if (!looksLikeUpdate(file, form)) { err = "not a MIDI file or a SysEx file"; return false; }
     std::vector<std::vector<uint8_t>> msgs;
     if (!sysexMessages(file, form, msgs, err)) return false;
-    if (int(msgs.size()) != kMessages) {
-        err = "expected " + std::to_string(kMessages) + " SysEx messages, found " + std::to_string(msgs.size());
-        return false;
-    }
+    std::vector<Block> blocks;
     for (size_t k = 0; k < msgs.size(); ++k) {
-        if (msgs[k].size() < 3 || msgs[k][1] != kManufacturer) {
-            char id[8]; std::snprintf(id, sizeof id, "0x%02X", msgs[k].size() > 1 ? msgs[k][1] : 0);
+        const std::vector<uint8_t>& m = msgs[k];
+        if (m.size() < 3 || m[1] != kManufacturer) {
+            char id[8]; std::snprintf(id, sizeof id, "0x%02X", m.size() > 1 ? m[1] : 0);
             err = "SysEx message " + std::to_string(k + 1) + " is from another manufacturer (ID " + id + ")";
             return false;
         }
+        if (m.size() < 7 || m[5] != kDataBlock) continue;    // start, end and other messages
+        blocks.emplace_back();
+        if (!decodeBlock(m, int(blocks.size()), blocks.back(), err)) return false;
     }
-    // Messages 2-12 are data blocks in both readings; message 13 is one in the second.
-    std::vector<Block> blocks(size_t(kMessages - 2));
-    for (int k = 1; k < kMessages - 1; ++k)
-        if (!decodeBlock(msgs[size_t(k)], k, blocks[size_t(k - 1)], err)) return false;
-    std::vector<uint8_t> image;
-    if (!assemble(blocks, image, err)) return false;
-    images.push_back(std::move(image));
-    Block last;
-    std::string ignored;
-    if (decodeBlock(msgs[size_t(kMessages - 1)], kMessages - 1, last, ignored)) {
-        blocks.push_back(std::move(last));
-        if (assemble(std::move(blocks), image, ignored)) images.push_back(std::move(image));
-    }
-    return true;
-}
-
-bool decodeFor(const std::vector<uint8_t>& file, const std::string& md5, std::vector<uint8_t>& image, OsForm& form,
-               std::string& err) {
-    std::vector<std::vector<uint8_t>> images;
-    if (!decode(file, images, form, err)) return false;
-    size_t pick = 0;
-    for (size_t i = 0; i < images.size(); ++i)
-        if (md5Hex(images[i].data(), images[i].size()) == md5) { pick = i; break; }
-    image = std::move(images[pick]);
-    return true;
+    if (blocks.empty()) { err = "it contains no data blocks"; return false; }
+    return assemble(std::move(blocks), image, err);
 }
 
 }  // namespace osupdate
 
-bool OsImage::load(const std::string& p, std::string& err, const std::string& md5) {
+bool OsImage::load(const std::string& p, std::string& err) {
     std::ifstream f(p, std::ios::binary);
     if (!f) { err = "cannot open OS image: " + p; return false; }
     std::vector<uint8_t> file((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
@@ -255,10 +232,7 @@ bool OsImage::load(const std::string& p, std::string& err, const std::string& md
     if (osupdate::looksLikeUpdate(file, updateForm)) {           // decoded here, in memory; never written anywhere
         std::vector<uint8_t> image;
         std::string why;
-        if (!osupdate::decodeFor(file, md5.empty() ? std::string(romid::kOsImageMd5) : md5, image, updateForm, why)) {
-            err = "OS update file: " + why;
-            return false;
-        }
+        if (!osupdate::decode(file, image, updateForm, why)) { err = "OS update file: " + why; return false; }
         form = updateForm;
         return setImage(std::move(image), err);
     }

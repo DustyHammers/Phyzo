@@ -235,7 +235,7 @@ void Engine::startJob(std::vector<uint8_t> state) {
     stopJob();
     const uint64_t gen = ++generation_;
     state_ = State::Booting;
-    worker_ = std::thread(&Engine::runJob, this, osPath_, osMd5_, wavePath_, std::move(state), gen);
+    worker_ = std::thread(&Engine::runJob, this, osPath_, wavePath_, std::move(state), gen);
 }
 
 void Engine::fail(const std::string& reason) {
@@ -243,9 +243,9 @@ void Engine::fail(const std::string& reason) {
     state_ = State::Stopped;
 }
 
-void Engine::runJob(std::string osPath, std::string osMd5, std::string wavePath, std::vector<uint8_t> state, uint64_t generation) {
+void Engine::runJob(std::string osPath, std::string wavePath, std::vector<uint8_t> state, uint64_t generation) {
     OsImage os; std::string err;
-    if (!os.load(osPath, err, osMd5)) { fail("Cannot read the OS image: " + err); return; }
+    if (!os.load(osPath, err)) { fail("Cannot read the OS image: " + err); return; }
     auto make = [&](std::unique_ptr<Machine>& m) {
         m = std::make_unique<Machine>();
         Machine::Config cfg;

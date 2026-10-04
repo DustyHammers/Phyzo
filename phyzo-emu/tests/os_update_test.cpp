@@ -1,12 +1,11 @@
 // OS update file test (no ROM data). A random image stands in for the OS; an inverse encoder of our own builds an
-// update file from it (13 SysEx messages carrying the data in 7-bit groups), as a MIDI file and as raw SysEx, in both
-// layouts the decoder accepts: 11 data blocks between a first and a last message, or 12 after a first message.
-// Checks:
-//  1. Round trip: both forms and layouts decode to exactly the image, whatever order the blocks come in; OsImage
-//     loads them.
+// update file from it with the real file's layout: a start message (command 0x19), 12 data blocks (command 0x17:
+// 49,152 bytes at 0x4000, 65,536 each at 0x10000 ... 0xA0000, 62,684 at 0xB0000; the payload in 7-bit groups) and an
+// end message (0x18), as a MIDI file and as raw SysEx. Checks:
+//  1. Round trip: both forms decode to exactly the image, whatever order the blocks come in; OsImage loads them.
 //  2. The ROM scanner finds the OS in either form by the decoded image's MD5, says which form, and writes nothing.
-//  3. Rejected cleanly: a corrupted block, a wrong length, a missing message, SysEx from another manufacturer,
-//     a damaged MIDI file.
+//  3. Rejected cleanly: a corrupted block, a wrong length, a missing data block, no data blocks, SysEx from another
+//     manufacturer, a cut-short MIDI file, an unterminated message.
 #include <algorithm>
 #include <cstdio>
 #include <filesystem>
@@ -26,44 +25,56 @@ static int failures = 0;
 namespace {
 std::mt19937 rng(20261004);
 
+constexpr uint8_t kStart = 0x19, kEnd = 0x18;
+const Bytes kHeader = {osupdate::kManufacturer, 0x11, 0x01, 0x00};   // after F0, before the command byte
+
+struct Span { uint32_t addr; size_t len; };
+// The real file's blocks: 0x4000 (49,152), 0x10000 ... 0xA0000 (65,536 each), 0xB0000 (62,684): 767,196 bytes.
+std::vector<Span> realLayout() {
+    std::vector<Span> v = {{0x4000, 49152}};
+    for (uint32_t a = 0x10000; a <= 0xA0000; a += 0x10000) v.push_back({a, 65536});
+    v.push_back({0xB0000, 62684});
+    return v;
+}
+
 void put5(Bytes& m, uint32_t v) {                    // the manufacturer's 4-to-5 encoding
     for (int i = 0; i < 4; ++i) m.push_back(uint8_t((v >> (7 * i)) & 0x7F));
     m.push_back(uint8_t((v >> 28) & 0x0F));
 }
 
-// One data block: F0, 5 header bytes, address, length, payload (7 bytes -> 8 of 7 bits), 5 trailer bytes, F7.
-Bytes dataMessage(uint32_t addr, const uint8_t* data, size_t len, uint32_t statedLen) {
-    Bytes m = {0xF0, osupdate::kManufacturer, 0x32, 0x00, 0x7F, 0x01};
-    put5(m, addr);
-    put5(m, statedLen);
-    for (size_t g = 0; g < len; g += 7) {
-        uint64_t v = 0;
-        for (size_t j = 0; j < 7 && g + j < len; ++j) v |= uint64_t(data[g + j]) << (8 * j);
-        for (int j = 0; j < 8; ++j) m.push_back(uint8_t((v >> (7 * j)) & 0x7F));
-    }
-    for (int i = 0; i < 5; ++i) m.push_back(uint8_t(rng() & 0x7F));      // trailer (ignored by the decoder)
+Bytes message(uint8_t command, const Bytes& body) {
+    Bytes m = {0xF0};
+    m.insert(m.end(), kHeader.begin(), kHeader.end());
+    m.push_back(command);
+    m.insert(m.end(), body.begin(), body.end());
     m.push_back(0xF7);
     return m;
 }
 
-Bytes otherMessage(uint8_t kind) { return {0xF0, osupdate::kManufacturer, 0x32, 0x00, kind, 0x00, 0x00, 0xF7}; }
+// One data block: address, stated length, payload (7 bytes -> 8 of 7 bits), 5 trailer bytes.
+Bytes dataMessage(uint32_t addr, const uint8_t* data, size_t len, uint32_t statedLen) {
+    Bytes body;
+    put5(body, addr);
+    put5(body, statedLen);
+    for (size_t g = 0; g < len; g += 7) {
+        uint64_t v = 0;
+        for (size_t j = 0; j < 7 && g + j < len; ++j) v |= uint64_t(data[g + j]) << (8 * j);
+        for (int j = 0; j < 8; ++j) body.push_back(uint8_t((v >> (7 * j)) & 0x7F));
+    }
+    for (int i = 0; i < 5; ++i) body.push_back(uint8_t(rng() & 0x7F));      // trailer (ignored by the decoder)
+    return message(osupdate::kDataBlock, body);
+}
 
-// The 13 messages for `image`: a first message, `order.size()` data blocks (11 or 12) of uneven size in `order`
-// (indices into address order), and with 11 blocks a last message.
-std::vector<Bytes> messagesFor(const Bytes& image, const std::vector<int>& order) {
-    const int nb = int(order.size());
-    std::vector<size_t> cut = {0};
-    const size_t jitter = image.size() / size_t(2 * nb) + 1;
-    for (int k = 1; k < nb; ++k) cut.push_back(image.size() * size_t(k) / size_t(nb) + size_t(rng() % jitter));
-    cut.push_back(image.size());
-    std::sort(cut.begin(), cut.end());
-    std::vector<Bytes> blocks;
-    for (int k = 0; k < nb; ++k)
-        blocks.push_back(dataMessage(uint32_t(OsImage::kLoadAddress + cut[size_t(k)]), image.data() + cut[size_t(k)],
-                                     cut[size_t(k) + 1] - cut[size_t(k)], uint32_t(cut[size_t(k) + 1] - cut[size_t(k)])));
-    std::vector<Bytes> msgs = {otherMessage(0x10)};
-    for (int k : order) msgs.push_back(blocks[size_t(k)]);
-    if (nb == 11) msgs.push_back(otherMessage(0x11));
+// Start (16 bytes), the data blocks for `image` split as `spans` in `order` (indices into `spans`), end (7 bytes).
+std::vector<Bytes> messagesFor(const Bytes& image, const std::vector<Span>& spans, const std::vector<int>& order) {
+    std::vector<Bytes> msgs = {message(kStart, Bytes(9, 0x00))};
+    std::vector<size_t> offset(spans.size(), 0);
+    for (size_t k = 1; k < spans.size(); ++k) offset[k] = offset[k - 1] + spans[k - 1].len;
+    for (int k : order) {
+        const Span& s = spans[size_t(k)];
+        msgs.push_back(dataMessage(s.addr, image.data() + offset[size_t(k)], s.len, uint32_t(s.len)));
+    }
+    msgs.push_back(message(kEnd, {}));
     return msgs;
 }
 
@@ -109,59 +120,54 @@ void writeFile(const fs::path& p, const Bytes& b) {
 }
 
 std::string md5Of(const Bytes& b) { return md5Hex(b.data(), b.size()); }
-// Decodes and picks the reading whose MD5 is the image's (as the scanner does with the real checksum).
-bool decodes(const Bytes& file, const std::string& md5, Bytes& image, OsForm& form, std::string& err) {
-    return osupdate::decodeFor(file, md5, image, form, err);
-}
+bool decodes(const Bytes& file, Bytes& image, OsForm& form, std::string& err) { return osupdate::decode(file, image, form, err); }
 }  // namespace
 
 int main() {
-    // A random "OS" of the real size (767,196 bytes).
-    Bytes image(767196);
+    const std::vector<Span> layout = realLayout();
+    size_t total = 0;
+    for (const Span& s : layout) total += s.len;
+    CHECK(total == 767196 && layout.size() == 12);
+    Bytes image(total);
     for (uint8_t& b : image) b = uint8_t(rng());
     const std::string imageMd5 = md5Of(image);
-    auto orders = [](int nb) {
-        std::vector<int> in(size_t(nb), 0), sh;
-        for (int k = 0; k < nb; ++k) in[size_t(k)] = k;
-        sh = in;
-        std::shuffle(sh.begin(), sh.end(), rng);
-        return std::vector<std::vector<int>>{in, sh};
-    };
-    const std::vector<int> inOrder = orders(11)[0];
-    const std::vector<int> shuffled = orders(12)[1];
+    std::vector<int> inOrder(layout.size()), shuffled;
+    for (size_t k = 0; k < layout.size(); ++k) inOrder[k] = int(k);
+    shuffled = inOrder;
+    std::shuffle(shuffled.begin(), shuffled.end(), rng);
 
-    // 1. Round trip: both forms, both layouts, blocks in address order and shuffled.
-    for (int nb : {11, 12})
-        for (const std::vector<int>& order : orders(nb)) {
-            const std::vector<Bytes> msgs = messagesFor(image, order);
-            CHECK(msgs.size() == 13);
-            Bytes out; OsForm form; std::string err;
-            CHECK(decodes(rawSysex(msgs), imageMd5, out, form, err) && form == OsForm::UpdateSysex);
-            CHECK(out == image);
-            out.clear();
-            CHECK(decodes(midiFile(msgs), imageMd5, out, form, err) && form == OsForm::UpdateMidiFile);
-            CHECK(out == image);
-            if (!err.empty()) std::printf("os_update_test: unexpected error: %s\n", err.c_str());
-        }
-    // Other image sizes (the last 7-bit group partly filled).
+    // 1. Round trip: both forms, blocks in address order and shuffled.
+    for (const std::vector<int>* order : {&inOrder, &shuffled}) {
+        const std::vector<Bytes> msgs = messagesFor(image, layout, *order);
+        CHECK(msgs.size() == 14 && msgs.front().size() == 16 && msgs.back().size() == 7);
+        Bytes out; OsForm form; std::string err;
+        CHECK(decodes(rawSysex(msgs), out, form, err) && form == OsForm::UpdateSysex);
+        CHECK(out == image);
+        out.clear();
+        CHECK(decodes(midiFile(msgs), out, form, err) && form == OsForm::UpdateMidiFile);
+        CHECK(out == image);
+        if (!err.empty()) std::printf("os_update_test: unexpected error: %s\n", err.c_str());
+    }
+    // Other sizes and block counts (the last 7-bit group partly filled).
     for (size_t n : {16u, 1000u, 4099u, 123457u}) {
         Bytes small(n);
         for (uint8_t& b : small) b = uint8_t(rng());
+        std::vector<Span> spans = {{0x4000, n / 3}, {uint32_t(0x4000 + n / 3), n - n / 3}};
         Bytes out; OsForm form; std::string err;
-        CHECK(decodes(rawSysex(messagesFor(small, inOrder)), md5Of(small), out, form, err) && out == small);
+        CHECK(decodes(rawSysex(messagesFor(small, spans, {1, 0})), out, form, err) && out == small);
     }
-    std::printf("os_update_test: round trip of a %zu-byte image exact (MIDI file and SysEx, 11 or 12 blocks, any order)\n", image.size());
+    std::printf("os_update_test: round trip of a %zu-byte image exact (MIDI file and SysEx, blocks in any order)\n", image.size());
 
     const fs::path dir = fs::temp_directory_path() / "phyzo_os_update_test";
     fs::remove_all(dir);
     fs::create_directories(dir);
-    const std::vector<Bytes> msgs = messagesFor(image, shuffled);
+    const std::vector<Bytes> msgs = messagesFor(image, layout, inOrder);
 
     // OsImage loads the update file like the image (decoded in memory).
     writeFile(dir / "update.mid", midiFile(msgs));
     {
         OsImage os; std::string err;
-        CHECK(os.load((dir / "update.mid").u8string(), err, imageMd5));
+        CHECK(os.load((dir / "update.mid").u8string(), err));
         CHECK(os.bytes == image && os.md5 == imageMd5 && os.form == OsForm::UpdateMidiFile);
     }
 
@@ -171,8 +177,13 @@ int main() {
     writeFile(dir / "waves", wave);
     romid::Expected ex;
     ex.osMd5 = imageMd5;
-    ex.waveMd5 = md5Hex(wave.data(), wave.size());
-    auto listing = [&] { std::vector<std::string> v; for (auto& e : fs::directory_iterator(dir)) v.push_back(e.path().filename().u8string()); std::sort(v.begin(), v.end()); return v; };
+    ex.waveMd5 = md5Of(wave);
+    auto listing = [&] {
+        std::vector<std::string> v;
+        for (auto& e : fs::directory_iterator(dir)) v.push_back(e.path().filename().u8string());
+        std::sort(v.begin(), v.end());
+        return v;
+    };
     const auto before = listing();
     romid::ScanResult r = romid::scanFolder(dir.u8string(), ex);
     CHECK(r.complete() && r.osForm == OsForm::UpdateMidiFile);
@@ -192,21 +203,22 @@ int main() {
         bad.push_back({"corrupted block.syx", rawSysex(m), true});
     }
     {   // a wrong length: stated longer than the data -> refused
-        std::vector<Bytes> m = msgs;
-        Bytes& b = m[3]; Bytes len; put5(len, 0x7FFFFF);
-        std::copy(len.begin(), len.end(), b.begin() + 11);
+        std::vector<Bytes> m = msgs; Bytes len; put5(len, 0x7FFFFF);
+        std::copy(len.begin(), len.end(), m[3].begin() + 11);
         bad.push_back({"wrong length.syx", rawSysex(m), false});
     }
     {   // a wrong length: stated shorter -> decodes, MD5 differs
-        std::vector<Bytes> m = msgs;
-        Bytes& b = m[7]; uint32_t v = 0; for (int i = 0; i < 4; ++i) v |= uint32_t(b[size_t(11 + i)]) << (7 * i);
-        Bytes len; put5(len, v - 1);
-        std::copy(len.begin(), len.end(), b.begin() + 11);
+        std::vector<Bytes> m = msgs; Bytes len; put5(len, uint32_t(layout[6].len - 1));
+        std::copy(len.begin(), len.end(), m[7].begin() + 11);
         bad.push_back({"short length.syx", rawSysex(m), true});
     }
-    {   // a missing message
+    {   // a missing data block -> decodes, MD5 differs
         std::vector<Bytes> m = msgs; m.erase(m.begin() + 6);
-        bad.push_back({"missing message.mid", midiFile(m), false});
+        bad.push_back({"missing block.mid", midiFile(m), true});
+    }
+    {   // only the start and end messages -> refused
+        std::vector<Bytes> m = {msgs.front(), msgs.back()};
+        bad.push_back({"no data blocks.syx", rawSysex(m), false});
     }
     {   // SysEx from another manufacturer
         std::vector<Bytes> m = msgs; for (Bytes& x : m) x[1] = 0x41;
@@ -222,17 +234,16 @@ int main() {
     }
     for (const Bad& b : bad) {
         Bytes out; OsForm form; std::string err;
-        const bool ok = decodes(b.file, imageMd5, out, form, err);
+        const bool ok = decodes(b.file, out, form, err);
         CHECK(ok == b.decodes);
-        if (ok) CHECK(md5Hex(out.data(), out.size()) != imageMd5);
+        if (ok) CHECK(md5Of(out) != imageMd5);
         else CHECK(!err.empty());
         writeFile(dir / b.name, b.file);
         r = romid::scanFolder(dir.u8string(), ex);
         CHECK(!r.hasOs() && r.hasWave());
-        const std::string msg = r.problem();
-        CHECK(msg.find(b.name) != std::string::npos);
+        CHECK(r.problem().find(b.name) != std::string::npos);
         OsImage os; std::string loadErr;
-        if (!ok) CHECK(!os.load((dir / b.name).u8string(), loadErr, imageMd5) && !loadErr.empty());
+        if (!ok) CHECK(!os.load((dir / b.name).u8string(), loadErr) && !loadErr.empty());
         std::printf("os_update_test: %-20s rejected (%s)\n", b.name, ok ? "decoded OS has another MD5" : err.c_str());
         fs::remove(dir / b.name);
     }
