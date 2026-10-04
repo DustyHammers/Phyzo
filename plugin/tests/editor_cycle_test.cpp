@@ -72,6 +72,9 @@ int main(int argc, char** argv) {
     bool glFrames = false;
     const int cycles = getenv("CYCLES") ? std::max(2, atoi(getenv("CYCLES"))) : 50;
     for (int cycle = 1; cycle <= cycles; ++cycle) {
+        // macOS: a host's run loop drains the autorelease pool on every pass; this test's own loop must do the same,
+        // or every closed window (and its backing store) stays in the outermost pool. No effect elsewhere.
+        JUCE_AUTORELEASEPOOL
         std::unique_ptr<juce::AudioProcessorEditor> ed(proc->createEditorIfNeeded());
         ed->setOpaque(true);
         ed->addToDesktop(0);
