@@ -104,6 +104,7 @@ jobs:
           build/plugin/editor_cycle_test x bare                                  # diagnostics: JUCE OpenGL alone
           build/plugin/editor_cycle_test x barepaint
           build/plugin/editor_cycle_test x barepool
+          build/plugin/editor_cycle_test x rawgl
           build/plugin/editor_cycle_test plugin/skin/tests/skins/test
       - name: Ad-hoc sign
         run: |

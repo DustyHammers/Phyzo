@@ -78,7 +78,20 @@ int bareCycles(bool painting, bool withPool) {
     return 0;
 }
 
+#if JUCE_MAC
+void phyzoRawGLCycle();
+#endif
+
 int main(int argc, char** argv) {
+#if JUCE_MAC
+    if (argc > 2 && juce::String(argv[2]) == "rawgl") {         // plain NSOpenGLView, no JUCE OpenGL code
+        juce::ScopedJuceInitialiser_GUI gui;
+        double m5 = 0;
+        for (int i = 1; i <= 30; ++i) { phyzoRawGLCycle(); if (i == 5) m5 = memoryMB(); }
+        std::printf("editor_cycle_test: diagnostics: plain NSOpenGLView (no JUCE), 30 cycles: %+.1f MB after the 5th\n", memoryMB() - m5);
+        return 0;
+    }
+#endif
     if (argc > 2 && juce::String(argv[2]).startsWith("bare")) {
         juce::ScopedJuceInitialiser_GUI gui;
 #if JUCE_LINUX
