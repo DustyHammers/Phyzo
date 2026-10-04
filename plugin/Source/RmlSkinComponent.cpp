@@ -168,6 +168,7 @@ void RmlSkinComponent::newOpenGLContextCreated() {
 }
 
 void RmlSkinComponent::renderOpenGL() {
+    JUCE_AUTORELEASEPOOL                                  // macOS: JUCE's render thread drains no pool of its own
     if (!view_) return;
     std::vector<std::function<void()>> work;
     {

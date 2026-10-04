@@ -50,37 +50,41 @@ RmlSkinComponent* findSkin(juce::Component* c) {
 // Diagnostics: a bare JUCE OpenGL component (clears the screen), optionally with component painting (as the skin view).
 struct BareGL : juce::Component, juce::OpenGLRenderer {
     juce::OpenGLContext gl;
-    explicit BareGL(bool painting) {
+    bool pool;
+    BareGL(bool painting, bool withPool) : pool(withPool) {
         gl.setRenderer(this); gl.setComponentPaintingEnabled(painting); gl.setContinuousRepainting(true);
         gl.attachTo(*this); setSize(1795, 848);
     }
     ~BareGL() override { gl.detach(); }
     void paint(juce::Graphics& g) override { g.setColour(juce::Colours::white); g.drawText("x", 10, 10, 20, 20, juce::Justification::left); }
     void newOpenGLContextCreated() override {}
-    void renderOpenGL() override { juce::OpenGLHelpers::clear(juce::Colours::darkred); }
+    void renderOpenGL() override {
+        if (pool) { JUCE_AUTORELEASEPOOL juce::OpenGLHelpers::clear(juce::Colours::darkred); }
+        else juce::OpenGLHelpers::clear(juce::Colours::darkred);
+    }
     void openGLContextClosing() override {}
 };
-int bareCycles(bool painting) {
+int bareCycles(bool painting, bool withPool) {
     double m5 = 0;
     for (int i = 1; i <= 30; ++i) {
         JUCE_AUTORELEASEPOOL
-        auto c = std::make_unique<BareGL>(painting);
+        auto c = std::make_unique<BareGL>(painting, withPool);
         c->addToDesktop(0); c->setVisible(true); pump(300); c->setVisible(false); pump(100); c.reset(); pump(100);
         if (i == 5) m5 = memoryMB();
     }
-    std::printf("editor_cycle_test: diagnostics: bare JUCE OpenGL component%s, 30 cycles: %+.1f MB after the 5th\n",
-                painting ? " with component painting" : "", memoryMB() - m5);
+    std::printf("editor_cycle_test: diagnostics: bare JUCE OpenGL component%s%s, 30 cycles: %+.1f MB after the 5th\n",
+                painting ? " with component painting" : "", withPool ? " with a pool per frame" : "", memoryMB() - m5);
     std::fflush(stdout);
     return 0;
 }
 
 int main(int argc, char** argv) {
-    if (argc > 2 && (juce::String(argv[2]) == "bare" || juce::String(argv[2]) == "barepaint")) {
+    if (argc > 2 && juce::String(argv[2]).startsWith("bare")) {
         juce::ScopedJuceInitialiser_GUI gui;
 #if JUCE_LINUX
         XSetErrorHandler([](Display*, XErrorEvent*) { return 0; });
 #endif
-        return bareCycles(juce::String(argv[2]) == "barepaint");
+        return bareCycles(juce::String(argv[2]) == "barepaint", juce::String(argv[2]) == "barepool");
     }
     if (argc < 2) { std::printf("usage: editor_cycle_test <test skin folder>\n"); return 2; }
     juce::ScopedJuceInitialiser_GUI gui;
