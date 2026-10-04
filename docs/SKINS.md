@@ -114,6 +114,16 @@ Each skin window has its own global variables; two Phyzo instances never see eac
 
 - `<body onload="...">` runs once the document is loaded; `<body onframe="...">` runs every displayed frame, at most
   60 times a second; any element with `onshow="..."` gets a `show` event when the skin is shown.
+- Frames are drawn only when something changed: an LED, the display, a knob, input, a flashing or beat LED's next
+  step, or an RmlUi animation or transition. A skin with a non-empty `onframe` is drawn up to 60 times a second for as long as it
+  is shown (use it only for animation the panel cannot express). Nothing is drawn while the window is hidden,
+  minimised or covered.
+- The panel is read once per frame and only its latest state counts: `panel.onLed`, `onDisplay`, `onKnob` and
+  `onButton` are called only when the value changed, never once per panel message.
+- The skin log notes the UI rates for each second in which the panel was active (panel messages, panel changes,
+  frames drawn, Lua callbacks) and what asked for the frames: input, a panel change, a flashing or beat LED, `onframe`,
+  an RmlUi animation or transition (an `animation` with `infinite` in the skin's RCSS redraws for as long as the skin
+  is shown), or JUCE/the system on its own.
 - Inline event code receives `event`, `element` and `document`. Pass `document` on if a function in a script file
   needs it: `<body onload="onLoad(document)">`.
 - RmlUi's Lua API is available (`document:GetElementById`, `element:SetClass`, `element.inner_rml`, …), and
@@ -141,8 +151,9 @@ end
 - **F5** (with the plugin window focused) or **Reload skin** in the right-click menu reloads the skin from disk;
   knob positions are kept.
 - **Developer > RmlUi debugger** shows RmlUi's element inspector and event log.
-- The skin log is `~/Documents/Phyzo/skin-log.txt`: warnings (missing files, CSS problems), Lua errors with their
-  traceback, and `Log.Message` output.
+- **Developer > Write skin log** (off by default; a global setting for all instances) writes the skin log,
+  `~/Documents/Phyzo/skin-log.txt`: warnings (missing files, CSS problems), Lua errors with their traceback,
+  `Log.Message` output and the UI rates. Turn it on while writing a skin; with it off no file is created.
 - If a skin is missing or cannot be loaded, the plugin shows "rack" instead (then Built-in) and says why.
 
 ## Testing without a skin

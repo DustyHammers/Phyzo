@@ -2,6 +2,7 @@
 // the chosen skin and the zoom. Stored in ~/Library/Application Support/Phyzo/Phyzo.settings.
 #pragma once
 #include <juce_data_structures/juce_data_structures.h>
+#include <atomic>
 
 namespace SkinSettings {
 
@@ -46,5 +47,15 @@ inline bool virtualMidiPort() { const juce::String s = get("midiVirtualPort"); r
 inline void setVirtualMidiPort(bool on) { set("midiVirtualPort", on ? 1 : 0); }
 inline bool midiToHost() { return get("midiToHost").getIntValue() != 0; }
 inline void setMidiToHost(bool on) { set("midiToHost", on ? 1 : 0); }
+
+// Developer > Write skin log (default off): ~/Documents/Phyzo/skin-log.txt is written only while this is on. Kept in
+// memory after the first read (the log is written from the GL thread), shared by all instances in the process.
+inline std::atomic<int> skinLogCache{-1};
+inline bool skinLog() {
+    int v = skinLogCache.load();
+    if (v < 0) { v = get("skinLog").getIntValue() != 0 ? 1 : 0; skinLogCache = v; }
+    return v != 0;
+}
+inline void setSkinLog(bool on) { skinLogCache = on ? 1 : 0; set("skinLog", on ? 1 : 0); }
 
 }  // namespace SkinSettings

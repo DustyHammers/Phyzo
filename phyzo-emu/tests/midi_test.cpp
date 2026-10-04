@@ -14,6 +14,8 @@
 #include <thread>
 #include <vector>
 #include "engine.h"
+#include "machine.h"
+#include "os_image.h"
 #include "midi_stream.h"
 
 namespace fs = std::filesystem;
@@ -249,6 +251,45 @@ void testEngine() {
     CHECK(e.virtualMidiOut().peekSize() == 0);
     fs::remove_all(dir);
 }
+// 5. Pacing (B-08): the emulated MIDI port (serial channel B) passes received bytes to the OS no faster than the
+// cable (31,250 baud: one byte per 320 us) and never drops one, however much arrives at once. A 68k program of our
+// own stores every byte it reads; a 20,000-byte SysEx, 2,000 CC messages and 3,000 clock bytes are queued together.
+const uint16_t kStore[] = {0x13FC, 0x0005, 0x00F0, 0x071A,   // move.b #$05,$F0071A
+                           0x41F9, 0x0BE0, 0x0200,           // lea $0BE00200,a0
+                           0x0839, 0x0000, 0x00F0, 0x0719,   // btst #0,$F00719
+                           0x67F6,                           // beq.b btst
+                           0x10F9, 0x00F0, 0x071B,           // move.b $F0071B,(a0)+
+                           0x60EE};                          // bra.b btst
+void testPacing() {
+    OsImage os; os.bytes.assign(0x1000, 0);
+    for (size_t i = 0; i < sizeof kStore / 2; ++i) { os.bytes[0x80 + 2 * i] = uint8_t(kStore[i] >> 8); os.bytes[0x81 + 2 * i] = uint8_t(kStore[i]); }
+    Machine m; Machine::Config cfg; std::string err;
+    CHECK(m.init(os, cfg, err));
+    m.runUntil(m.cyclesFromMs(5));
+    std::vector<uint8_t> in = {0xF0, 0x7D};
+    for (int i = 0; i < 20000; ++i) in.push_back(uint8_t(i % 127));
+    in.push_back(0xF7);
+    Rng r{3};
+    for (int i = 0; i < 2000; ++i) { in.push_back(0xB0); in.push_back(uint8_t(r.below(120))); in.push_back(uint8_t(r.below(128))); }
+    for (int i = 0; i < 3000; ++i) in.push_back(0xF8);
+    const uint64_t t0 = m.cycles();
+    m.serial.queueRx(1, in, t0);
+    const double perByte = 320e-6 * m.config().cpuHz;
+    bool tooFast = false;
+    for (int step = 1; step <= 1000 && m.serial.ch_[1].rxBytes < in.size(); ++step) {
+        m.runUntil(t0 + m.cyclesFromMs(10.0 * step));
+        const double maxBytes = double(m.cycles() - t0) / perByte + 1;   // the first byte at once, then one per 320 us
+        if (double(m.serial.ch_[1].rxBytes) > maxBytes + 3) tooFast = true;
+    }
+    const double seconds = double(m.cycles() - t0) / m.config().cpuHz;
+    std::vector<uint8_t> got(in.size());
+    for (size_t i = 0; i < in.size(); ++i) got[i] = uint8_t(m.peek(0x0BE00200 + uint32_t(i), 1));
+    std::printf("midi_test: pacing: %zu bytes queued at once reached the OS in %.2f s (%.0f bytes/s), none lost: %s\n",
+                in.size(), seconds, double(in.size()) / seconds, got == in ? "yes" : "NO");
+    CHECK(!tooFast);
+    CHECK(got == in);
+    CHECK(double(in.size()) / seconds <= 3126.0);
+}
 }  // namespace
 
 int main() {
@@ -256,6 +297,7 @@ int main() {
     testMerge();
     testRing();
     testEngine();
+    testPacing();
     std::printf("midi_test: %s\n", failures ? "FAILED" : "passed");
     return failures ? 1 : 0;
 }

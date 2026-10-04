@@ -6,6 +6,7 @@
 // take turns. Call all methods of one view from one thread (the plugin uses its OpenGL thread).
 #pragma once
 #include <array>
+#include <atomic>
 #include <map>
 #include <memory>
 #include <set>
@@ -52,6 +53,19 @@ public:
     // event, and lays out the document. now = seconds on a steady clock.
     void update(double now);
     void render();
+    // When this view next needs a frame although the synth did not change (a flashing or beat-flash LED changes, an
+    // RmlUi animation or transition runs, the skin has an onframe handler): seconds on update()'s clock, infinity
+    // when the panel is still. Valid after update(). A host draws a frame only then, or when the synth or input
+    // changed something, never continuously for an unchanged panel.
+    double nextWake() const { return nextWake_; }
+    // What set nextWake() (for the UI rate log): a flashing LED, a beat LED going out, the onframe handler, or an
+    // RmlUi animation or transition.
+    enum class Wake { None, Flash, Beat, Frame, Animation };
+    Wake nextWakeSource() const { return wakeSource_; }
+    // Counts for the UI rate log: frames updated, frames in which something on the panel changed, Lua callbacks.
+    struct Stats { uint64_t frames = 0, changedFrames = 0, luaCalls = 0; };
+    Stats stats() const;
+    void countLuaCall() { ++luaCalls_; }
 
     // Input in physical pixels (same space as setViewport). button: 0 left, 1 right, 2 middle.
     void mouseMove(int x, int y, int mods);
@@ -116,7 +130,8 @@ private:
     void unload();
     void pollLeds();
     void pollDisplay();
-    void applyLedClasses();
+    bool applyLedClasses();
+    void computeNextWake();
     void dispatchShow(Rml::Element* e);
 
     bool systemOk_ = false;
@@ -150,6 +165,15 @@ private:
     std::array<uint8_t, 4> segs_{};
     bool segsKnown_ = false;
     std::vector<std::string> log_;
+
+    // change tracking: Lua callbacks only for real changes; frames only when needed
+    std::array<int, 26> knobSent_{};          // last value sent per cc (-1: none yet)
+    std::set<int> down_;                      // buttons currently down (press/release edges only)
+    bool changed_ = false;                    // something on the panel changed in this update
+    bool hasFrameHandler_ = false;            // the document has onframe
+    double nextWake_ = 0;
+    Wake wakeSource_ = Wake::None;
+    std::atomic<uint64_t> frames_{0}, changedFrames_{0}, luaCalls_{0};
 };
 
 }  // namespace skin

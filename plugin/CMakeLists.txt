@@ -2,7 +2,7 @@
 cmake_minimum_required(VERSION 3.22)
 
 set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
-project(Phyzo VERSION 0.5.1 LANGUAGES C CXX)
+project(Phyzo VERSION 0.5.2 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -69,12 +69,17 @@ target_compile_definitions(Phyzo PUBLIC
   JUCE_USE_CURL=0)
 
 if(APPLE)
+  target_sources(Phyzo PRIVATE Source/MacWindow.mm)
   target_link_libraries(Phyzo PRIVATE "-framework CoreMIDI")
 
   # Loopback test of the virtual MIDI port (CoreMIDI, no ROMs): run in CI after the plugin build.
   add_executable(midi_port_test tests/midi_port_test.cpp Source/VirtualMidiPort.cpp)
   target_include_directories(midi_port_test PRIVATE Source)
   target_link_libraries(midi_port_test PRIVATE phyzo_core "-framework CoreMIDI" "-framework CoreFoundation")
+  # Shutdown stress: engines with their port created and destroyed while MIDI flows in.
+  add_executable(midi_port_stress_test tests/midi_port_stress_test.cpp Source/VirtualMidiPort.cpp)
+  target_include_directories(midi_port_stress_test PRIVATE Source)
+  target_link_libraries(midi_port_stress_test PRIVATE phyzo_core "-framework CoreMIDI" "-framework CoreFoundation")
 endif()
 
 target_link_libraries(Phyzo
@@ -88,3 +93,21 @@ target_link_libraries(Phyzo
     juce::juce_recommended_config_flags
     juce::juce_recommended_lto_flags
     juce::juce_recommended_warning_flags)
+
+# Editor open/close test (F-27): the processor and editor sources with JUCE, without a plugin wrapper; opens and
+# closes the editor on the test skin 50 times (needs a display; run in CI on macOS).
+add_executable(editor_cycle_test tests/editor_cycle_test.cpp
+  Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/RmlSkinComponent.cpp Source/VirtualMidiPort.cpp)
+target_include_directories(editor_cycle_test PRIVATE Source)
+target_compile_definitions(editor_cycle_test PRIVATE
+  JucePlugin_Name="Phyzo" JucePlugin_VersionString="0.0-test" JUCE_MODAL_LOOPS_PERMITTED=1
+  JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_STANDALONE_APPLICATION=0)
+target_link_libraries(editor_cycle_test PRIVATE phyzo_core phyzo_skin_gl
+  juce::juce_audio_processors juce::juce_audio_utils juce::juce_opengl juce::juce_recommended_config_flags)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_link_libraries(editor_cycle_test PRIVATE X11)
+endif()
+if(APPLE)
+  target_sources(editor_cycle_test PRIVATE Source/MacWindow.mm tests/raw_gl_mac.mm)
+  target_link_libraries(editor_cycle_test PRIVATE "-framework CoreMIDI" "-framework OpenGL")
+endif()

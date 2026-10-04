@@ -55,6 +55,11 @@ public:
     LedInfo led(int code) const;
     // The display's segment bytes, leftmost digit (panel message 96) first.
     std::array<uint8_t, 4> segments() const;
+    // UI change counter: bumped only when an LED's state, a beat flash, the display or the Input Clip LED actually
+    // changed (any number of panel messages between two reads count as one change). A window redraws only when it
+    // moves. panelMessages() counts the OS's LED and display messages as they come (for the UI rate log).
+    uint32_t uiSerial() const { return uiSerial_.load(std::memory_order_relaxed); }
+    uint64_t panelMessages() const { return panelMessages_.load(std::memory_order_relaxed); }
 
     // Call regularly on the message thread: restarts the machine after the OS asked for a reboot.
     void service();
@@ -195,6 +200,8 @@ private:
     std::array<std::atomic<uint32_t>, 256> beats_{};
     std::array<std::atomic<float>, 256> beatIntervalMs_{};
     std::atomic<uint32_t> dots_{0};
+    std::atomic<uint32_t> uiSerial_{0};
+    std::atomic<uint64_t> panelMessages_{0};
     mutable std::mutex msgMtx_;
     std::string message_;
 

@@ -27,7 +27,7 @@ MIDIClientRef client(std::string& error) {
 void readProc(const MIDIPacketList* list, void* refCon, void*) {
     const MIDIPacket* p = &list->packet[0];
     for (UInt32 i = 0; i < list->numPackets; ++i) {
-        VirtualMidiPort::receive(refCon, p->data, p->length);
+        VirtualMidiPort::receive(static_cast<VirtualMidiPort::Gate*>(refCon), p->data, p->length);
         p = MIDIPacketNext(p);
     }
 }
@@ -43,9 +43,10 @@ VirtualMidiPort::VirtualMidiPort(MessageRing& out, Receiver onBytes, void* user)
 
 VirtualMidiPort::~VirtualMidiPort() { close(); }
 
-void VirtualMidiPort::receive(void* self, const uint8_t* bytes, size_t n) {
-    auto* p = static_cast<VirtualMidiPort*>(self);
-    p->onBytes_(p->user_, bytes, n);
+void VirtualMidiPort::receive(Gate* gate, const uint8_t* bytes, size_t n) {
+    gate->active.fetch_add(1);                        // (seq_cst, paired with close(): see Gate)
+    if (VirtualMidiPort* p = gate->port.load()) p->onBytes_(p->user_, bytes, n);
+    gate->active.fetch_sub(1);
 }
 
 bool VirtualMidiPort::open(const std::string& baseName) {
@@ -62,10 +63,14 @@ bool VirtualMidiPort::open(const std::string& baseName) {
     name_ = index_ == 1 ? baseName : baseName + " " + std::to_string(index_);
     CFStringRef cf = cfString(name_);
     MIDIEndpointRef d = 0, s = 0;
-    OSStatus st = MIDIDestinationCreate(c, cf, readProc, this, &d);
+    gate_ = new Gate;                                 // never freed: see Gate
+    gate_->port = this;
+    OSStatus st = MIDIDestinationCreate(c, cf, readProc, gate_, &d);
     if (st == noErr) st = MIDISourceCreate(c, cf, &s);
     CFRelease(cf);
     if (st != noErr) {
+        gate_->port = nullptr;
+        gate_ = nullptr;
         if (d) MIDIEndpointDispose(d);
         error_ = "CoreMIDI could not create the port (error " + std::to_string(int(st)) + ")";
         std::lock_guard<std::mutex> lk(g_indexMtx);
@@ -93,10 +98,16 @@ bool VirtualMidiPort::open(const std::string& baseName) {
 
 void VirtualMidiPort::close() {
     if (!open_) return;
+    // Nothing more to the receiver: close the gate, remove the endpoints, then wait for a callback still inside.
+    if (gate_) gate_->port.store(nullptr);
+#if defined(__APPLE__)
+    MIDIEndpointDispose(MIDIEndpointRef(dest_));
+#endif
+    if (gate_) while (gate_->active.load() != 0) std::this_thread::yield();
+    gate_ = nullptr;
     run_ = false;
     if (sender_.joinable()) sender_.join();
 #if defined(__APPLE__)
-    MIDIEndpointDispose(MIDIEndpointRef(dest_));
     MIDIEndpointDispose(MIDIEndpointRef(src_));
 #endif
     dest_ = src_ = 0;

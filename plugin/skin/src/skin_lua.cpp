@@ -81,6 +81,7 @@ void callLua(const std::vector<int>& fns, const std::vector<lua_Integer>& args) 
     if (!L) return;
     const std::vector<int> copy = fns;               // a callback may register more callbacks
     for (int ref : copy) {
+        if (SkinView* v = SkinView::current()) v->countLuaCall();
         const int base = lua_gettop(L);
         lua_pushcfunction(L, traceback);
         lua_rawgeti(L, LUA_REGISTRYINDEX, ref);
@@ -96,6 +97,7 @@ void callLuaBool(const std::vector<int>& fns, bool arg) {
     if (!L) return;
     const std::vector<int> copy = fns;
     for (int ref : copy) {
+        if (SkinView* v = SkinView::current()) v->countLuaCall();
         const int base = lua_gettop(L);
         lua_pushcfunction(L, traceback);
         lua_rawgeti(L, LUA_REGISTRYINDEX, ref);

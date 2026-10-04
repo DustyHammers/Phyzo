@@ -153,9 +153,11 @@ void Engine::attachLeds(Machine& m) {
             prev = now;
             ledMode_[code] = LedBeat;
             beats_[code] = beats_[code].load() + 1;
+            ++uiSerial_;
         } else if (st >= 0x90 && st <= 0x92) {
-            ledMode_[code] = uint8_t(st - 0x90);
+            if (ledMode_[code].load() != uint8_t(st - 0x90)) { ledMode_[code] = uint8_t(st - 0x90); ++uiSerial_; }
         }
+        ++panelMessages_;
     };
 }
 
@@ -168,6 +170,7 @@ void Engine::publishLeds(const Machine& m) {
         if (s == 2 && cur == LedBeat) continue;
         ledMode_[size_t(c)] = uint8_t(s >= 0 && s <= 2 ? s : 0);
     }
+    ++uiSerial_;
 }
 
 void Engine::setControl(int cc, int raw) {
@@ -315,9 +318,10 @@ void Engine::publishDisplay(Machine& m) {
     uint32_t c = 0;
     for (int i = 0; i < 4; ++i) c = (c << 8) | uint8_t(i < int(t.size()) ? t[size_t(i)] : ' ');
     chars_ = c;
-    dots_ = m.panel.dots();
+    const uint32_t dots = m.panel.dots();
     const auto& r = m.panel.rawDigits();
-    segs_ = uint32_t(r[0]) << 24 | uint32_t(r[1]) << 16 | uint32_t(r[2]) << 8 | r[3];
+    const uint32_t segs = uint32_t(r[0]) << 24 | uint32_t(r[1]) << 16 | uint32_t(r[2]) << 8 | r[3];
+    if (segs != segs_.load() || dots != dots_.load()) { segs_ = segs; dots_ = dots; ++uiSerial_; ++panelMessages_; }
 }
 
 // ------------------------------------------------------------------ audio thread
@@ -458,7 +462,8 @@ void Engine::process(float* left, float* right, int n, const MidiEvent* events, 
     }
     resampler_.push(inL_.data(), inR_.data(), int(got));
     midiOut(m, n);
-    inputClip_.store(inputActive_ && fifo_->clipLit(), std::memory_order_relaxed);
+    const bool clip = inputActive_ && fifo_->clipLit();
+    if (clip != inputClip_.load(std::memory_order_relaxed)) { inputClip_.store(clip, std::memory_order_relaxed); ++uiSerial_; }
     m.wet.clear(); m.audio.clear(); m.midiOut.clear();
     resampler_.produce(left, right, n);
     if (prof) {

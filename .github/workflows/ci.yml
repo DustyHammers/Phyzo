@@ -96,6 +96,13 @@ jobs:
           ccache --show-stats
       - name: Virtual MIDI port loopback test (CoreMIDI, no ROMs)
         run: build/plugin/midi_port_test
+      - name: Virtual MIDI port shutdown stress test (CoreMIDI, no ROMs)
+        run: build/plugin/midi_port_stress_test
+      - name: Editor open/close test (50 cycles, OpenGL, no ROMs)
+        run: |
+          build/plugin/editor_cycle_test plugin/skin/tests/skins/test builtin   # windows only, for comparison
+          build/plugin/editor_cycle_test x bare                                  # diagnostics: JUCE OpenGL alone
+          build/plugin/editor_cycle_test plugin/skin/tests/skins/test
       - name: Ad-hoc sign
         run: |
           cd build/plugin/Phyzo_artefacts/Release

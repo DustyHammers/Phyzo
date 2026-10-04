@@ -6,6 +6,7 @@
 #include <cstring>
 #include <exception>
 #include <filesystem>
+#include <limits>
 #include "skin_elements.h"
 #include "skin_lua.h"
 #include "skin_system.h"
@@ -115,6 +116,8 @@ bool SkinView::load(const std::string& folder, const std::string& name, std::str
         }
         resetEnvironment(*this);
         installLuaApi(*this);
+        knobSent_.fill(-1);
+        down_.clear();
         for (int c = 0; c < 256; ++c) leds[size_t(c)] = port_.led(c);
         beatSeen_.fill(-1e9);
         segsKnown_ = false;
@@ -145,6 +148,7 @@ bool SkinView::load(const std::string& folder, const std::string& name, std::str
         }
         document_->Show();
         dispatchShow(document_);
+        nextWake_ = 0;                                   // draw the new document at once
         ok = true;
     });
     if (!ok && error.empty()) error = name + ".rml could not be read";
@@ -188,18 +192,61 @@ void SkinView::update(double now) {
     guarded(this, [&] {
         ViewScope s(this);
         now_ = now;
+        ++frames_;
+        changed_ = false;
+        const uint64_t lua0 = luaCalls_.load();
         if (!context_) return;
         if (document_) {
+            // The synth's panel state as it is now (the engine keeps only the latest state: any number of panel
+            // messages since the last frame arrive here as one change).
             pollLeds();
             pollDisplay();
-            applyLedClasses();
-            if (now_ - lastFrameEvent_ >= 1.0 / kFrameEventHz - 0.001) {
+            if (applyLedClasses()) changed_ = true;
+            // Frame events only for a handler with code in it: an absent, empty or blank onframe asks for no frames.
+            const std::string onframe = document_->GetAttribute<Rml::String>("onframe", "");
+            hasFrameHandler_ = onframe.find_first_not_of(" \t\r\n") != std::string::npos;
+            if (hasFrameHandler_ && now_ - lastFrameEvent_ >= 1.0 / kFrameEventHz - 0.001) {
                 lastFrameEvent_ = now_;
                 if (document_) document_->DispatchEvent("frame", Rml::Dictionary());
             }
         }
         context_->Update();
+        if (luaCalls_.load() != lua0) changed_ = true;
+        if (changed_) ++changedFrames_;
+        computeNextWake();
     });
+}
+
+SkinView::Stats SkinView::stats() const { return {frames_.load(), changedFrames_.load(), luaCalls_.load()}; }
+
+void SkinView::computeNextWake() {
+    double wake = std::numeric_limits<double>::infinity();
+    Wake source = Wake::None;
+    auto earlier = [&](double t, Wake w) { if (t < wake) { wake = t; source = w; } };
+    if (document_) {
+        auto ledWake = [&](int code) {
+            if (code < 0 || code > 255) return;
+            const LedReport& r = leds[size_t(code)];
+            if (r.mode == LedMode::Flash) {
+                const double half = 0.5 / kFlashHz;
+                earlier((std::floor(now_ / half) + 1) * half, Wake::Flash);
+            } else if (r.mode == LedMode::Beat) {
+                double litMs = kBeatLitMs;
+                if (r.beatIntervalMs > 0) litMs = std::min(litMs, double(r.beatIntervalMs) / 2);
+                const double off = beatSeen_[size_t(code)] + litMs / 1000.0;
+                if (off > now_) earlier(off, Wake::Beat);
+            }
+        };
+        for (LedElement* e : leds_) if (!e->audioClip()) ledWake(e->code());
+        for (PButtonElement* b : buttons_) ledWake(b->ledCode());
+        if (hasFrameHandler_) earlier(lastFrameEvent_ + 1.0 / kFrameEventHz, Wake::Frame);
+    }
+    if (context_) {
+        const double d = context_->GetNextUpdateDelay();         // animations, transitions (0: next frame)
+        if (d >= 0 && d < 1e9) earlier(now_ + d, Wake::Animation);
+    }
+    nextWake_ = wake;
+    wakeSource_ = source;
 }
 
 void SkinView::render() {
@@ -249,11 +296,15 @@ bool SkinView::ledLit(int code) const {
 
 int SkinView::ledState(int code) { return code >= 0 && code < 256 ? ledStateOf(leds[size_t(code)].mode) : 0; }
 
-void SkinView::applyLedClasses() {
+// Sets class `lit` where it changed; true if any did.
+bool SkinView::applyLedClasses() {
     const bool clip = port_.audioClip();
-    for (LedElement* e : leds_) e->SetClass("lit", e->audioClip() ? clip : ledLit(e->code()));
+    bool any = false;
+    auto set = [&](Rml::Element* e, bool lit) { if (e->IsClassSet("lit") != lit) { e->SetClass("lit", lit); any = true; } };
+    for (LedElement* e : leds_) set(e, e->audioClip() ? clip : ledLit(e->code()));
     for (PButtonElement* b : buttons_)
-        if (b->ledCode() >= 0) b->SetClass("lit", ledLit(b->ledCode()));
+        if (b->ledCode() >= 0) set(b, ledLit(b->ledCode()));
+    return any;
 }
 
 void SkinView::pollDisplay() {
@@ -261,6 +312,7 @@ void SkinView::pollDisplay() {
     if (segsKnown_ && s == segs_) return;
     segs_ = s;
     segsKnown_ = true;
+    changed_ = true;
     for (VfDigitElement* d : digits_) d->setByte(segs_[size_t(d->pos())]);
     callLua(onDisplayFns, {segs_[0], segs_[1], segs_[2], segs_[3]});
 }
@@ -268,6 +320,10 @@ void SkinView::pollDisplay() {
 // ------------------------------------------------------------------ synth actions
 
 void SkinView::knobSent(int cc, int raw) {
+    if (cc >= 0 && cc < 26) {                     // a value already sent for this cc: nothing to send or report
+        if (knobSent_[size_t(cc)] == raw) return;
+        knobSent_[size_t(cc)] = raw;
+    }
     port_.sendControl(cc, raw);
     auto it = onKnobFns.find(cc);
     if (it != onKnobFns.end()) callLua(it->second, {raw});
@@ -281,6 +337,8 @@ void SkinView::setKnob(int cc, int raw) {
 }
 
 void SkinView::button(int raw, bool down) {
+    if ((down_.count(raw) != 0) == down) return;  // only press and release edges
+    if (down) down_.insert(raw); else down_.erase(raw);
     port_.sendButton(raw, down);
     auto it = onButtonFns.find(raw);
     if (it != onButtonFns.end()) callLuaBool(it->second, down);
