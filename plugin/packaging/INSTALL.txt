@@ -27,7 +27,8 @@ The full step-by-step guide is docs/INSTALL_MAC.md in the repository.
 The plugin is ad-hoc signed (not notarised by Apple). That is why step 3 is needed.
 
 6. Files Phyzo uses (in your Documents folder):
-     ~/Documents/Phyzo/roms/            the two ROM files (any file names; found by checksum)
+     ~/Documents/Phyzo/roms/            the two ROM files (any file names; found by checksum); the OS may
+                                        also be the original OS update file v1.10 (.mid or .syx)
      ~/Documents/Phyzo/skins/<name>/    skins: a folder <name> containing <name>.rml (plus its files)
      ~/Documents/Phyzo/skin-log.txt     skin messages and script errors, only while
                                         Developer > Write skin log is on (off by default)

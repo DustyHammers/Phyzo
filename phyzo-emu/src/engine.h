@@ -129,7 +129,7 @@ public:
 
 private:
     void startJob(std::vector<uint8_t> state);
-    void runJob(std::string osPath, std::string wavePath, std::vector<uint8_t> state, uint64_t generation);
+    void runJob(std::string osPath, std::string osMd5, std::string wavePath, std::vector<uint8_t> state, uint64_t generation);
     void stopJob();
     void install(std::unique_ptr<Machine> m, uint64_t generation, uint8_t rawPlus, uint8_t rawMinus);
     void publishDisplay(Machine& m);
