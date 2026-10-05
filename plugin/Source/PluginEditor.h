@@ -65,7 +65,7 @@ private:
     void showBuiltIn(const juce::String& notice);
     void skinFailed(const juce::String& name, const juce::String& reason);
     void applyScale(float scale);
-    void cornerResize(int phase, juce::Point<int> offset);                    // window = skin's base size x scale (0.5-2.0)
+    void cornerResize(int phase, juce::Point<int> offset);    // window = 100 % size (winscale) x scale (0.5-2.0)
     juce::Point<int> baseSize() const;               // 1795 x 848 for file skins, Built-in's own size
     void showMenu(const juce::MouseEvent&);
     void timerCallback() override;                   // missing-ROM message on file skins; saves the size

@@ -55,6 +55,8 @@ public:
     const VirtualMidiPort& virtualPort() const { return vport_; }
     bool showDebug = true;
     std::atomic<float> editorScale{0};               // window size of this project (0: not set); saved with it
+    std::atomic<bool> editorScaleLegacy{false};      // editorScale is on the old scale (a version 3 project, not yet
+                                                     // converted by an editor); kept so with the project until then
 
     struct Meter {                                   // CPU per block, written by the audio thread
         std::atomic<float> avg{0}, peak{0}, last{0}, lastMs{0}, blockMs{0};
