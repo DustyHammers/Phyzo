@@ -65,6 +65,13 @@ juce::Point<int> openEditor(PhyzoProcessor& p, std::function<void(juce::AudioPro
     ed->setVisible(true);
     pump(300);
     const juce::Point<int> size(ed->getWidth(), ed->getHeight());
+    // macOS applies the constrainer to the window's own size: it must keep it exactly.
+    if (auto* c = ed->getConstrainer()) {
+        c->setBoundsForComponent(ed.get(), ed->getBounds(), false, false, false, false);
+        CHECK(ed->getWidth() == size.x && ed->getHeight() == size.y);
+        if (ed->getWidth() != size.x || ed->getHeight() != size.y)
+            std::printf("  constrainer moved %d x %d to %d x %d\n", size.x, size.y, ed->getWidth(), ed->getHeight());
+    }
     if (also) also(*ed);
     p.editorBeingDeleted(ed.get());
     ed.reset();

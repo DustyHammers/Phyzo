@@ -397,11 +397,13 @@ void PhyzoEditor::applyScale(float scale) {
     scale_ = winscale::clamp(scale);
     const auto base = baseSize();
     const bool file = rml_ != nullptr;
-    constrainer_.setFixedAspectRatio(double(base.x) / double(base.y));
+    const int w = winscale::windowLength(base.x, scale_, file), h = winscale::windowLength(base.y, scale_, file);
+    // The ratio of the rounded size itself, so a window system that applies the constrainer (macOS) keeps it exactly.
+    constrainer_.setFixedAspectRatio(double(w) / double(h));
     constrainer_.setSizeLimits(winscale::windowLength(base.x, winscale::kMin, file), winscale::windowLength(base.y, winscale::kMin, file),
                                winscale::windowLength(base.x, winscale::kMax, file), winscale::windowLength(base.y, winscale::kMax, file));
     applying_ = true;
-    setSize(winscale::windowLength(base.x, scale_, file), winscale::windowLength(base.y, scale_, file));
+    setSize(w, h);
     applying_ = false;
     resized();
 }
