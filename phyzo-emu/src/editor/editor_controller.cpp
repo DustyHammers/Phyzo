@@ -48,7 +48,7 @@ std::vector<Page> twoColumnPages(const std::vector<Item>& items, bool stages) {
 }  // namespace
 
 std::vector<std::string> parseWaveNames(const std::string& text) {
-    std::vector<std::string> names(size_t(edtables::kWaves));
+    std::vector<std::string> names(static_cast<size_t>(edtables::kWaves));
     std::istringstream in(text);
     std::string line;
     while (std::getline(in, line)) {
