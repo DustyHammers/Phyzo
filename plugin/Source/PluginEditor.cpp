@@ -261,14 +261,20 @@ void BuiltinView::paintDebug(juce::Graphics& g, int y) {
 // ================================================================== editor
 
 PhyzoEditor::PhyzoEditor(PhyzoProcessor& p) : AudioProcessorEditor(&p), proc(p) {
-    // Size: the project's own if it has one, else the global setting.
-    const float projectScale = proc.editorScale.load();
-    scale_ = projectScale >= SkinSettings::kMinScale && projectScale <= SkinSettings::kMaxScale ? projectScale : SkinSettings::scale();
     setConstrainer(&constrainer_);
     setResizable(true, false);                      // our own corner drag (JUCE's corner would sit under the OpenGL view)
     juce::String want = SkinSettings::skin();
     if (want.isEmpty()) want = skinNames().contains(SkinSettings::kDefaultSkin) ? SkinSettings::kDefaultSkin : SkinSettings::kBuiltIn;
+    // Size: the project's own if it has one (a file skin's size saved on the old scale reopens at the same physical
+    // size), else the global setting.
+    const float projectScale = proc.editorScale.load();
+    if (projectScale >= winscale::kMin && projectScale <= (proc.editorScaleLegacy ? 2.0f : winscale::kMax))
+        scale_ = proc.editorScaleLegacy && want != SkinSettings::kBuiltIn ? winscale::fromLegacy(projectScale) : projectScale;
+    else
+        scale_ = SkinSettings::scale();
+    applying_ = true;                                // a placeholder size, not a resize by the user: keeps scale_
     setSize(BuiltinView::kWidth, BuiltinView::kHeight);
+    applying_ = false;
     showSkin(want);
     startTimer(1000);
 }
@@ -369,26 +375,31 @@ void PhyzoEditor::cornerResize(int phase, juce::Point<int> d) {
     constrainer_.setBoundsForComponent(this, b, false, false, true, true);   // 50-200 %, aspect ratio
 }
 
-// Resizable by the corner (or the host), locked to the skin's aspect ratio, 50-200 % of its base size.
+// Resizable by the corner (or the host), locked to the skin's aspect ratio, 50-200 % of its 100 % size (winscale).
 void PhyzoEditor::applyScale(float scale) {
-    scale_ = juce::jlimit(SkinSettings::kMinScale, SkinSettings::kMaxScale, scale);
+    scale_ = winscale::clamp(scale);
     const auto base = baseSize();
+    const bool file = rml_ != nullptr;
     constrainer_.setFixedAspectRatio(double(base.x) / double(base.y));
-    constrainer_.setSizeLimits(juce::roundToInt(base.x * SkinSettings::kMinScale), juce::roundToInt(base.y * SkinSettings::kMinScale),
-                               juce::roundToInt(base.x * SkinSettings::kMaxScale), juce::roundToInt(base.y * SkinSettings::kMaxScale));
+    constrainer_.setSizeLimits(winscale::windowLength(base.x, winscale::kMin, file), winscale::windowLength(base.y, winscale::kMin, file),
+                               winscale::windowLength(base.x, winscale::kMax, file), winscale::windowLength(base.y, winscale::kMax, file));
     applying_ = true;
-    setSize(juce::roundToInt(base.x * scale_), juce::roundToInt(base.y * scale_));
+    setSize(winscale::windowLength(base.x, scale_, file), winscale::windowLength(base.y, scale_, file));
     applying_ = false;
     resized();
 }
 
 void PhyzoEditor::resized() {
     const auto base = baseSize();
-    if (!applying_ && getWidth() > 0) {              // a resize by the user or the host: the width sets the scale
-        const float s = juce::jlimit(SkinSettings::kMinScale, SkinSettings::kMaxScale, float(getWidth()) / float(base.x));
+    const bool file = rml_ != nullptr;
+    // A resize by the user or the host: the width sets the scale (not when it is the width of the current scale,
+    // so rounding does not move a menu step).
+    if (!applying_ && getWidth() > 0 && getWidth() != winscale::windowLength(base.x, scale_, file)) {
+        const float s = winscale::scaleForWidth(getWidth(), base.x, file);
         if (std::abs(s - scale_) > 1e-4f) { scale_ = s; scaleDirty_ = true; }
     }
-    proc.editorScale = scale_;                       // saved with the project
+    proc.editorScale = scale_;                       // saved with the project, on the new scale
+    proc.editorScaleLegacy = false;
     if (builtin_) {
         builtin_->setTransform(juce::AffineTransform::scale(float(getWidth()) / float(base.x), float(getHeight()) / float(base.y)));
         builtin_->setBounds(0, 0, BuiltinView::kWidth, BuiltinView::kHeight);
@@ -409,9 +420,9 @@ void PhyzoEditor::showMenu(const juce::MouseEvent&) {
     });
     for (const juce::String& n : names)
         skins.addItem(n, true, current_ == n, [this, n] { SkinSettings::setSkin(n); showSkin(n); });
-    for (int z : SkinSettings::kZooms)
-        zoom.addItem(juce::String(z) + " %", true, std::abs(scale_ * 100.0f - float(z)) < 0.5f, [this, z] {
-            applyScale(float(z) / 100.0f);
+    for (int z : winscale::kSteps)
+        zoom.addItem(juce::String(winscale::stepLabel(z, fileSkin)), true, winscale::isStep(scale_, z), [this, z] {
+            applyScale(winscale::stepScale(z));
             scaleDirty_ = false;
             SkinSettings::setScale(scale_);
         });

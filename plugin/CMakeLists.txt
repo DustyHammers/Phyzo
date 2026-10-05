@@ -2,7 +2,7 @@
 cmake_minimum_required(VERSION 3.22)
 
 set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
-project(Phyzo VERSION 0.5.3 LANGUAGES C CXX)
+project(Phyzo VERSION 0.5.4 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -110,4 +110,21 @@ endif()
 if(APPLE)
   target_sources(editor_cycle_test PRIVATE Source/MacWindow.mm tests/raw_gl_mac.mm)
   target_link_libraries(editor_cycle_test PRIVATE "-framework CoreMIDI" "-framework OpenGL")
+endif()
+
+# Window size test: the scale rules, project state migration and the editor's sizes (needs a display; CI on macOS).
+add_executable(window_scale_test tests/window_scale_test.cpp
+  Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/RmlSkinComponent.cpp Source/VirtualMidiPort.cpp)
+target_include_directories(window_scale_test PRIVATE Source)
+target_compile_definitions(window_scale_test PRIVATE
+  JucePlugin_Name="Phyzo" JucePlugin_VersionString="0.0-test" JUCE_MODAL_LOOPS_PERMITTED=1
+  JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_STANDALONE_APPLICATION=0)
+target_link_libraries(window_scale_test PRIVATE phyzo_core phyzo_skin_gl
+  juce::juce_audio_processors juce::juce_audio_utils juce::juce_opengl juce::juce_recommended_config_flags)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_link_libraries(window_scale_test PRIVATE X11)
+endif()
+if(APPLE)
+  target_sources(window_scale_test PRIVATE Source/MacWindow.mm)
+  target_link_libraries(window_scale_test PRIVATE "-framework CoreMIDI" "-framework OpenGL")
 endif()

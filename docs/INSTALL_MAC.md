@@ -88,8 +88,11 @@ Right-click anywhere in the window for the menu (the same in every skin):
 
 - **Skin**: Built-in, then every skin in your skins folder (the current one is ticked).
 - **Reload skin** (or press **F5** with the window focused): reads the skin again from disk after you edit it.
-- **Zoom**: 75, 100, 125, 150 or 200 %. You can also drag the window's bottom-right corner (the small grip) to any
-  size from 50 to 200 %; the skin keeps its proportions and stays sharp at every size.
+- **Zoom**: 50, 75, 100, 125, 133 (full size), 150, 175 or 200 % (the current size is ticked). You can also drag the
+  window's bottom-right corner (the small grip) to any size from 50 to 200 %; the skin keeps its proportions. At
+  133 % a file skin's art is shown at its native resolution; above that it is enlarged beyond it. 100 % is the size
+  that used to be called 75 %; projects saved with the old sizes reopen at the same size on screen. The Built-in
+  skin's sizes are unchanged.
 - **Developer > RmlUi debugger**: RmlUi's inspector, for working on a skin.
 
 The skin is a global setting (every Phyzo window and project). The window size is remembered twice: globally, for

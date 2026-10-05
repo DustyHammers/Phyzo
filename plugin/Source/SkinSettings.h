@@ -3,12 +3,12 @@
 #pragma once
 #include <juce_data_structures/juce_data_structures.h>
 #include <atomic>
+#include "WindowScale.h"
 
 namespace SkinSettings {
 
 inline const juce::String kBuiltIn = "Built-in";
 inline const juce::String kDefaultSkin = "rack";
-inline constexpr int kZooms[] = {75, 100, 125, 150, 200};
 
 // Opened for each read or write (rare), so no file object outlives the plugin.
 inline juce::PropertiesFile::Options options() {
@@ -31,15 +31,14 @@ inline void set(const char* key, const juce::var& v) {
 inline juce::String skin() { return get("skin"); }
 inline void setSkin(const juce::String& name) { set("skin", name); }
 
-// Window size as a fraction of the skin's base size (0.5-2.0). Older settings stored a zoom percentage.
-inline constexpr float kMinScale = 0.5f, kMaxScale = 2.0f;
+// The last window size (winscale: 0.5-2.0 of the skin's 100 % size), for instances without a size of their own.
+// Stored under a new key: sizes from the old scale ("scale", "zoom") are not carried over, so it starts at 100 %.
 inline float scale() {
-    const juce::String s = get("scale");
-    float v = s.isNotEmpty() ? s.getFloatValue() : get("zoom").getIntValue() / 100.0f;
-    if (!(v >= kMinScale && v <= kMaxScale)) v = 1.0f;
-    return v;
+    const juce::String s = get("windowScale");
+    const float v = s.isNotEmpty() ? s.getFloatValue() : 1.0f;
+    return v >= winscale::kMin && v <= winscale::kMax ? v : 1.0f;
 }
-inline void setScale(float v) { set("scale", juce::String(v, 4)); }
+inline void setScale(float v) { set("windowScale", juce::String(v, 4)); }
 
 // MIDI ports (plugin settings, not synth parameters): the virtual port pair (default on) and the OS's MIDI output
 // to the host (default off).
