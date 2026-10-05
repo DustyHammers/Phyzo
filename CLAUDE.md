@@ -68,8 +68,15 @@ owner step by step through anything they must do by hand on github.com or on the
   Skin authoring guide: `docs/SKINS.md`. The skin is a global setting; the window scale (`WindowScale.h`: 50-200 %; a file
   skin's 100 % is 3/4 of its 1795 x 848 dp body in points, 133 % is full size; Built-in's 100 % is its own size;
   aspect locked, resized by our own corner drag) is saved globally and per project; neither is a parameter.
-  Per-element knob positions and the window scale are project state (processor state version 4; version 3 sizes are
-  on the old scale and are converted x 4/3 for file skins when an editor opens).
+  Per-element knob positions and the window scale are project state (processor state version 5; version 3 sizes are
+  on the old scale and are converted x 4/3 for file skins when an editor opens; version 5 adds the editor unit's
+  open state).
+- Editor screens (F-30, docs/editor/): `phyzo-emu/src/editor/` (no JUCE) reads the OS's parameter tables from the
+  user's OS image at run time (never copied into the repo), builds the pages and reads the visible page with SysEx
+  partial reads; `Engine` queues its messages whole at cable speed, puts the page read directly behind program changes,
+  bank selects and dumps, and takes only the replies to its own requests out of the MIDI output. The main panel is
+  never affected: no panel messages, no change to its selection; with the editor closed nothing is sent.
+  The skin side: `<name>-editor.rml`, `<vfdrow>`, `<legend>`, the Lua `editor` API (docs/SKINS.md).
 - Real-time rules for `engine.*`: the audio thread never waits on other threads. `getState` asks the audio thread
   for a snapshot at a block boundary (`Machine::saveStateInto`, preallocated); panel controls go through a
   lock-free latest-value slot per cc, sent at most once per 10 ms each and only while the panel link keeps up;

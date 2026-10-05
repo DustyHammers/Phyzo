@@ -31,6 +31,10 @@ public:
     void showMessage(const juce::String& text, int seconds = 10);
     // A message that stays until cleared (missing ROMs); shown above the other one.
     void setPersistentMessage(const juce::String& text);
+    // The editor unit (F-30): whether the loaded skin has one (<name>-editor.rml; known when onLoaded comes), and
+    // showing it below the panel (kept across reloads).
+    bool hasEditor() const { return hasEditor_.load(); }
+    void setEditorVisible(bool on);
 
     std::function<void(bool ok, const juce::String& error)> onLoaded;
     std::function<void(const juce::MouseEvent&)> onRightClick;
@@ -87,6 +91,8 @@ private:
     // Frames only when needed (B-11, F-27): the timer asks for one when the synth's panel changed (engine UI
     // counter), input arrived, or the skin's next wake time came, and never while the window cannot be seen.
     std::atomic<bool> frameWanted_{true};
+    std::atomic<bool> hasEditor_{false}, editorVisible_{false};
+    uint32_t lastEditorSerial_ = 0;
     std::atomic<double> nextWake_{0};
     std::atomic<int> wakeSource_{0};                       // skin::SkinView::Wake of nextWake_
     uint32_t lastSerial_ = 0;

@@ -295,6 +295,7 @@ void PhyzoEditor::timerCallback() {
 
 PhyzoEditor::~PhyzoEditor() {
     stopTimer();
+    proc.setEditorActive(false);                     // no window shows it: the editor sends nothing
     if (scaleDirty_) SkinSettings::setScale(scale_);
     rml_.reset();                                    // closes its OpenGL context first
     builtin_.reset();
@@ -325,6 +326,8 @@ void PhyzoEditor::showSkin(const juce::String& name, const juce::String& notice)
     rml_->onLoaded = [this, name, notice](bool ok, const juce::String& error) {
         if (!ok) { skinFailed(name, error); return; }
         if (notice.isNotEmpty() && rml_) rml_->showMessage(notice);
+        proc.loadWaveNames(skinFolder(name));
+        updateEditorUnit();
     };
     rml_->setDebugger(debugger_);
     rml_->setPersistentMessage(romMessage(proc));
@@ -334,6 +337,8 @@ void PhyzoEditor::showSkin(const juce::String& name, const juce::String& notice)
 
 void PhyzoEditor::showBuiltIn(const juce::String& notice) {
     rml_.reset();
+    editorShown_ = false;                            // Built-in has no editor unit
+    proc.setEditorActive(false);
     if (!builtin_) {
         builtin_ = std::make_unique<BuiltinView>(proc);
         builtin_->onRightClick = [this](const juce::MouseEvent& e) { showMenu(e); };
@@ -359,7 +364,7 @@ void PhyzoEditor::skinFailed(const juce::String& name, const juce::String& reaso
 }
 
 juce::Point<int> PhyzoEditor::baseSize() const {
-    if (rml_) return {juce::roundToInt(skin::kBodyWidthDp), juce::roundToInt(skin::kBodyHeightDp)};
+    if (rml_) return {juce::roundToInt(skin::kBodyWidthDp), juce::roundToInt(skin::kBodyHeightDp + (editorShown_ ? skin::kEditorHeightDp : 0.0f))};
     return {BuiltinView::kWidth, BuiltinView::kHeight};
 }
 
@@ -373,6 +378,18 @@ void PhyzoEditor::cornerResize(int phase, juce::Point<int> d) {
     auto b = dragStartBounds_.withWidth(dragStartBounds_.getWidth() + dw);
     b.setHeight(juce::roundToInt(float(b.getWidth()) / aspect));
     constrainer_.setBoundsForComponent(this, b, false, false, true, true);   // 50-200 %, aspect ratio
+}
+
+// The editor unit (F-30): attached below the panel when the project wants it and the skin has one; the window grows by
+// its height at the same scale. Only while it is shown does the editor read from the OS.
+void PhyzoEditor::updateEditorUnit() {
+    const bool show = proc.editorWanted() && rml_ && rml_->hasEditor();
+    if (rml_) rml_->setEditorVisible(show);
+    proc.setEditorActive(show);
+    if (show != editorShown_) {
+        editorShown_ = show;
+        applyScale(scale_);
+    }
 }
 
 // Resizable by the corner (or the host), locked to the skin's aspect ratio, 50-200 % of its 100 % size (winscale).
@@ -453,6 +470,10 @@ void PhyzoEditor::showMenu(const juce::MouseEvent&) {
     menu.addSubMenu("Skin", skins);
     menu.addItem("Reload skin    F5", fileSkin, false, [this] { if (rml_) rml_->reload(); });
     menu.addSubMenu("Zoom", zoom);
+    menu.addItem("Editor", fileSkin && rml_->hasEditor(), editorShown_, [this] {
+        proc.setEditorWanted(!proc.editorWanted());
+        updateEditorUnit();
+    });
     menu.addSubMenu("MIDI", midi);
     menu.addSeparator();
     menu.addSubMenu("Developer", dev);

@@ -2,12 +2,13 @@
 #include <chrono>
 #include "PluginEditor.h"
 #include "SkinSettings.h"
+#include "os_image.h"
 #include <algorithm>
 
 namespace {
 constexpr uint32_t kStateMagic = 0x505A4850;     // "PHZP" (little-endian)
-constexpr uint32_t kStateVersion = 4;          // 2: + skin knob positions; 3: + window size; 4: + its scale's version
-                                                // (older still read)
+constexpr uint32_t kStateVersion = 5;          // 2: + skin knob positions; 3: + window size; 4: + its scale's version;
+                                                // 5: + the editor unit open (older still read)
 constexpr int kTimerMs = 100, kScanEveryTicks = 20;   // rescan the ROM folder every 2 s while something is missing
 
 std::mutex g_instancesMtx;
@@ -22,6 +23,7 @@ PhyzoProcessor::PhyzoProcessor()
     dataFolder_.getChildFile("roms").createDirectory();
     dataFolder_.getChildFile("skins").createDirectory();
     events_.reserve(4096);
+    port_.ed = &editorPort_;
     scanRoms();
     applyMidiSettings();
     { std::lock_guard<std::mutex> lk(g_instancesMtx); g_instances.push_back(this); }
@@ -30,6 +32,8 @@ PhyzoProcessor::PhyzoProcessor()
 
 PhyzoProcessor::~PhyzoProcessor() {
     stopTimer();
+    editorTicker_.stopTimer();
+    port_.ed = nullptr;
     { std::lock_guard<std::mutex> lk(g_instancesMtx); g_instances.erase(std::find(g_instances.begin(), g_instances.end(), this)); }
     vport_.close();
 }
@@ -48,7 +52,65 @@ void PhyzoProcessor::applyMidiSettingsToAll() {
 
 void PhyzoProcessor::scanRoms() {
     scan_ = romid::scanFolder(romFolder().getFullPathName().toStdString());
-    if (scan_.complete()) engine_.setRoms(scan_.osPath, scan_.wavePath, romid::kOsImageMd5, romid::kWaveImageMd5);
+    if (scan_.complete()) {
+        engine_.setRoms(scan_.osPath, scan_.wavePath, romid::kOsImageMd5, romid::kWaveImageMd5);
+        loadEditorTables();
+    }
+}
+
+// ------------------------------------------------------------------ editor unit (F-30)
+
+// The editor's tables, read from the user's OS (decoded in memory if it is the update file), once per OS file.
+void PhyzoProcessor::loadEditorTables() {
+    if (scan_.osPath == editorTablesFor_) return;
+    editorTablesFor_ = scan_.osPath;
+    OsImage os;
+    std::string err;
+    edtables::OsTables t;
+    if (os.load(scan_.osPath, err)) t = edtables::readAll(os.bytes);
+    editor_.setTables(t);
+}
+
+void PhyzoProcessor::setEditorActive(bool on) {
+    if (on == editorActive_.load()) return;
+    editorActive_ = on;
+    editor_.setOpen(on);
+    if (on) editorTicker_.startTimer(20);            // replies, triggers, the 50 ms debounce
+    else editorTicker_.stopTimer();
+}
+
+void PhyzoProcessor::postToEditor(std::function<void(editor::Controller&)> f) {
+    std::lock_guard<std::mutex> lk(editorQueueMtx_);
+    editorQueue_.push_back(std::move(f));
+}
+
+void PhyzoProcessor::editorTick() {
+    std::vector<std::function<void(editor::Controller&)>> q;
+    { std::lock_guard<std::mutex> lk(editorQueueMtx_); q.swap(editorQueue_); }
+    for (auto& f : q) f(editor_);
+    editor_.tick(juce::Time::getMillisecondCounterHiRes());
+}
+
+void PhyzoProcessor::loadWaveNames(const juce::File& skinFolder) {
+    const juce::File f = skinFolder.getChildFile(kWaveNamesFile);
+    editor_.setWaveNames(f.existsAsFile() ? editor::parseWaveNames(f.loadFileAsString().toStdString()) : std::vector<std::string>());
+}
+
+void PhyzoProcessor::EditorPort::editorState(skin::EditorState& out) {
+    const editor::View v = proc.editor_.view();
+    for (int r = 0; r < skin::EditorState::kRows; ++r) {
+        out.rows[size_t(r)] = v.screen.rowText(r);
+        out.underline[size_t(r)] = v.screen.underline[size_t(r)];
+        out.dot[size_t(r)] = v.screen.dot[size_t(r)];
+    }
+    out.focusRow = -1;                               // no editing yet (F-30 step 4)
+    out.area = v.area; out.section = v.section;
+    out.sound = v.sound; out.osc = v.osc;
+    out.soundTargets = v.soundTargets; out.oscTargets = v.oscTargets;
+    out.page = v.page; out.pages = v.pages;
+    out.prev = v.prev; out.next = v.next; out.follow = v.follow; out.data = v.data; out.edited = v.edited;
+    out.areas = v.areas; out.sections = v.sections;
+    out.serial = v.serial;
 }
 
 void PhyzoProcessor::timerCallback() {
@@ -136,7 +198,8 @@ juce::AudioProcessorEditor* PhyzoProcessor::createEditor() { return new PhyzoEdi
 
 // State: magic, version, UI flags, the engine state (complete machine, gzip-compressed), then the skin's knob
 // element positions (count, then id and raw for each), then the window size (winscale) and whether it is still on
-// the old scale (version 3 projects store sizes relative to the full body size).
+// the old scale (version 3 projects store sizes relative to the full body size), then whether the editor unit is
+// open (version 5).
 void PhyzoProcessor::getStateInformation(juce::MemoryBlock& dest) {
     ++meter.stateRequests;
     const std::vector<uint8_t> engineState = engine_.getState();
@@ -158,6 +221,7 @@ void PhyzoProcessor::getStateInformation(juce::MemoryBlock& dest) {
     for (const auto& kv : port_.knobs) { out.writeString(juce::String::fromUTF8(kv.first.c_str())); out.writeInt(kv.second); }
     out.writeFloat(editorScale.load());
     out.writeByte(editorScaleLegacy.load() ? 1 : 0);
+    out.writeByte(editorWanted_.load() ? 1 : 0);
 }
 
 void PhyzoProcessor::setStateInformation(const void* data, int size) {
@@ -186,6 +250,7 @@ void PhyzoProcessor::setStateInformation(const void* data, int size) {
         editorScale = in.readFloat();
         editorScaleLegacy = version == 3 || (!in.isExhausted() && in.readByte() != 0);
     }
+    if (version >= 5 && !in.isExhausted()) editorWanted_ = in.readByte() != 0;
     { std::lock_guard<std::mutex> lk(port_.mtx); port_.knobs = std::move(knobs); }
     engine_.setState(engineState);
 }

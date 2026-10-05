@@ -1,0 +1,484 @@
+{
+ "unit": {
+  "width_dp": 1795,
+  "height_dp": 394,
+  "art_px": [
+   3590,
+   788
+  ],
+  "scale": "art 2x, laid out at half size",
+  "placement": "directly below the rack: top = 848 dp in the 1242 dp window"
+ },
+ "face": {
+  "left_dp": 106.0,
+  "right_dp": 1688.5,
+  "top_dp": 24,
+  "bottom_dp": 364,
+  "bands": {
+   "top_dp": 24,
+   "bottom_dp": 30
+  }
+ },
+ "glass": {
+  "left": 131,
+  "top": 40,
+  "width": 1532,
+  "height": 308,
+  "radius": 16
+ },
+ "cells": {
+  "first_left": 149,
+  "first_top": 118,
+  "pitch": 30,
+  "row_pitch": 55,
+  "glyph_w": 22,
+  "glyph_h": 39,
+  "slant": 0.11,
+  "underline_top": 44.7,
+  "underline_bottom": 47.6,
+  "cols": 50,
+  "rows": 4
+ },
+ "legends": {
+  "first_top": 56,
+  "row_pitch": 18,
+  "left": 147,
+  "font_dp": 13,
+  "click_boxes": [
+   {
+    "text": "SYSTEM",
+    "row": 1,
+    "left": 143,
+    "top": 55,
+    "width": 61.0,
+    "height": 18,
+    "action": "area"
+   },
+   {
+    "text": "PRESETS",
+    "row": 1,
+    "left": 220.0,
+    "top": 55,
+    "width": 66.5,
+    "height": 18,
+    "action": "area"
+   },
+   {
+    "text": "COMMON",
+    "row": 1,
+    "left": 302.5,
+    "top": 55,
+    "width": 69.5,
+    "height": 18,
+    "action": "area"
+   },
+   {
+    "text": "SOUND",
+    "row": 1,
+    "left": 388.0,
+    "top": 55,
+    "width": 55.5,
+    "height": 18,
+    "action": "area"
+   },
+   {
+    "text": "OSC",
+    "row": 1,
+    "left": 459.5,
+    "top": 55,
+    "width": 35.0,
+    "height": 18,
+    "action": "area"
+   },
+   {
+    "text": "ARP",
+    "row": 1,
+    "left": 510.5,
+    "top": 55,
+    "width": 34.5,
+    "height": 18,
+    "action": "area"
+   },
+   {
+    "text": "INSERT",
+    "row": 1,
+    "left": 561.0,
+    "top": 55,
+    "width": 55.0,
+    "height": 18,
+    "action": "area"
+   },
+   {
+    "text": "REVERB",
+    "row": 1,
+    "left": 632.0,
+    "top": 55,
+    "width": 60.0,
+    "height": 18,
+    "action": "area"
+   },
+   {
+    "text": "\u25c0 PREV",
+    "row": 1,
+    "left": 831.2,
+    "top": 55,
+    "width": 55.5,
+    "height": 18,
+    "action": "page_prev"
+   },
+   {
+    "text": "NEXT \u25b6",
+    "row": 1,
+    "left": 906.8,
+    "top": 55,
+    "width": 56.0,
+    "height": 18,
+    "action": "page_next"
+   },
+   {
+    "text": "FOLLOW",
+    "row": 1,
+    "left": 1458.0,
+    "top": 55,
+    "width": 63.5,
+    "height": 18,
+    "action": "toggle_follow"
+   },
+   {
+    "text": "EDITED",
+    "row": 1,
+    "left": 1533.5,
+    "top": 55,
+    "width": 55.5,
+    "height": 18,
+    "action": "indicator"
+   },
+   {
+    "text": "DATA",
+    "row": 1,
+    "left": 1601.0,
+    "top": 55,
+    "width": 42.0,
+    "height": 18,
+    "action": "indicator"
+   },
+   {
+    "text": "WAVE",
+    "row": 2,
+    "left": 143,
+    "top": 73,
+    "width": 45.5,
+    "height": 18,
+    "action": "section"
+   },
+   {
+    "text": "PITCH",
+    "row": 2,
+    "left": 200.5,
+    "top": 73,
+    "width": 47.5,
+    "height": 18,
+    "action": "section"
+   },
+   {
+    "text": "FILTER",
+    "row": 2,
+    "left": 260.0,
+    "top": 73,
+    "width": 50.5,
+    "height": 18,
+    "action": "section"
+   },
+   {
+    "text": "AMP",
+    "row": 2,
+    "left": 322.5,
+    "top": 73,
+    "width": 37.5,
+    "height": 18,
+    "action": "section"
+   },
+   {
+    "text": "NOISE",
+    "row": 2,
+    "left": 372.0,
+    "top": 73,
+    "width": 48.5,
+    "height": 18,
+    "action": "section"
+   },
+   {
+    "text": "LFO",
+    "row": 2,
+    "left": 432.5,
+    "top": 73,
+    "width": 33.5,
+    "height": 18,
+    "action": "section"
+   },
+   {
+    "text": "ENV1",
+    "row": 2,
+    "left": 478.0,
+    "top": 73,
+    "width": 43.0,
+    "height": 18,
+    "action": "section"
+   },
+   {
+    "text": "ENV2",
+    "row": 2,
+    "left": 533.0,
+    "top": 73,
+    "width": 43.0,
+    "height": 18,
+    "action": "section"
+   },
+   {
+    "text": "ENV3",
+    "row": 2,
+    "left": 588.0,
+    "top": 73,
+    "width": 43.0,
+    "height": 18,
+    "action": "section"
+   },
+   {
+    "text": "GEN",
+    "row": 2,
+    "left": 643.0,
+    "top": 73,
+    "width": 35.5,
+    "height": 18,
+    "action": "section"
+   },
+   {
+    "text": "S1",
+    "row": 2,
+    "left": 1465.0,
+    "top": 73,
+    "width": 24.5,
+    "height": 18,
+    "action": "target"
+   },
+   {
+    "text": "S2",
+    "row": 2,
+    "left": 1491.5,
+    "top": 73,
+    "width": 24.5,
+    "height": 18,
+    "action": "target"
+   },
+   {
+    "text": "S3",
+    "row": 2,
+    "left": 1518.0,
+    "top": 73,
+    "width": 24.5,
+    "height": 18,
+    "action": "target"
+   },
+   {
+    "text": "S4",
+    "row": 2,
+    "left": 1544.5,
+    "top": 73,
+    "width": 24.5,
+    "height": 18,
+    "action": "target"
+   },
+   {
+    "text": "O1",
+    "row": 2,
+    "left": 1589.0,
+    "top": 73,
+    "width": 26.0,
+    "height": 18,
+    "action": "target"
+   },
+   {
+    "text": "O2",
+    "row": 2,
+    "left": 1617.0,
+    "top": 73,
+    "width": 26.0,
+    "height": 18,
+    "action": "target"
+   },
+   {
+    "text": "TRACK",
+    "row": 3,
+    "left": 143,
+    "top": 91,
+    "width": 52.0,
+    "height": 18,
+    "action": "section"
+   },
+   {
+    "text": "RANGE",
+    "row": 3,
+    "left": 207.0,
+    "top": 91,
+    "width": 53.5,
+    "height": 18,
+    "action": "section"
+   },
+   {
+    "text": "RECEIVE",
+    "row": 3,
+    "left": 272.5,
+    "top": 91,
+    "width": 63.0,
+    "height": 18,
+    "action": "section"
+   },
+   {
+    "text": "SLOTS",
+    "row": 3,
+    "left": 347.5,
+    "top": 91,
+    "width": 50.0,
+    "height": 18,
+    "action": "section"
+   },
+   {
+    "text": "KNOBS",
+    "row": 3,
+    "left": 409.5,
+    "top": 91,
+    "width": 54.0,
+    "height": 18,
+    "action": "section"
+   },
+   {
+    "text": "MOD",
+    "row": 3,
+    "left": 475.5,
+    "top": 91,
+    "width": 39.5,
+    "height": 18,
+    "action": "section"
+   },
+   {
+    "text": "ALGO",
+    "row": 3,
+    "left": 527.0,
+    "top": 91,
+    "width": 44.0,
+    "height": 18,
+    "action": "section"
+   },
+   {
+    "text": "SENDS",
+    "row": 3,
+    "left": 583.0,
+    "top": 91,
+    "width": 52.5,
+    "height": 18,
+    "action": "section"
+   },
+   {
+    "text": "MIDI",
+    "row": 3,
+    "left": 647.5,
+    "top": 91,
+    "width": 38.0,
+    "height": 18,
+    "action": "section"
+   },
+   {
+    "text": "PAGE",
+    "row": 3,
+    "left": 1439.0,
+    "top": 91,
+    "width": 42.0,
+    "height": 18,
+    "action": "label"
+   },
+   {
+    "text": "1",
+    "row": 3,
+    "left": 1483.0,
+    "top": 91,
+    "width": 16.0,
+    "height": 18,
+    "action": "page"
+   },
+   {
+    "text": "2",
+    "row": 3,
+    "left": 1501.0,
+    "top": 91,
+    "width": 16.0,
+    "height": 18,
+    "action": "page"
+   },
+   {
+    "text": "3",
+    "row": 3,
+    "left": 1519.0,
+    "top": 91,
+    "width": 16.0,
+    "height": 18,
+    "action": "page"
+   },
+   {
+    "text": "4",
+    "row": 3,
+    "left": 1537.0,
+    "top": 91,
+    "width": 16.0,
+    "height": 18,
+    "action": "page"
+   },
+   {
+    "text": "5",
+    "row": 3,
+    "left": 1555.0,
+    "top": 91,
+    "width": 16.0,
+    "height": 18,
+    "action": "page"
+   },
+   {
+    "text": "6",
+    "row": 3,
+    "left": 1573.0,
+    "top": 91,
+    "width": 16.0,
+    "height": 18,
+    "action": "page"
+   },
+   {
+    "text": "7",
+    "row": 3,
+    "left": 1591.0,
+    "top": 91,
+    "width": 16.0,
+    "height": 18,
+    "action": "page"
+   },
+   {
+    "text": "8",
+    "row": 3,
+    "left": 1609.0,
+    "top": 91,
+    "width": 16.0,
+    "height": 18,
+    "action": "page"
+   },
+   {
+    "text": "9",
+    "row": 3,
+    "left": 1627.0,
+    "top": 91,
+    "width": 16.0,
+    "height": 18,
+    "action": "page"
+   }
+  ]
+ },
+ "button_size_dp": 54,
+ "elements": []
+}

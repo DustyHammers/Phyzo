@@ -5,9 +5,12 @@
 //   panel.press(raw)  panel.release(raw)           panel.isHeld(raw)                 panel.onButton(raw, fn(down))
 //   panel.display() -> b0, b1, b2, b3              panel.onDisplay(fn(b0, b1, b2, b3))
 //   plugin.name, plugin.vendor, plugin.version
+//   editor.isOpen()   editor.state() -> table   editor.click(action, value)   editor.onChange(fn())
+//   editor.followLeds{sound = {c1, c2, c3, c4}, osc = {c1, c2}, env = {pitch, filter, amp}}
 #include "skin_lua.h"
 #include <RmlUi/Core/Log.h>
 #include <RmlUi/Lua/IncludeLua.h>
+#include <array>
 #include <string>
 #include "skin_system.h"
 #include "skin_view.h"
@@ -50,6 +53,64 @@ int onDisplay(lua_State* L) {
     return 0;
 }
 
+// ---- editor (the editor unit; docs/SKINS.md)
+EditorPort* editorOf(lua_State* L) { return viewOf(L).port().editor(); }
+int editorIsOpen(lua_State* L) { EditorPort* e = editorOf(L); lua_pushboolean(L, e && e->editorOpen()); return 1; }
+int editorState(lua_State* L) {
+    EditorPort* e = editorOf(L);
+    lua_newtable(L);
+    if (!e) return 1;
+    EditorState s;
+    e->editorState(s);
+    lua_pushboolean(L, e->editorOpen()); lua_setfield(L, -2, "open");
+    lua_pushstring(L, s.area.c_str()); lua_setfield(L, -2, "area");
+    lua_pushstring(L, s.section.c_str()); lua_setfield(L, -2, "section");
+    lua_pushinteger(L, s.sound + 1); lua_setfield(L, -2, "sound");
+    lua_pushinteger(L, s.osc + 1); lua_setfield(L, -2, "osc");
+    lua_pushinteger(L, s.page); lua_setfield(L, -2, "page");
+    lua_pushinteger(L, s.pages); lua_setfield(L, -2, "pages");
+    lua_pushboolean(L, s.follow); lua_setfield(L, -2, "follow");
+    lua_pushboolean(L, s.data); lua_setfield(L, -2, "data");
+    lua_newtable(L);
+    for (int r = 0; r < EditorState::kRows; ++r) { lua_pushstring(L, s.rows[size_t(r)].c_str()); lua_rawseti(L, -2, r + 1); }
+    lua_setfield(L, -2, "rows");
+    return 1;
+}
+int editorClick(lua_State* L) {
+    const char* action = luaL_checkstring(L, 1);
+    const char* value = luaL_optstring(L, 2, "");
+    if (EditorPort* e = editorOf(L)) e->editorCommand(action, value);
+    return 0;
+}
+int editorOnChange(lua_State* L) {
+    luaL_checktype(L, 1, LUA_TFUNCTION);
+    lua_pushvalue(L, 1);
+    viewOf(L).onEditorFns.push_back(luaL_ref(L, LUA_REGISTRYINDEX));
+    return 0;
+}
+template <size_t N> std::array<int, N> ledList(lua_State* L, const char* field) {
+    std::array<int, N> v;
+    v.fill(-1);
+    lua_getfield(L, 1, field);
+    if (lua_istable(L, -1))
+        for (size_t i = 0; i < N; ++i) {
+            lua_rawgeti(L, -1, lua_Integer(i + 1));
+            if (lua_isinteger(L, -1)) v[i] = int(lua_tointeger(L, -1));
+            if (v[i] < -1 || v[i] > 255) luaL_error(L, "editor.followLeds: LED codes must be 0 to 255");
+            lua_pop(L, 1);
+        }
+    lua_pop(L, 1);
+    return v;
+}
+int editorFollowLeds(lua_State* L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    const auto sound = ledList<4>(L, "sound");
+    const auto osc = ledList<2>(L, "osc");
+    const auto env = ledList<3>(L, "env");
+    if (EditorPort* e = editorOf(L)) e->editorFollowLeds(sound, osc, env);
+    return 0;
+}
+
 int traceback(lua_State* L) {
     const char* msg = lua_tostring(L, 1);
     luaL_traceback(L, L, msg ? msg : "(error object is not a string)", 1);
@@ -74,6 +135,13 @@ void installLuaApi(SkinView& v) {
     lua_pushstring(L, v.info().vendor.c_str()); lua_setfield(L, -2, "vendor");
     lua_pushstring(L, v.info().version.c_str()); lua_setfield(L, -2, "version");
     lua_setglobal(L, "plugin");
+
+    const luaL_Reg efns[] = {{"isOpen", editorIsOpen}, {"state", editorState}, {"click", editorClick},
+                             {"onChange", editorOnChange}, {"followLeds", editorFollowLeds}, {nullptr, nullptr}};
+    lua_newtable(L);
+    lua_pushlightuserdata(L, &v);
+    luaL_setfuncs(L, efns, 1);
+    lua_setglobal(L, "editor");
 }
 
 void callLua(const std::vector<int>& fns, const std::vector<lua_Integer>& args) {
@@ -116,6 +184,7 @@ void dropLuaCallbacks(SkinView& v) {
         m->clear();
     }
     drop(v.onDisplayFns);
+    drop(v.onEditorFns);
 }
 
 }  // namespace skin

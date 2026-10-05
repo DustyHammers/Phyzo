@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <filesystem>
@@ -148,6 +149,24 @@ bool SkinView::load(const std::string& folder, const std::string& name, std::str
         }
         document_->Show();
         dispatchShow(document_);
+        // The editor unit: a second document below the body, if the skin has one.
+        const fs::path efile = dir / fs::u8path(name + "-editor.rml");
+        if (fs::is_regular_file(efile, ec)) {
+            const size_t before = log_.size();
+            editorDoc_ = context_->LoadDocument(efile.u8string());
+            bool bad = editorDoc_ && editorDoc_->GetNumChildren() == 0;
+            for (size_t i = before; i < log_.size() && !bad; ++i) bad = log_[i].find("parse error") != std::string::npos;
+            if (bad && editorDoc_) { editorDoc_->Close(); editorDoc_ = nullptr; }
+            if (!editorDoc_) {
+                addLog("warning: " + name + "-editor.rml could not be read; the skin has no editor unit");
+            } else {
+                editorDoc_->SetProperty("position", "absolute");
+                editorDoc_->SetProperty("left", "0dp");
+                editorDoc_->SetProperty("top", std::to_string(int(kBodyHeightDp)) + "dp");
+                editorApplied_ = false;
+                if (editorVisible_) { editorDoc_->Show(); dispatchShow(editorDoc_); }
+            }
+        }
         nextWake_ = 0;                                   // draw the new document at once
         ok = true;
     });
@@ -167,6 +186,7 @@ void SkinView::unload() {
     drag_ = nullptr;
     if (mousePressed_) { mousePressed_->mouseRelease(); mousePressed_ = nullptr; }
     for (int raw : std::set<int>(held_)) setHeld(raw, false);
+    if (editorDoc_) { editorDoc_->Close(); editorDoc_ = nullptr; }
     if (document_) {
         document_->Close();
         document_ = nullptr;
@@ -202,6 +222,7 @@ void SkinView::update(double now) {
             pollLeds();
             pollDisplay();
             if (applyLedClasses()) changed_ = true;
+            if (applyEditor()) changed_ = true;
             // Frame events only for a handler with code in it: an absent, empty or blank onframe asks for no frames.
             const std::string onframe = document_->GetAttribute<Rml::String>("onframe", "");
             hasFrameHandler_ = onframe.find_first_not_of(" \t\r\n") != std::string::npos;
@@ -240,6 +261,10 @@ void SkinView::computeNextWake() {
         for (LedElement* e : leds_) if (!e->audioClip()) ledWake(e->code());
         for (PButtonElement* b : buttons_) ledWake(b->ledCode());
         if (hasFrameHandler_) earlier(lastFrameEvent_ + 1.0 / kFrameEventHz, Wake::Frame);
+        if (editorFocus_) {                              // the focused value blinks at the flash rate
+            const double half = 0.5 / kFlashHz;
+            earlier((std::floor(now_ / half) + 1) * half, Wake::Flash);
+        }
     }
     if (context_) {
         const double d = context_->GetNextUpdateDelay();         // animations, transitions (0: next frame)
@@ -385,6 +410,8 @@ void SkinView::mouseDown(int button, int mods) {
                 beginKnobDrag(k);
             } else if (PButtonElement* b = findUp<PButtonElement>(hover)) {
                 b->mouseDown((mods & ModAlt) != 0);
+            } else if (LegendElement* l = findUp<LegendElement>(hover)) {
+                if (l->clickable() && port_.editor()) port_.editor()->editorCommand(l->action(), l->value());
             }
         }
         context_->ProcessMouseButtonDown(button, mods);
@@ -480,5 +507,72 @@ void SkinView::unregisterElement(KnobElement* e) { knobs_.erase(e); if (drag_ ==
 void SkinView::unregisterElement(PButtonElement* e) { buttons_.erase(e); if (mousePressed_ == e) mousePressed_ = nullptr; }
 void SkinView::unregisterElement(LedElement* e) { leds_.erase(e); }
 void SkinView::unregisterElement(VfDigitElement* e) { digits_.erase(e); }
+
+// ------------------------------------------------------------------ editor unit
+
+void legendState(const EditorState& s, const std::string& action, const std::string& value, bool& lit, bool& avail) {
+    lit = avail = false;
+    if (action == "area") { avail = s.areas.count(value) != 0; lit = avail && s.area == value; }
+    else if (action == "section") { avail = s.sections.count(value) != 0; lit = avail && s.section == value; }
+    else if (action == "target" && value.size() == 2) {
+        const int n = value[1] - '1';
+        if (value[0] == 'S') { avail = s.soundTargets && n >= 0 && n < 4; lit = avail && s.sound == n; }
+        if (value[0] == 'O') { avail = s.oscTargets && n >= 0 && n < 2; lit = avail && s.osc == n; }
+    } else if (action == "page") {
+        const int n = std::atoi(value.c_str());
+        avail = n >= 1 && n <= s.pages;
+        lit = avail && s.page == n;
+    } else if (action == "page_prev") { lit = avail = s.prev; }
+    else if (action == "page_next") { lit = avail = s.next; }
+    else if (action == "toggle_follow") { avail = true; lit = s.follow; }
+    else if (action == "indicator") { lit = (value == "DATA" && s.data) || (value == "EDITED" && s.edited); }
+    else if (action == "label") { lit = s.pages > 0; }
+}
+
+void SkinView::setEditorVisible(bool on) {
+    guarded(this, [&] {
+        ViewScope s(this);
+        editorVisible_ = on;
+        editorApplied_ = false;
+        if (!editorDoc_) return;
+        if (on) { editorDoc_->Show(); dispatchShow(editorDoc_); }
+        else editorDoc_->Hide();
+        nextWake_ = 0;
+    });
+}
+
+bool SkinView::applyEditor() {
+    EditorPort* ep = port_.editor();
+    if (!editorDoc_ || !editorVisible_ || !ep) { editorFocus_ = false; return false; }
+    const uint32_t serial = ep->editorSerial();
+    auto blinkPhase = [&] { return (int(std::floor(now_ * 2 * kFlashHz)) & 1) != 0; };
+    if (editorApplied_ && serial == editorSerial_ && (editorFocus_ && blinkPhase()) == editorBlinkOff_) return false;
+    EditorState st;
+    ep->editorState(st);
+    editorFocus_ = st.focusRow >= 0 && st.focusLen > 0;
+    const bool blinkOff = editorFocus_ && blinkPhase();
+    const bool changedState = !editorApplied_ || serial != editorSerial_;
+    editorApplied_ = true;
+    editorSerial_ = serial;
+    editorBlinkOff_ = blinkOff;
+    for (VfdRowElement* r : rows_) {
+        const int row = r->row();
+        r->setRow(st.rows[size_t(row)], st.underline[size_t(row)], st.dot[size_t(row)], st.focusRow == row ? st.focusCol : 0,
+                  st.focusRow == row ? st.focusLen : 0, blinkOff);
+    }
+    for (LegendElement* l : legends_) {
+        bool lit, avail;
+        legendState(st, l->action(), l->value(), lit, avail);
+        if (l->IsClassSet("lit") != lit) l->SetClass("lit", lit);
+        if (l->IsClassSet("avail") != avail) l->SetClass("avail", avail);
+    }
+    if (changedState) callLua(onEditorFns, {});
+    return true;
+}
+
+void SkinView::registerElement(VfdRowElement* e) { rows_.insert(e); editorApplied_ = false; }
+void SkinView::registerElement(LegendElement* e) { legends_.insert(e); editorApplied_ = false; }
+void SkinView::unregisterElement(VfdRowElement* e) { rows_.erase(e); }
+void SkinView::unregisterElement(LegendElement* e) { legends_.erase(e); }
 
 }  // namespace skin

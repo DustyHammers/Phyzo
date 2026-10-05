@@ -51,13 +51,40 @@ public:
     std::string last() const { return sent.empty() ? std::string() : sent.back(); }
 };
 
-template <class T> T* get(SkinView& v, const char* id) {
-    Rml::ElementDocument* d = v.context()->GetDocument(0);
-    return d ? dynamic_cast<T*>(d->GetElementById(id)) : nullptr;
+// The editor unit as the plugin's controller would show it; records the clicks and the Follow LEDs.
+class FakeEditor : public EditorPort {
+public:
+    EditorState st;
+    bool open = true;
+    std::vector<std::string> commands;
+    std::array<int, 4> sound{}; std::array<int, 2> osc{}; std::array<int, 3> env{};
+    bool editorOpen() override { return open; }
+    uint32_t editorSerial() override { return st.serial; }
+    void editorState(EditorState& out) override { out = st; }
+    void editorCommand(const std::string& a, const std::string& t) override { commands.push_back(a + " " + t); }
+    void editorFollowLeds(const std::array<int, 4>& s, const std::array<int, 2>& o, const std::array<int, 3>& e) override { sound = s; osc = o; env = e; }
+};
+class EditorFakePort : public FakePort {
+public:
+    FakeEditor ed;
+    EditorPort* editor() override { return &ed; }
+};
+
+Rml::Element* byId(SkinView& v, const char* id) {
+    for (int i = 0; i < v.context()->GetNumDocuments(); ++i)
+        if (Rml::Element* e = v.context()->GetDocument(i)->GetElementById(id)) return e;
+    return nullptr;
 }
+
+// The panel document (the skin may also have its editor unit's document).
+Rml::ElementDocument* panelDoc(SkinView& v) {
+    for (int i = 0; i < v.context()->GetNumDocuments(); ++i)
+        if (v.context()->GetDocument(i)->GetElementById("vol")) return v.context()->GetDocument(i);
+    return v.context()->GetNumDocuments() ? v.context()->GetDocument(0) : nullptr;
+}
+template <class T> T* get(SkinView& v, const char* id) { return dynamic_cast<T*>(byId(v, id)); }
 bool hasClass(SkinView& v, const char* id, const char* cls) {
-    Rml::ElementDocument* d = v.context()->GetDocument(0);
-    Rml::Element* e = d ? d->GetElementById(id) : nullptr;
+    Rml::Element* e = byId(v, id);
     return e && e->IsClassSet(cls);
 }
 std::string sprite(SkinView& v, const char* id) { auto* e = get<SpriteElement>(v, id); return e ? e->shownSprite() : "(missing)"; }
@@ -269,8 +296,8 @@ int main() {
             w.update(t);
             v.evalForTest("mine = 'v'");
             CHECK_EQ(w.evalForTest("mine"), std::string("nil"));
-            CHECK_EQ(w.evalForTest("#events"), std::string("3"));             // load, plugin, the first onDisplay
-            CHECK_EQ(w.evalForTest("events[3]"), std::string("display 00 00 00 00"));
+            CHECK_EQ(w.evalForTest("#events"), std::string("4"));             // load, plugin, editor load, the first onDisplay
+            CHECK_EQ(w.evalForTest("events[4]"), std::string("display 00 00 00 00"));
             w.evalForTest("panel.press(0x55)");
             CHECK_EQ(port2.last(), std::string("81 55"));
             CHECK(port.last() != "81 55");
@@ -281,7 +308,7 @@ int main() {
         // Reload (F5): a fresh environment, positions kept.
         CHECK(v.load(kSkins + "/test", "test", err));
         v.update(t += 0.02);
-        CHECK_EQ(v.evalForTest("#events"), std::string("3"));
+        CHECK_EQ(v.evalForTest("#events"), std::string("4"));
         CHECK_EQ(v.evalForTest("mine"), std::string("nil"));
         CHECK_EQ(sprite(v, "vol"), std::string("image(knob_006)"));
 
@@ -322,7 +349,7 @@ int main() {
         SkinView v(p2, {"Phyzo", "DHammers", "9.9.9"}, nullptr);
         std::string err;
         CHECK(v.load(kSkins + "/test", "test", err));
-        Rml::ElementDocument* doc = v.context()->GetDocument(0);
+        Rml::ElementDocument* doc = panelDoc(v);
         { ViewScope scope(&v); doc->RemoveAttribute("onframe"); }                  // no frame handler
         double t = 50.0;
         v.update(t);
@@ -374,6 +401,104 @@ int main() {
         v.update(t += 0.02);
         v.update(t += 0.02);
         CHECK_EQ(count("display 01 02 03 04"), std::string("1"));
+    }
+
+
+    // The editor unit (F-30): <name>-editor.rml below the body, the glass rows, the legends, the Lua editor API.
+    {
+        EditorFakePort p3;
+        SkinView v(p3, {"Phyzo", "DHammers", "9.9.9"}, nullptr);
+        v.setViewport(1795, 848 + 394, 1.0f);
+        std::string err;
+        CHECK(v.load(kSkins + "/test", "test", err));
+        CHECK(v.hasEditor() && !v.editorVisible());
+        CHECK_EQ(v.evalForTest("hasEvent('editor load')"), std::string("true"));
+        { ViewScope scope(&v); panelDoc(v)->RemoveAttribute("onframe"); }      // only the editor's own wake-ups below
+        CHECK(p3.ed.sound[0] == 0x0B && p3.ed.sound[3] == 0x07 && p3.ed.osc[1] == 0x15 && p3.ed.env[1] == 0x0C);
+        double t = 70.0;
+        EditorState& st = p3.ed.st;
+        st.rows = {std::string("FILTER CUTOFF") + std::string(32, ' ') + "64   ", std::string(50, ' '), std::string(50, ' '), std::string(50, ' ')};
+        for (int c = 45; c < 47; ++c) st.underline[0][size_t(c)] = true;
+        st.area = "SOUND"; st.section = "FILTER"; st.areas = {"SOUND", "OSC"}; st.sections = {"FILTER", "WAVE"};
+        st.soundTargets = true; st.sound = 1; st.page = 2; st.pages = 3; st.next = true; st.follow = false; st.data = true;
+        st.serial = 1;
+        v.update(t);
+        auto* r0 = dynamic_cast<VfdRowElement*>(byId(v, "r0"));
+        CHECK(r0 && r0->shownChar(0) == 0);                                      // hidden: nothing applied
+        v.setEditorVisible(true);
+        v.update(t += 0.02);
+        CHECK(r0 && r0->shownChar(0) == 'F' && r0->shownChar(45) == '6');
+        CHECK(r0 && r0->GetNumChildren() == 50);
+        Rml::Element* cell0 = r0 ? r0->GetChild(0) : nullptr;
+        Rml::Element* cell13 = r0 ? r0->GetChild(13) : nullptr;
+        CHECK(cell0 && !cell0->IsClassSet("ghost") && cell13 && cell13->IsClassSet("ghost"));
+        const Rml::Property* deco = cell0 ? cell0->GetChild(0)->GetLocalProperty("decorator") : nullptr;
+        CHECK(deco && deco->ToString().find("chr_070") != std::string::npos);    // 'F' = 70
+        CHECK(r0 && r0->GetChild(45)->GetChild(1)->IsClassSet("lit") && !r0->GetChild(44)->GetChild(1)->IsClassSet("lit"));
+        auto lit = [&](const char* id) { Rml::Element* e = byId(v, id); return e && e->IsClassSet("lit"); };
+        auto avail = [&](const char* id) { Rml::Element* e = byId(v, id); return e && e->IsClassSet("avail"); };
+        CHECK(lit("lSound") && avail("lSound") && !avail("lReverb") && !lit("lReverb"));
+        CHECK(lit("lFilter") && lit("lS2") && lit("lP2") && avail("lP2") && !avail("lP5"));
+        CHECK(lit("lNext") && !lit("lFollow") && avail("lFollow") && lit("lData"));
+        CHECK_EQ(v.evalForTest("lastEvent()"), std::string("editor SOUND FILTER 2/3"));
+        CHECK_EQ(v.evalForTest("editor.state().rows[1]:sub(1, 13)"), std::string("FILTER CUTOFF"));
+        CHECK_EQ(v.evalForTest("editor.isOpen()"), std::string("true"));
+        // Clicks on legends (the editor unit sits 848 dp down): to the editor; Lua can click too.
+        click(v, 388 + 10, 848 + 55 + 5);
+        click(v, 1458 + 10, 848 + 55 + 5);
+        click(v, 1601 + 10, 848 + 55 + 5);                                       // an indicator: not a control
+        v.evalForTest("editor.click('page', '3')");
+        CHECK((p3.ed.commands == std::vector<std::string>{"area SOUND", "toggle_follow FOLLOW", "page 3"}));
+        // The serial unchanged: nothing re-applied, no Lua call.
+        const auto lua0 = v.stats().luaCalls;
+        v.update(t += 0.02);
+        CHECK_EQ(int(v.stats().luaCalls - lua0), 0);
+        // A focused value blinks at 2.5 Hz (wake-ups, not continuous frames).
+        st.focusRow = 0; st.focusCol = 45; st.focusLen = 2; ++st.serial;
+        v.update(t = 80.05);
+        CHECK(r0 && r0->GetChild(45)->IsClassSet("focus") && !r0->GetChild(44)->IsClassSet("focus"));
+        CHECK(std::fabs(v.nextWake() - 80.2) < 1e-9);
+        v.update(t = 80.25);
+        CHECK(r0 && r0->GetChild(45)->IsClassSet("blink"));
+        v.update(t = 80.45);
+        CHECK(r0 && !r0->GetChild(45)->IsClassSet("blink"));
+        st.focusRow = -1; ++st.serial;
+        v.update(t += 0.02);
+        v.update(t += 0.02);
+        CHECK(std::isinf(v.nextWake()));
+        v.setEditorVisible(false);
+        CHECK(!v.editorVisible());
+    }
+    // A broken editor file: logged; the panel still loads, without an editor unit.
+    {
+        const auto tmp = std::filesystem::temp_directory_path() / "phyzo_skin_editor_test" / "brk";
+        std::filesystem::remove_all(tmp.parent_path());
+        std::filesystem::create_directories(tmp);
+        std::ofstream(tmp / "brk.rml") << "<rml><body><led id=\"a\" code=\"1\"/></body></rml>";
+        std::ofstream(tmp / "brk-editor.rml") << "<rml><body><vfdrow row=\"0\"></body>";
+        EditorFakePort p4;
+        SkinView v(p4, {"Phyzo", "DHammers", "9.9.9"}, nullptr);
+        std::string err;
+        CHECK(v.load(tmp.u8string(), "brk", err));
+        CHECK(!v.hasEditor());
+        bool warned = false;
+        for (const auto& l : v.log()) warned |= l.find("brk-editor.rml could not be read") != std::string::npos;
+        CHECK(warned);
+        std::filesystem::remove_all(tmp.parent_path());
+    }
+    // legendState: the rules for every legend kind.
+    {
+        EditorState s;
+        s.areas = {"OSC"}; s.area = "OSC"; s.oscTargets = true; s.soundTargets = true; s.osc = 1; s.pages = 2; s.page = 1;
+        bool l, a;
+        legendState(s, "target", "O2", l, a); CHECK(l && a);
+        legendState(s, "target", "O1", l, a); CHECK(!l && a);
+        s.oscTargets = false;
+        legendState(s, "target", "O2", l, a); CHECK(!l && !a);
+        legendState(s, "page", "3", l, a); CHECK(!l && !a);
+        legendState(s, "page_prev", "", l, a); CHECK(!l && !a);
+        legendState(s, "label", "PAGE", l, a); CHECK(l && !a);
+        legendState(s, "area", "ARP", l, a); CHECK(!l && !a);
     }
 
     std::printf("skin_test: %s\n", failures ? "FAILED" : "passed");

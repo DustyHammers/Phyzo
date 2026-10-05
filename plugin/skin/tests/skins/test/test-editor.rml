@@ -1,0 +1,29 @@
+<rml>
+<head>
+	<title>Phyzo test skin: editor unit</title>
+	<link type="text/rcss" href="test.rcss"/>
+	<style>
+		body { width: 1795dp; height: 394dp; background-color: #101018; }
+		vfdrow { display: block; position: absolute; left: 149dp; width: 1500dp; height: 39dp; spriteprefix: chr_; }
+		#r0 { top: 118dp; } #r1 { top: 173dp; } #r2 { top: 228dp; } #r3 { top: 283dp; }
+		vfdrow span.cell { display: inline-block; width: 22dp; height: 39dp; margin-right: 8dp; }
+		legend { display: block; position: absolute; height: 18dp; color: #602020; }
+		legend.lit { color: #ff3020; }
+	</style>
+</head>
+<body onload="editorLoaded()">
+	<vfdrow id="r0" row="0"/>
+	<vfdrow id="r1" row="1"/>
+	<vfdrow id="r2" row="2"/>
+	<vfdrow id="r3" row="3"/>
+	<legend id="lSound" action="area" value="SOUND" style="left: 388dp; top: 55dp; width: 55.5dp;">SOUND</legend>
+	<legend id="lReverb" action="area" value="REVERB" style="left: 632dp; top: 55dp; width: 60dp;">REVERB</legend>
+	<legend id="lFilter" action="section" value="FILTER" style="left: 260dp; top: 73dp; width: 50.5dp;">FILTER</legend>
+	<legend id="lS2" action="target" value="S2" style="left: 1491.5dp; top: 73dp; width: 24.5dp;">S2</legend>
+	<legend id="lP2" action="page" value="2" style="left: 1501dp; top: 91dp; width: 16dp;">2</legend>
+	<legend id="lP5" action="page" value="5" style="left: 1555dp; top: 91dp; width: 16dp;">5</legend>
+	<legend id="lNext" action="page_next" value="NEXT" style="left: 906.8dp; top: 55dp; width: 56dp;">NEXT</legend>
+	<legend id="lFollow" action="toggle_follow" value="FOLLOW" style="left: 1458dp; top: 55dp; width: 63.5dp;">FOLLOW</legend>
+	<legend id="lData" action="indicator" value="DATA" style="left: 1601dp; top: 55dp; width: 42dp;">DATA</legend>
+</body>
+</rml>

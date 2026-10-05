@@ -72,6 +72,7 @@ endforeach()
 add_library(phyzo_core STATIC
   src/machine.cpp src/mc68340.cpp src/esp2_stub.cpp src/esp2_core.cpp src/voice_core.cpp src/panel_model.cpp
   src/os_image.cpp src/rom_id.cpp src/musashi_glue.cpp src/resampler.cpp src/engine.cpp src/midi_stream.cpp
+  src/editor/editor_proto.cpp src/editor/editor_tables.cpp src/editor/editor_pages.cpp src/editor/editor_controller.cpp
   ${MUSASHI_SOURCES})
 target_include_directories(phyzo_core PUBLIC src PRIVATE "${MUSASHI_DIR}" "${MUSASHI_DIR}/softfloat" "${GENERATED_DIR}")
 find_package(Threads REQUIRED)
@@ -107,6 +108,11 @@ foreach(variant fast trace)
   endif()
   target_compile_options(${exe} PRIVATE -Wall -Wextra)
 endforeach()
+
+add_executable(editor_tables tools/editor_tables.cpp src/os_image.cpp src/rom_id.cpp src/editor/editor_tables.cpp
+  src/editor/editor_pages.cpp)
+target_include_directories(editor_tables PRIVATE src)
+target_compile_options(editor_tables PRIVATE -Wall -Wextra)
 
 add_executable(os_disasm tools/os_disasm.cpp src/os_image.cpp)
 target_include_directories(os_disasm PRIVATE src)
@@ -145,6 +151,11 @@ add_executable(os_update_test tests/os_update_test.cpp src/rom_id.cpp src/os_ima
 target_include_directories(os_update_test PRIVATE src)
 target_compile_options(os_update_test PRIVATE -Wall -Wextra)
 add_test(NAME os_update COMMAND os_update_test)
+add_executable(editor_test tests/editor_test.cpp src/editor/editor_proto.cpp src/editor/editor_tables.cpp src/editor/editor_pages.cpp
+  src/editor/editor_controller.cpp)
+target_include_directories(editor_test PRIVATE src)
+target_compile_options(editor_test PRIVATE -Wall -Wextra)
+add_test(NAME editor COMMAND editor_test)
 add_executable(esp2_core_test tests/esp2_core_test.cpp src/esp2_core.cpp)
 target_include_directories(esp2_core_test PRIVATE src)
 target_compile_options(esp2_core_test PRIVATE -Wall -Wextra)
@@ -182,6 +193,10 @@ add_executable(midi_test tests/midi_test.cpp)
 target_link_libraries(midi_test PRIVATE phyzo_core)
 target_compile_options(midi_test PRIVATE -Wall -Wextra)
 add_test(NAME midi COMMAND midi_test)
+add_executable(editor_engine_test tests/editor_engine_test.cpp)
+target_link_libraries(editor_engine_test PRIVATE phyzo_core)
+target_compile_options(editor_engine_test PRIVATE -Wall -Wextra)
+add_test(NAME editor_engine COMMAND editor_engine_test)
 
 add_executable(audio_in_test tests/audio_in_test.cpp)
 target_link_libraries(audio_in_test PRIVATE phyzo_core)

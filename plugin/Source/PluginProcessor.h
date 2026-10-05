@@ -4,10 +4,12 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <array>
 #include <atomic>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <string>
 #include <vector>
+#include "editor/editor_controller.h"
 #include "engine.h"
 #include "rom_id.h"
 #include "skin_port.h"
@@ -58,6 +60,15 @@ public:
     std::atomic<bool> editorScaleLegacy{false};      // editorScale is on the old scale (a version 3 project, not yet
                                                      // converted by an editor); kept so with the project until then
 
+    // ---- the editor unit (F-30), message thread
+    // Wanted: the project's choice (right-click > Editor), saved with it. Active: a window shows the unit; only then
+    // does the editor read from the OS (with no window, or the unit closed, nothing is sent).
+    bool editorWanted() const { return editorWanted_.load(); }
+    void setEditorWanted(bool on) { editorWanted_ = on; }
+    void setEditorActive(bool on);
+    uint32_t editorSerial() const { return editor_.serial(); }
+    void loadWaveNames(const juce::File& skinFolder);    // the optional wave-name file of the skin
+    static constexpr const char* kWaveNamesFile = "waves.txt";
     struct Meter {                                   // CPU per block, written by the audio thread
         std::atomic<float> avg{0}, peak{0}, last{0}, lastMs{0}, blockMs{0};
         std::atomic<int> blockSize{0};
@@ -87,6 +98,8 @@ private:
         }
         std::array<uint8_t, 4> segments() override { return engine.segments(); }
         bool audioClip() override { return engine.inputClip(); }
+        skin::EditorPort* editor() override { return ed; }
+        skin::EditorPort* ed = nullptr;
         bool knobPosition(const std::string& id, int& raw) override {
             std::lock_guard<std::mutex> lk(mtx);
             auto it = knobs.find(id);
@@ -100,6 +113,51 @@ private:
         std::map<std::string, int> knobs;
     };
 
+    // The editor's view of the engine (editor::Link) and the skin's view of the editor (skin::EditorPort).
+    class EditorLink : public editor::Link {
+    public:
+        explicit EditorLink(Engine& e) : engine(e) {}
+        void setOpen(bool on) override { engine.setEditorOpen(on); }
+        bool send(const std::vector<uint8_t>& m) override { return engine.editorSend(m.data(), m.size()); }
+        void setStandingRead(const std::vector<std::vector<uint8_t>>& msgs) override { engine.setEditorStandingRead(msgs); }
+        bool popReply(std::vector<uint8_t>& m) override {
+            if (!engine.editorReplies().peekSize()) return false;
+            m.clear();
+            engine.editorReplies().pop([&](uint8_t b) { m.push_back(b); });
+            return true;
+        }
+        uint64_t ledStateMessages() const override { return engine.ledStateMessages(); }
+        uint64_t presetTriggers() const override { return engine.presetTriggers(); }
+        uint64_t panelGestures() const override { return engine.panelGestures(); }
+        int ledMode(int code) const override { return int(engine.led(code).mode); }
+        std::array<char, 4> display() const override { return engine.display(); }
+        bool running() const override { return engine.state() == Engine::State::Running; }
+        Engine& engine;
+    };
+    class EditorPort : public skin::EditorPort {
+    public:
+        explicit EditorPort(PhyzoProcessor& p) : proc(p) {}
+        bool editorOpen() override { return proc.editorActive_.load(); }
+        uint32_t editorSerial() override { return proc.editor_.serial(); }
+        void editorState(skin::EditorState& out) override;
+        void editorCommand(const std::string& action, const std::string& text) override {
+            proc.postToEditor([action, text](editor::Controller& c) { c.command(action, text); });
+        }
+        void editorFollowLeds(const std::array<int, 4>& s, const std::array<int, 2>& o, const std::array<int, 3>& e) override {
+            proc.postToEditor([s, o, e](editor::Controller& c) { c.setFollowLeds(s, o, e); });
+        }
+        PhyzoProcessor& proc;
+    };
+    struct EditorTicker : juce::Timer {
+        explicit EditorTicker(PhyzoProcessor& p) : proc(p) {}
+        void timerCallback() override { proc.editorTick(); }
+        PhyzoProcessor& proc;
+    };
+    // Skin threads hand their editor calls to the message thread through this queue.
+    void postToEditor(std::function<void(editor::Controller&)> f);
+    void editorTick();
+    void loadEditorTables();
+
     void timerCallback() override;
     void scanRoms();
     void applyMidiSettings();
@@ -108,6 +166,14 @@ private:
     Engine engine_;
     Port port_{engine_};
     VirtualMidiPort vport_{engine_.virtualMidiOut(), &PhyzoProcessor::virtualBytes, this};   // after engine_: closed first
+    EditorLink editorLink_{engine_};
+    editor::Controller editor_{editorLink_};
+    EditorPort editorPort_{*this};
+    EditorTicker editorTicker_{*this};
+    std::atomic<bool> editorWanted_{false}, editorActive_{false};
+    std::mutex editorQueueMtx_;
+    std::vector<std::function<void(editor::Controller&)>> editorQueue_;
+    std::string editorTablesFor_;                    // the OS file the editor's tables were read from
     juce::File dataFolder_;
     romid::ScanResult scan_;
     int timerTicks_ = 0;

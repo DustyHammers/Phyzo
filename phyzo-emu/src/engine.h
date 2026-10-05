@@ -110,6 +110,30 @@ public:
     static constexpr size_t kMaxMidiMessage = size_t(512) << 10;   // longest SysEx passed whole (512 KB)
     static constexpr size_t kVirtualBacklog = 16384;   // virtual messages wait while this many port bytes are unread
 
+    // ---- editor (docs/editor/EDITOR_SPEC.md, "MIDI coexistence"). Nothing here runs while the editor is closed.
+    // Message thread. Closing drops what the editor still had queued; replies already requested are still kept out
+    // of the MIDI output when they arrive (or until kEditorReplyTimeoutSamples).
+    void setEditorOpen(bool on);
+    bool editorOpen() const { return editorOpen_.load(); }
+    // A whole message for the OS's MIDI input (message thread). The audio thread queues it at a block's start, after
+    // the virtual port's messages, whole and at cable speed like them; never inside another message. False when closed
+    // or the queue is full.
+    bool editorSend(const uint8_t* m, size_t n);
+    // The read that refreshes the visible page (whole messages; message thread). The audio thread queues it directly
+    // behind every program change, bank select or SysEx (a dump) going into the OS from the host or the virtual port,
+    // so the read sees the new preset. Empty: none.
+    void setEditorStandingRead(const std::vector<std::vector<uint8_t>>& msgs);
+    // The OS's replies to the editor's requests (partial read 0x44, whole object 0x41 while a request is pending),
+    // taken out of the MIDI output and passed here instead (audio thread -> message thread). All other output passes.
+    MessageRing& editorReplies() { return edReplies_; }
+    // Counters for the editor's re-read triggers (any thread):
+    uint64_t ledStateMessages() const { return ledStateMessages_.load(); }   // LED on/off/flash (never beat flash 9D)
+    uint64_t presetTriggers() const { return presetTriggers_.load(); }       // program change, bank select, SysEx into the OS
+    uint64_t panelGestures() const { return panelGestures_.load(); }         // panel knob moves and button presses
+    uint64_t editorRequestsForTest() const { return editorRequests_; }
+    static constexpr uint64_t kEditorReplyTimeoutSamples = 5 * 44100;
+    static constexpr size_t kStandingReadBytes = 4096;
+
     // ---- tests
     std::vector<uint8_t> machineStateForTest();
     uint32_t peekForTest(uint32_t addr, int size);
@@ -144,6 +168,8 @@ private:
     void publishLeds(const Machine& m);
     void midiOut(Machine& m, int n);
     void emitMidiOut(const uint8_t* d, size_t size, int offset);
+    void queueEditor(Machine& m, const uint8_t* d, size_t n, uint64_t at);
+    void queueStandingRead(Machine& m, uint64_t at);
 
     // ROMs (message thread)
     std::string osPath_, wavePath_, osMd5_, waveMd5_;
@@ -189,6 +215,24 @@ private:
     size_t hostUsed_ = 0;
     std::atomic<bool> virtualOn_{false}, hostOutOn_{false};
     std::atomic<uint64_t> vinDropped_{0}, voutDropped_{0}, hostOutDropped_{0};
+
+    // editor: requests in (message thread -> audio thread), replies out (audio thread -> message thread)
+    std::atomic<bool> editorOpen_{false};
+    std::mutex edSendMtx_;                           // editorSend may be called from more than one UI thread
+    MessageRing edOut_{size_t(1) << 16}, edReplies_{size_t(1) << 20};
+    // the standing read: a seqlock-guarded copy (message thread writes, audio thread copies at a trigger)
+    std::mutex standingMtx_;
+    std::atomic<uint32_t> standingSeq_{0};
+    std::array<std::atomic<uint8_t>, kStandingReadBytes> standing_{};   // [len hi, len lo, bytes]... then a 0 length
+    std::array<uint8_t, kStandingReadBytes> standingCopy_{};            // audio thread
+    // Audio thread: who sent each request the OS has not answered yet (1 = the editor, 0 = the host or the virtual
+    // port), oldest first; the OS answers in order, so each reply goes to the sender of the oldest request.
+    std::array<uint8_t, 256> replyOwners_{};
+    size_t ownersHead_ = 0, ownersCount_ = 0;
+    void noteRequest(bool editor, uint64_t sample);
+    uint64_t lastRequestSample_ = 0;
+    uint64_t editorRequests_ = 0;
+    std::atomic<uint64_t> ledStateMessages_{0}, presetTriggers_{0}, panelGestures_{0};
 
     // status
     std::atomic<State> state_{State::NoRoms};

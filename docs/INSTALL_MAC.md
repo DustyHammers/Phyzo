@@ -93,6 +93,8 @@ Right-click anywhere in the window for the menu (the same in every skin):
   133 % a file skin's art is shown at its native resolution; above that it is enlarged beyond it. 100 % is the size
   that used to be called 75 %; projects saved with the old sizes reopen at the same size on screen. The Built-in
   skin's sizes are unchanged.
+- **Editor**: attaches the editor unit below the panel (the window grows; the same item closes it; remembered per
+  project). Available when the skin has an editor unit (`<name>-editor.rml`); greyed out otherwise. Read-only for now.
 - **Developer > RmlUi debugger**: RmlUi's inspector, for working on a skin.
 
 The skin is a global setting (every Phyzo window and project). The window size is remembered twice: globally, for

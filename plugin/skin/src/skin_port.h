@@ -3,6 +3,7 @@
 #pragma once
 #include <array>
 #include <cstdint>
+#include <set>
 #include <string>
 
 namespace skin {
@@ -13,6 +14,34 @@ struct LedReport {
     LedMode mode = LedMode::Off;
     uint32_t beats = 0;              // number of 9D messages so far for this code
     float beatIntervalMs = 0;        // machine time between the last two 9D messages (0: only one so far)
+};
+
+// The editor unit (F-30; docs/editor/EDITOR_SPEC.md): what the skin's editor document shows and the legends it can
+// click. The plugin implements it over the editor controller.
+struct EditorState {
+    static constexpr int kRows = 4, kCols = 50;
+    std::array<std::string, kRows> rows;             // kCols characters each
+    std::array<std::array<bool, kCols>, kRows> underline{}, dot{};
+    int focusRow = -1, focusCol = 0, focusLen = 0;   // the focused value (blinks); row -1: none
+    std::string area, section;                       // legends of the current area and section
+    int sound = 0, osc = 0;                          // 0-3, 0-1
+    bool soundTargets = false, oscTargets = false;   // S1-S4 / O1 / O2 apply to the area
+    int page = 0, pages = 0;                         // 1-based page in the section, pages in the section
+    bool prev = false, next = false, follow = true, data = false, edited = false;
+    std::set<std::string> areas, sections;           // legends that lead somewhere
+    uint32_t serial = 0;                             // changes when anything above changes
+};
+
+class EditorPort {
+public:
+    virtual ~EditorPort() = default;
+    virtual bool editorOpen() = 0;
+    virtual uint32_t editorSerial() = 0;
+    virtual void editorState(EditorState& out) = 0;
+    // A legend was clicked (action and text as in docs/editor/EDITOR_PANEL_LAYOUT.json).
+    virtual void editorCommand(const std::string& action, const std::string& text) = 0;
+    // The LEDs Follow watches: Sound 1-4, OSC 1/2, envelope Pitch / Filter / Amp (-1: none).
+    virtual void editorFollowLeds(const std::array<int, 4>& sound, const std::array<int, 2>& osc, const std::array<int, 3>& env) = 0;
 };
 
 class PanelPort {
@@ -27,6 +56,7 @@ public:
     virtual bool knobPosition(const std::string& id, int& raw) = 0;
     virtual void setKnobPosition(const std::string& id, int raw) = 0;
     virtual bool audioClip() { return false; }                // Input Clip LED (F-19); unlit until then
+    virtual EditorPort* editor() { return nullptr; }          // the editor unit (F-30); none: no editor
 };
 
 struct PluginInfo {
