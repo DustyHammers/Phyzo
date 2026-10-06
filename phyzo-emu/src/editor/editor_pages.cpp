@@ -319,6 +319,16 @@ Screen render(const Page& page) {
                 const int col = int(k) * kHalf;
                 put(s, row, col, x.name, 3, false, false, -1);   // the number
                 put(s, row, col + 4, x.value, 16, false, false, -1);   // names are never underlined
+                if (x.ref >= 0) s.values.push_back({row, col, 4 + 16, x.ref, true});   // the number and name pick it
+            }
+            break;
+        case RowKind::Fixed:
+            for (const Item& x : r.items) {
+                if (x.col < 0 || x.col >= kCols) continue;
+                const std::string name = upper(trim(x.name));
+                put(s, row, x.col, name, int(name.size()), false, false, -1);
+                const int at = x.col + (name.empty() ? 0 : int(name.size()) + 1);
+                if (x.ref >= 0 && at < kCols) put(s, row, at, x.value, std::min(int(x.room()), kCols - at), false, true, x.ref);
             }
             break;
         }

@@ -38,4 +38,25 @@ inline float scaleForWidth(int width, int baseWidth, bool fileSkin) {
 // A file skin size saved under the old scale (1.0 = the full body size) on the new scale.
 inline float fromLegacy(float oldScale) { return clamp(oldScale * 4.0f / 3.0f); }
 
+// ---- the window fits the screen (F-32)
+// Room left for the host's own window frame and title bar above the plugin window, in points.
+constexpr int kHostFramePt = 32;
+// The largest scale whose window fits the usable area of the display (availW x availH points; the host's frame is
+// taken off the height), within 50-200 %.
+inline float fitScale(int availW, int availH, int baseW, int baseH, bool fileSkin) {
+    const float u = unit(fileSkin);
+    const float s = std::min(float(availW) / (float(baseW) * u), float(std::max(1, availH - kHostFramePt)) / (float(baseH) * u));
+    return std::min(kMax, std::max(kMin, s));
+}
+// Whether a Zoom step fits under the limit (its window is no larger than the limit's).
+inline bool stepFits(int percent, float limit) { return stepScale(percent) <= limit + 1e-4f; }
+// A scale that does not fit steps down to the largest Zoom step that does (50 % if none); one that fits is kept.
+inline float fitted(float scale, float limit) {
+    scale = clamp(scale);
+    if (scale <= limit + 1e-4f) return scale;
+    float best = kMin;
+    for (int z : kSteps) if (stepFits(z, limit)) best = stepScale(z);
+    return best;
+}
+
 }  // namespace winscale

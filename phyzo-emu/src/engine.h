@@ -130,6 +130,8 @@ public:
     uint64_t ledStateMessages() const { return ledStateMessages_.load(); }   // LED on/off/flash (never beat flash 9D)
     uint64_t presetTriggers() const { return presetTriggers_.load(); }       // program change, bank select, SysEx into the OS
     uint64_t panelGestures() const { return panelGestures_.load(); }         // panel knob moves and button presses
+    int lastPanelControl() const { return lastPanelControl_.load(); }        // the last panel control moved (0-25), -1: none
+    uint64_t panelControlMoves() const { return panelControlMoves_.load(); } // panel knob moves only (Follow on knobs)
     uint64_t editorRequestsForTest() const { return editorRequests_; }
     static constexpr uint64_t kEditorReplyTimeoutSamples = 5 * 44100;
     static constexpr size_t kStandingReadBytes = 4096;
@@ -233,6 +235,8 @@ private:
     uint64_t lastRequestSample_ = 0;
     uint64_t editorRequests_ = 0;
     std::atomic<uint64_t> ledStateMessages_{0}, presetTriggers_{0}, panelGestures_{0};
+    std::atomic<int> lastPanelControl_{-1};
+    std::atomic<uint64_t> panelControlMoves_{0};
 
     // status
     std::atomic<State> state_{State::NoRoms};

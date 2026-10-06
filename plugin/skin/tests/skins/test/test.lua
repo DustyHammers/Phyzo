@@ -25,7 +25,9 @@ end
 -- The editor unit (test-editor.rml)
 function editorLoaded()
 	note("editor load")
-	editor.followLeds{sound = {0x0B, 0x13, 0x03, 0x07}, osc = {0x06, 0x15}, env = {0x11, 0x0C, 0x0E}}
+	editor.followLeds{sound = {0x0B, 0x13, 0x03, 0x07}, osc = {0x06, 0x15}, env = {0x11, 0x0C, 0x0E},
+	                  noise = 0x02, lfo = 0x0F, filterKbd = 0x08}
+	editor.knobLabels{"P", "H", "Y", "Z", "O"}
 	editor.onChange(function()
 		local s = editor.state()
 		note("editor " .. s.area .. " " .. s.section .. " " .. s.page .. "/" .. s.pages)

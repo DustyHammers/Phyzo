@@ -38,6 +38,11 @@ public:
 
     std::function<void(bool ok, const juce::String& error)> onLoaded;
     std::function<void(const juce::MouseEvent&)> onRightClick;
+    // Right-click on a value of the editor unit (its reference): the value's list. Returns false to show the main
+    // menu instead.
+    std::function<bool(int ref)> onEditorValueMenu;
+    // A key for the editor unit (its focused value, typed entry); returns true if the editor used it.
+    std::function<bool(const juce::KeyPress&)> onEditorKey;
     // Drags in the bottom-right corner resize the window (the OpenGL view would hide the editor's own resizer):
     // phase 0 = start, 1 = drag (offset from the start, screen pixels), 2 = end.
     std::function<void(int phase, juce::Point<int> offset)> onCornerResize;

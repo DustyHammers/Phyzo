@@ -103,7 +103,10 @@ void PhyzoProcessor::EditorPort::editorState(skin::EditorState& out) {
         out.underline[size_t(r)] = v.screen.underline[size_t(r)];
         out.dot[size_t(r)] = v.screen.dot[size_t(r)];
     }
-    out.focusRow = -1;                               // no editing yet (F-30 step 4)
+    out.focusRow = v.focusRow; out.focusCol = v.focusCol; out.focusLen = v.focusLen;
+    out.typing = v.typing;
+    out.spans.clear();
+    for (const auto& s : v.screen.values) out.spans.push_back({s.row, s.col, s.len, s.ref, s.pick});
     out.area = v.area; out.section = v.section;
     out.sound = v.sound; out.osc = v.osc; out.oscBoth = v.oscBoth;
     out.soundTargets = v.soundTargets; out.oscTargets = v.oscTargets;

@@ -3,11 +3,14 @@
 //  2. Project state: version 4 keeps the size and its scale; a version 3 project's size is marked as old scale.
 //  3. The editor: an old-scale size reopens at the same physical size on a file skin (old x 4/3) and unchanged on
 //     Built-in; the corner drag (constrainer) stops at 50 % and 200 %; the menu steps size the window exactly.
+//  4. The window fits the screen (F-32): on a 1920 x 1055 pt usable area the window with the editor unit fits up to
+//     ~110 %; opening it at 133 % steps down to 100 %, the corner drag stops at the screen; the panel alone keeps 133 %.
 //
 //   window_scale_test <test skin folder>
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <cmath>
 #include <cstdio>
+#include "PluginEditor.h"
 #include "PluginProcessor.h"
 #include "SkinSettings.h"
 #include "WindowScale.h"
@@ -96,6 +99,13 @@ int main(int argc, char** argv) {
     CHECK(near(winscale::fromLegacy(0.75f), 1.0f) && near(winscale::fromLegacy(1.0f), 4.0f / 3.0f));
     CHECK(near(winscale::fromLegacy(1.8f), 2.0f));                                                    // beyond 200 %: clamped
     CHECK(near(winscale::scaleForWidth(1346, 1795, true), 1346.0f / 1346.25f));
+    // F-32: the largest scale that fits; a size that does not fit steps down to the largest step that does.
+    const float fit1080 = winscale::fitScale(1920, 1055, 1795, 1242, true);
+    CHECK(fit1080 > 1.05f && fit1080 < 1.11f);
+    CHECK(winscale::stepFits(100, fit1080) && !winscale::stepFits(125, fit1080));
+    CHECK(near(winscale::fitted(4.0f / 3.0f, fit1080), 1.0f) && near(winscale::fitted(1.05f, fit1080), 1.05f));
+    CHECK(near(winscale::fitted(2.0f, 0.3f), 0.5f));                                                  // nothing fits: 50 %
+    CHECK(near(winscale::fitScale(10000, 10000, 1795, 848, true), 2.0f));
     for (int z : winscale::kSteps) {                       // every step round-trips through a window width
         const float s = winscale::scaleForWidth(winscale::windowLength(1795, winscale::stepScale(z), true), 1795, true);
         CHECK(winscale::isStep(s, z));
@@ -111,6 +121,7 @@ int main(int argc, char** argv) {
     skins.createDirectory();
     for (const char* f : {"test.rml", "test.rcss", "test.lua", "test-editor.rml"})
         juce::File(argv[1]).getChildFile(f).copyFileTo(skins.getChildFile(juce::String(f).replace("test.rml", "scaletest.rml").replace("test-editor.rml", "scaletest-editor.rml")));
+    PhyzoEditor::screenAreaForTest = {0, 0, 6000, 4000};   // a screen every size fits (the test machine's may be small)
     const juce::String previousSkin = SkinSettings::skin();
     const float previousScale = SkinSettings::scale();
 
@@ -195,6 +206,26 @@ int main(int argc, char** argv) {
         p.setEditorWanted(false);
         p.editorScale = 1.0f;
         CHECK(openEditor(p) == juce::Point<int>(1346, 636));
+
+        // The window fits the screen (F-32): 1920 x 1055 pt usable (a 1080-pt display less the menu bar).
+        PhyzoEditor::screenAreaForTest = {0, 25, 1920, 1055};
+        p.setEditorWanted(true);
+        p.editorScale = 4.0f / 3.0f; p.editorScaleLegacy = false;
+        size = openEditor(p, [&](juce::AudioProcessorEditor& ed) {
+            auto& pe = static_cast<PhyzoEditor&>(ed);
+            CHECK(pe.maxScale() > 1.05f && pe.maxScale() < 1.11f);
+            ed.getConstrainer()->setBoundsForComponent(&ed, {0, 0, 10000, 10000}, false, false, true, true);
+            CHECK(ed.getHeight() <= 1055 - winscale::kHostFramePt && ed.getHeight() > winscale::windowLength(1242, 1.0f, true));
+        });
+        std::printf("window_scale_test: on a 1920 x 1055 pt screen the editor unit opens at %d x %d, fits up to %.0f %%\n",
+                    size.x, size.y, double(winscale::fitScale(1920, 1055, 1795, 1242, true)) * 100);
+        CHECK(size == juce::Point<int>(1346, winscale::windowLength(1242, 1.0f, true)));   // 133 % stepped down to 100 %
+        p.setEditorWanted(false);
+        p.editorScale = 4.0f / 3.0f;
+        CHECK(openEditor(p) == juce::Point<int>(1795, 848));                     // the panel alone fits at 133 %
+        p.editorScale = 1.0f;                                                    // a size that fits is kept
+        CHECK(openEditor(p) == juce::Point<int>(1346, 636));
+        PhyzoEditor::screenAreaForTest = {0, 0, 6000, 4000};
 
         // Built-in: its 100 % is unchanged, and an old-scale size is not converted.
         SkinSettings::setSkin(SkinSettings::kBuiltIn);

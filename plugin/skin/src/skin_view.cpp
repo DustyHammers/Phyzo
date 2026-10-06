@@ -389,6 +389,13 @@ void SkinView::mouseMove(int x, int y, int mods) {
     guarded(this, [&] {
         ViewScope s(this);
         mouseX_ = x; mouseY_ = y;
+        if (edDragRef_ >= 0 && port_.editor()) {     // an editor value: 1 step per 4 dp (Shift: per 16 dp)
+            const bool fine = (mods & ModShift) != 0;
+            const int perStep = fine ? kEditorFineDpPerStep : kEditorDpPerStep;
+            if (fine != edDragFine_) { edDragFine_ = fine; edDragBase_ = edDragSteps_; edDragStartY_ = y; }   // no jump
+            const int steps = edDragBase_ + int(std::floor(double(edDragStartY_ - y) / double(dpRatio_) / perStep));
+            if (steps != edDragSteps_) { edDragSteps_ = steps; port_.editor()->editorCommand("drag", std::to_string(steps)); }
+        }
         if (drag_) {
             const bool fine = (mods & ModShift) != 0;
             if (fine != dragFine_) { dragFine_ = fine; dragStartY_ = y; dragStartRaw_ = drag_->raw(); }   // no jump
@@ -399,7 +406,7 @@ void SkinView::mouseMove(int x, int y, int mods) {
     });
 }
 
-void SkinView::mouseDown(int button, int mods) {
+void SkinView::mouseDown(int button, int mods, int clicks) {
     guarded(this, [&] {
         ViewScope s(this);
         if (!context_) return;
@@ -412,6 +419,17 @@ void SkinView::mouseDown(int button, int mods) {
                 b->mouseDown((mods & ModAlt) != 0);
             } else if (LegendElement* l = findUp<LegendElement>(hover)) {
                 if (l->clickable() && port_.editor()) port_.editor()->editorCommand(l->action(), l->value());
+            } else if (const EditorSpan* sp = spanAt(hover); sp && port_.editor()) {
+                const std::string ref = std::to_string(sp->ref);
+                if (sp->pick) port_.editor()->editorCommand("pick", ref);
+                else if (clicks >= 2) port_.editor()->editorCommand("type", ref);
+                else {
+                    port_.editor()->editorCommand("drag_begin", ref);
+                    edDragRef_ = sp->ref;
+                    edDragStartY_ = mouseY_;
+                    edDragBase_ = edDragSteps_ = 0;
+                    edDragFine_ = (mods & ModShift) != 0;
+                }
             }
         }
         context_->ProcessMouseButtonDown(button, mods);
@@ -423,12 +441,35 @@ void SkinView::mouseUp(int button, int mods) {
         ViewScope s(this);
         if (context_) context_->ProcessMouseButtonUp(button, mods);
         if (button == 0) {
+            if (edDragRef_ >= 0) { edDragRef_ = -1; if (port_.editor()) port_.editor()->editorCommand("drag_end", ""); }
             drag_ = nullptr;
             if (mousePressed_) { PButtonElement* b = mousePressed_; mousePressed_ = nullptr; b->mouseRelease(); }
         }
     });
 }
 
+const EditorSpan* SkinView::spanAt(Rml::Element* hover) const {
+    VfdRowElement* row = findUp<VfdRowElement>(hover);
+    if (!row || !editorVisible_) return nullptr;
+    const int col = row->cellAt(hover);
+    for (const EditorSpan& s : spans_)
+        if (s.row == row->row() && col >= s.col && col < s.col + s.len) return &s;
+    return nullptr;
+}
+
+int SkinView::editorValueAt(int x, int y) {
+    int ref = -1;
+    guarded(this, [&] {
+        ViewScope s(this);
+        if (!context_) return;
+        mouseX_ = x; mouseY_ = y;
+        context_->ProcessMouseMove(x, y, 0);
+        if (const EditorSpan* sp = spanAt(context_->GetHoverElement()); sp && !sp->pick) ref = sp->ref;
+    });
+    return ref;
+}
+
+// The mouse wheel never changes editor values (it only scrolls, as RmlUi does).
 void SkinView::mouseWheel(float deltaY, int mods) {
     guarded(this, [&] {
         ViewScope s(this);
@@ -550,6 +591,7 @@ bool SkinView::applyEditor() {
     EditorState st;
     ep->editorState(st);
     editorFocus_ = st.focusRow >= 0 && st.focusLen > 0;
+    spans_ = st.spans;
     const bool blinkOff = editorFocus_ && blinkPhase();
     const bool changedState = !editorApplied_ || serial != editorSerial_;
     editorApplied_ = true;

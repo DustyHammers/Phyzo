@@ -31,7 +31,8 @@ constexpr double kBeatLitMs = 100;            // 9D beat flash: lit for min(this
 constexpr double kFrameEventHz = 60;          // body onframe at most this often
 constexpr double kLuaTimeoutSeconds = 3;      // longest a single entry into Lua may run
 constexpr float kBodyWidthDp = 1795, kBodyHeightDp = 848;   // document body size; window = body x zoom
-constexpr float kEditorHeightDp = 394;        // the editor unit (<name>-editor.rml), attached below the body
+constexpr float kEditorHeightDp = 394;
+constexpr int kEditorDpPerStep = 4, kEditorFineDpPerStep = 16;   // dragging an editor value        // the editor unit (<name>-editor.rml), attached below the body
 
 // Whether a legend on the editor glass is lit (active) and whether clicking it leads somewhere.
 void legendState(const EditorState& s, const std::string& action, const std::string& value, bool& lit, bool& avail);
@@ -81,13 +82,17 @@ public:
 
     // Input in physical pixels (same space as setViewport). button: 0 left, 1 right, 2 middle.
     void mouseMove(int x, int y, int mods);
-    void mouseDown(int button, int mods);
+    // clicks: 2 for the second press of a double-click (the window system's count): typed entry on an editor value.
+    void mouseDown(int button, int mods, int clicks = 1);
     void mouseUp(int button, int mods);
     void mouseWheel(float deltaY, int mods);   // positive: towards the user (scroll down)
     void mouseLeave();
     void releaseHeldButtons();                 // Esc
     void keyDown(int rmlKey, int mods);
     void keyUp(int rmlKey, int mods);
+
+    // The editor value (its reference) at a point in physical pixels, -1 if none: the plugin's right-click list.
+    int editorValueAt(int x, int y);
 
     void setDebuggerVisible(bool on);
     bool debuggerVisible() const { return debugger_; }
@@ -176,6 +181,10 @@ private:
     bool editorVisible_ = false;
     uint32_t editorSerial_ = 0;
     bool editorApplied_ = false, editorBlinkOff_ = false, editorFocus_ = false;
+    std::vector<EditorSpan> spans_;                  // the editor's values on the glass (from the last state applied)
+    const EditorSpan* spanAt(Rml::Element* hover) const;
+    int edDragRef_ = -1, edDragStartY_ = 0, edDragBase_ = 0, edDragSteps_ = 0;   // dragging an editor value
+    bool edDragFine_ = false;
     KnobElement* drag_ = nullptr;
     int dragY_ = 0, dragStartY_ = 0, dragStartRaw_ = 0;
     bool dragFine_ = false;

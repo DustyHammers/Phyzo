@@ -92,9 +92,26 @@ Right-click anywhere in the window for the menu (the same in every skin):
   window's bottom-right corner (the small grip) to any size from 50 to 200 %; the skin keeps its proportions. At
   133 % a file skin's art is shown at its native resolution; above that it is enlarged beyond it. 100 % is the size
   that used to be called 75 %; projects saved with the old sizes reopen at the same size on screen. The Built-in
-  skin's sizes are unchanged.
+  skin's sizes are unchanged. The window never gets larger than your screen: sizes that don't fit are greyed out,
+  the corner drag stops at the screen's edge, and a project saved at a size that doesn't fit (for example with the
+  editor unit open) opens at the largest size that does. On a 1080-point display the window with the editor unit fits
+  up to about 110 %.
 - **Editor**: attaches the editor unit below the panel (the window grows; the same item closes it; remembered per
-  project). Available when the skin has an editor unit (`<name>-editor.rml`); greyed out otherwise. Read-only for now.
+  project). Available when the skin has an editor unit (`<name>-editor.rml`); greyed out otherwise.
+
+In the editor unit:
+
+- The legends choose what is shown: the area (SYSTEM, PRESETS, COMMON, SOUND, OSC, ARP), the section, the sound (S1-S4)
+  and oscillator (O1/O2), the page (PAGE, PREV / NEXT). **FOLLOW** makes the editor follow the panel: the sound and
+  oscillator being edited there, and, when you turn a panel knob, the page with that knob's value.
+- **Edit a value**: click and hold it, then drag up or down (one step per small movement; hold Shift for fine steps).
+  **Double-click** it to type a value (Enter sends, Esc cancels). **Right-click** it for the synth's list of values (or
+  the waves, notes, arp presets) and **Revert** (back to the value before your edits since the preset loaded). With a
+  value selected (it blinks), the arrow keys move to the next value and **+** / **-** step it. The mouse wheel never
+  changes values.
+- Values that can't be edited yet ignore the mouse. **EDITED** lights after an edit until another preset is loaded.
+- **PRESETS**: click a preset's name to load it.
+- The synth's main panel is never changed by the editor; save the preset on the panel as usual to keep your edits.
 - **Developer > RmlUi debugger**: RmlUi's inspector, for working on a skin.
 
 The skin is a global setting (every Phyzo window and project). The window size is remembered twice: globally, for

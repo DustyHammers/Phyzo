@@ -58,11 +58,15 @@ public:
     bool open = true;
     std::vector<std::string> commands;
     std::array<int, 4> sound{}; std::array<int, 2> osc{}; std::array<int, 3> env{};
+    int noise = 0, lfo = 0, filterKbd = 0;
+    std::array<std::string, 5> knobLabels;
     bool editorOpen() override { return open; }
     uint32_t editorSerial() override { return st.serial; }
     void editorState(EditorState& out) override { out = st; }
     void editorCommand(const std::string& a, const std::string& t) override { commands.push_back(a + " " + t); }
     void editorFollowLeds(const std::array<int, 4>& s, const std::array<int, 2>& o, const std::array<int, 3>& e) override { sound = s; osc = o; env = e; }
+    void editorFollowExtraLeds(int n, int l, int f) override { noise = n; lfo = l; filterKbd = f; }
+    void editorKnobLabels(const std::array<std::string, 5>& k) override { knobLabels = k; }
 };
 class EditorFakePort : public FakePort {
 public:
@@ -415,6 +419,12 @@ int main() {
         CHECK_EQ(v.evalForTest("hasEvent('editor load')"), std::string("true"));
         { ViewScope scope(&v); panelDoc(v)->RemoveAttribute("onframe"); }      // only the editor's own wake-ups below
         CHECK(p3.ed.sound[0] == 0x0B && p3.ed.sound[3] == 0x07 && p3.ed.osc[1] == 0x15 && p3.ed.env[1] == 0x0C);
+        CHECK(p3.ed.noise == 0x02 && p3.ed.lfo == 0x0F && p3.ed.filterKbd == 0x08);
+        CHECK((p3.ed.knobLabels == std::array<std::string, 5>{"P", "H", "Y", "Z", "O"}));   // editor.knobLabels in onload
+        CHECK(v.evalForTest("editor.knobLabels{'A', 'B'}").find("exactly 5") != std::string::npos);
+        CHECK(v.evalForTest("editor.knobLabels{'A', 'B', 'C', 'D', 'LONGER'}").find("longer than 4") != std::string::npos);
+        CHECK(v.evalForTest("editor.knobLabels{'A', 'B', 'C', 'D', 5}").find("not a string") != std::string::npos);
+        CHECK(p3.ed.knobLabels[0] == "P");                                          // a refused call changes nothing
         double t = 70.0;
         EditorState& st = p3.ed.st;
         st.rows = {std::string("FILTER CUTOFF") + std::string(32, ' ') + "64   ", std::string(50, ' '), std::string(50, ' '), std::string(50, ' ')};
@@ -449,6 +459,31 @@ int main() {
         click(v, 1601 + 10, 848 + 55 + 5);                                       // an indicator: not a control
         v.evalForTest("editor.click('page', '3')");
         CHECK((p3.ed.commands == std::vector<std::string>{"area SOUND", "toggle_follow FOLLOW", "page 3"}));
+        // Values on the glass (spans from the editor): drag (1 step per 4 dp, Shift per 16 dp), double-click for typed
+        // entry, a name to pick; right-click asks which value is under the mouse. The wheel never changes a value.
+        st.rows[1] = "01  Big Pad" + std::string(39, ' ');
+        st.spans = {{0, 45, 2, 7, false}, {1, 0, 20, 9, true}};
+        ++st.serial;
+        v.update(t += 0.02);
+        p3.ed.commands.clear();
+        const int x45 = 149 + 45 * 30 + 5, y0 = 848 + 118 + 10, y1 = 848 + 173 + 10;
+        v.mouseMove(x45, y0, 0); v.mouseDown(0, 0);
+        v.mouseMove(x45, y0 - 9, 0);
+        v.mouseMove(x45, y0 - 10, 0);                                            // still 2 steps: nothing new
+        v.mouseMove(x45, y0 + 4, 0);
+        v.mouseUp(0, 0);
+        CHECK((p3.ed.commands == std::vector<std::string>{"drag_begin 7", "drag 2", "drag -1", "drag_end "}));
+        p3.ed.commands.clear();
+        v.mouseMove(x45, y0, 0); v.mouseDown(0, ModShift);
+        v.mouseMove(x45, y0 - 20, ModShift);
+        v.mouseUp(0, 0);
+        v.mouseMove(x45, y0, 0); v.mouseDown(0, 0, 2); v.mouseUp(0, 0);        // the second press of a double-click
+        v.mouseMove(x45, y0, 0); v.mouseWheel(3, 0);
+        click(v, 149 + 3 * 30 + 5, y1);
+        click(v, 149 + 30 * 30 + 5, y1);                                         // no span there
+        CHECK((p3.ed.commands == std::vector<std::string>{"drag_begin 7", "drag 1", "drag_end ", "type 7", "pick 9"}));
+        CHECK(v.editorValueAt(x45, y0) == 7 && v.editorValueAt(149 + 3 * 30 + 5, y1) == -1 && v.editorValueAt(20, y0) == -1);
+        CHECK(v.editorValueAt(x45, 300) == -1);                                  // the panel above
         // The serial unchanged: nothing re-applied, no Lua call.
         const auto lua0 = v.stats().luaCalls;
         v.update(t += 0.02);

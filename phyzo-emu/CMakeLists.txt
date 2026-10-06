@@ -72,7 +72,7 @@ endforeach()
 add_library(phyzo_core STATIC
   src/machine.cpp src/mc68340.cpp src/esp2_stub.cpp src/esp2_core.cpp src/voice_core.cpp src/panel_model.cpp
   src/os_image.cpp src/rom_id.cpp src/musashi_glue.cpp src/resampler.cpp src/engine.cpp src/midi_stream.cpp
-  src/editor/editor_proto.cpp src/editor/editor_tables.cpp src/editor/editor_pages.cpp src/editor/editor_controller.cpp
+  src/editor/editor_proto.cpp src/editor/editor_tables.cpp src/editor/editor_pages.cpp src/editor/editor_fields.cpp src/editor/editor_controller.cpp
   ${MUSASHI_SOURCES})
 target_include_directories(phyzo_core PUBLIC src PRIVATE "${MUSASHI_DIR}" "${MUSASHI_DIR}/softfloat" "${GENERATED_DIR}")
 find_package(Threads REQUIRED)
@@ -152,10 +152,15 @@ target_include_directories(os_update_test PRIVATE src)
 target_compile_options(os_update_test PRIVATE -Wall -Wextra)
 add_test(NAME os_update COMMAND os_update_test)
 add_executable(editor_test tests/editor_test.cpp src/editor/editor_proto.cpp src/editor/editor_tables.cpp src/editor/editor_pages.cpp
-  src/editor/editor_controller.cpp)
+  src/editor/editor_fields.cpp src/editor/editor_controller.cpp)
 target_include_directories(editor_test PRIVATE src)
 target_compile_options(editor_test PRIVATE -Wall -Wextra)
 add_test(NAME editor COMMAND editor_test)
+add_executable(editor_edit_test tests/editor_edit_test.cpp src/editor/editor_proto.cpp src/editor/editor_tables.cpp
+  src/editor/editor_pages.cpp src/editor/editor_fields.cpp src/editor/editor_controller.cpp)
+target_include_directories(editor_edit_test PRIVATE src)
+target_compile_options(editor_edit_test PRIVATE -Wall -Wextra)
+add_test(NAME editor_edit COMMAND editor_edit_test)
 add_executable(esp2_core_test tests/esp2_core_test.cpp src/esp2_core.cpp)
 target_include_directories(esp2_core_test PRIVATE src)
 target_compile_options(esp2_core_test PRIVATE -Wall -Wextra)

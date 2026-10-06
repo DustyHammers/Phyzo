@@ -185,6 +185,8 @@ void Engine::setControl(int cc, int raw) {
     { std::lock_guard<std::mutex> lk(controlsMtx_); controls_[size_t(cc)] = uint16_t(raw); }
     positions_[size_t(cc)] = uint16_t(raw);
     pendingControl_[size_t(cc)].store(uint16_t(0x8000 | raw), std::memory_order_release);   // latest value wins
+    lastPanelControl_ = cc;                          // before the counters: a reader that sees the move sees the control
+    ++panelControlMoves_;
     ++panelGestures_;
 }
 

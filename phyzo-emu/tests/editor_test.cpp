@@ -401,7 +401,7 @@ void testController() {
     CHECK(link.sent.empty() && !link.open);                                   // closed: nothing
     editor::View v = c.view();
     CHECK(v.area == "SYSTEM" && v.pages == 2 && v.page == 1 && !v.prev && v.next);
-    CHECK((v.areas == std::set<std::string>{"SYSTEM", "PRESETS", "SOUND", "OSC"}));
+    CHECK((v.areas == std::set<std::string>{"SYSTEM", "PRESETS", "COMMON", "SOUND", "OSC"}));   // no ARP: these tables have no arp texts
 
     // Open: the visible page is read once, and set as the standing read.
     c.setOpen(true);
