@@ -576,7 +576,8 @@ void testEditing() {
     v = c.view();
     CHECK(v.screen.rowText(2).find("UP   Oct2") != std::string::npos && v.screen.rowText(2).find("DOWN Oct2") != std::string::npos);
     // The arp preset: " Snd" -> AP05 by +/Yes five times; the list has the preset's own settings and the 121 arp presets.
-    c.command("page_next", "");                                                // PrSt is on page 2 (read there)
+    c.command("page_next", "");                                                // PrSt is on page 2: already read on page 1,
+    CHECK(c.view().screen.rowText(0).find("PRST Snd") != std::string::npos);  // so shown the moment the page opens
     tick(10);
     tick(10);
     CHECK(c.view().screen.rowText(0).find("PRST Snd") != std::string::npos && c.view().screen.rowText(0).find("NRES 32nd") == 0);
@@ -805,10 +806,54 @@ void testEditing() {
 }
 }  // namespace
 
+// ARP page 2 before the OS's current arp preset is read: a placeholder at once, and not clickable until it is read.
+void testArpPresetPlaceholder() {
+    FakeLink link;
+    editor::Controller c(link);
+    c.setTables(tables());
+    c.setOpen(true);
+    double now = 0;
+    c.tick(now += 10);
+    c.command("area", "ARP");
+    c.command("page_next", "");
+    editor::View v = c.view();
+    CHECK(v.screen.rowText(0).find("PRST ...") != std::string::npos);        // shown at once
+    const int prst = c.refForTest('a', 19);
+    bool span = false;
+    for (const auto& sp : v.screen.values) span = span || sp.ref == prst;
+    CHECK(span);
+    // The current arp preset's read is the page's first read (ahead of anything else).
+    bool first = false;
+    for (const Bytes& m : link.sent)
+        if (m.size() > 20 && m[5] == edproto::kPartialRead && FakeLink::addressOf(m).type == edproto::kRawMemory) {
+            first = FakeLink::addressOf(m).offset == edfields::kCurrentArpPreset;
+            break;
+        }
+    CHECK(first);
+    link.presses.clear();
+    c.command("drag_begin", std::to_string(prst));                             // not read yet: not clickable
+    c.command("drag", "3");
+    c.command("drag_end", "");
+    c.command("type", std::to_string(prst));
+    CHECK(!c.view().typing && c.menu(prst).items.empty() && c.menu(prst).groups.empty());
+    for (int i = 0; i < 50; ++i) c.tick(now += 20);
+    CHECK(link.presses.empty());
+    // Once read: the value, and clickable.
+    link.arp.on = true;
+    link.arp.preset = 7;
+    c.command("page_prev", "");
+    c.command("page_next", "");
+    for (int i = 0; i < 3; ++i) c.tick(now += 10);
+    CHECK(c.view().screen.rowText(0).find("PRST AP08") != std::string::npos);
+    CHECK(!c.menu(prst).groups.empty());
+    std::printf("editor_edit_test: ARP preset field: placeholder at once, clickable once read\n");
+}
+
 int main() {
     testMessages();
     testFields();
     testEditing();
+    testArpPresetPlaceholder();
     std::printf("editor_edit_test: %s\n", failures ? "FAILED" : "passed");
     return failures ? 1 : 0;
 }

@@ -378,7 +378,9 @@ std::vector<std::vector<uint8_t>> Controller::pageReads() const {
     if (names) reads.push_back(edproto::partialRead({edproto::kPreset, 0, 0, 0, 8, 16}));   // the current preset's name
     if (live) reads.push_back(edproto::partialRead({edproto::kRawMemory, 0, 0, 0, edfields::kLiveArp, edfields::kArpBlockSize}));
     if (flags) reads.push_back(edproto::partialRead({edproto::kRawMemory, 0, 0, 0, edfields::kArpFlags, 2}));
-    if (arpPreset) reads.push_back(edproto::partialRead({edproto::kRawMemory, 0, 0, 0, edfields::kCurrentArpPreset, 4}));
+    // The OS's current arp preset on every ARP page (4 bytes), first: known before page 2 (PrSt) is opened.
+    if (arpPreset || a->name == "ARP")
+        reads.insert(reads.begin(), edproto::partialRead({edproto::kRawMemory, 0, 0, 0, edfields::kCurrentArpPreset, 4}));
     return reads;
 }
 
@@ -586,8 +588,10 @@ bool Controller::rangeOf(int ref, int64_t& lo, int64_t& hi) const {
 bool Controller::editable(int ref) const {
     if (ref < 0 || size_t(ref) >= refs_.size()) return false;
     const Ref& r = refs_[size_t(ref)];
-    if (const edfields::Field* f = presetField(r))
+    if (const edfields::Field* f = presetField(r)) {
+        if (f->kind == Kind::PresetAction && !arpPresetValid_) return false;   // clickable once the OS's value is read
         return f->editable && (r.kind == 'm' || f->arpControl >= 0 || f->button >= 0);   // ARP: through the panel's buttons
+    }
     if (!r.table) return false;
     using namespace edtables;
     const Field& f = r.table->fields[size_t(r.field)];
@@ -623,6 +627,7 @@ std::vector<Choice> Controller::listOf(int ref) const {
     const bool known = valueOf(ref, cur);
     if (const edfields::Field* f = presetField(r)) {
         if (f->kind == Kind::PresetAction) {         // the preset's own settings, then the arp presets by number and name
+            if (!arpPresetValid_) return out;        // not read yet
             out.push_back({edfields::format(*f, -1, tables_.arp), -1, known && cur == -1});
             for (int n = 0; n < edfields::kArpPresets; ++n) {
                 const std::string name = edpages::trimmed(arpPresetNames_[size_t(n)]);
@@ -876,6 +881,7 @@ void Controller::render() {
                                 if (jobActive_ && job_.ref == x.ref) { d = job_.target; known = true; }
                                 else if (auto it = pendingArp_.find(x.ref); it != pendingArp_.end()) { d = it->second; known = true; }
                                 if (known) x.value = edfields::format(*f, d, tables_.arp);
+                                else if (f->kind == Kind::PresetAction) x.value = "...";   // shown at once; read soon
                             }
                         } else {
                             const edtables::Field& tf = ref.table->fields[size_t(ref.field)];
@@ -1389,7 +1395,8 @@ void Controller::tick(double nowMs) {
     const bool quiet = pending_.empty() && pendingArp_.empty() && !jobActive_ && rmw_.empty();
     if (readBackAt_ >= 0 && now_ >= readBackAt_ && quiet && dragRef_ < 0) { readBackAt_ = -1; readPage(); }
 
-    // Names for the ARP area: the pattern shown, and the arp presets for the right-click list (a few per tick).
+    // Names for the ARP area: the pattern shown, and the arp presets for the right-click list (a few per tick, only
+    // once the page's own reads are answered, so they never hold up a page).
     if (currentArea() && currentArea()->name == "ARP" && quiet) {
         for (const edfields::Field& f : arp_) {
             int64_t raw;
@@ -1399,7 +1406,7 @@ void Controller::tick(double nowMs) {
                 ++outstanding_;
             }
         }
-        for (int i = 0; i < 2 && arpNamesRequested_ < edfields::kArpPresets; ++i) {
+        for (int i = 0; i < 2 && outstanding_ == 0 && arpNamesRequested_ < edfields::kArpPresets; ++i) {
             if (!link_.send(edproto::partialRead({edproto::kArpPreset, uint16_t(arpNamesRequested_), 0, 0, 8, 16}))) break;
             ++arpNamesRequested_;
             ++outstanding_;
