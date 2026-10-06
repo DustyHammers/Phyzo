@@ -29,6 +29,7 @@ public:
     bool debuggerOn() const { return debugger_; }
     // A short message across the top of the skin (e.g. why another skin is shown); empty hides it.
     void showMessage(const juce::String& text, int seconds = 10);
+    const juce::String& message() const { return message_; }   // the message shown now (empty: none)
     // A message that stays until cleared (missing ROMs); shown above the other one.
     void setPersistentMessage(const juce::String& text);
     // The editor unit (F-30): whether the loaded skin has one (<name>-editor.rml; known when onLoaded comes), and

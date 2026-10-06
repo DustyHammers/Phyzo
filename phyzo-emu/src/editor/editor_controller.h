@@ -134,7 +134,8 @@ public:
     // The OS's panel mode read before the last arp edit pressed any button (-1: none yet). After an arp edit the panel
     // stays in the arp menu; the editor does not try to return it (docs/editor/ROUND2_REVIEW.md, to be settled).
     int panelModeBeforeArpEdit() const { return modeBeforeArpEdit_; }
-    // Messages for the user (message thread): the latest text and a serial that changes with each new one.
+    // Messages for the user (message thread): the latest text and a serial that changes with each new one. The next
+    // edit clears it (an empty text with a new serial).
     const std::string& notice() const { return notice_; }
     uint32_t noticeSerial() const { return noticeSerial_; }
 

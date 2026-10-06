@@ -88,4 +88,6 @@ private:
     juce::Rectangle<int> dragStartBounds_;
     bool debugger_ = false;
     uint32_t editorNotice_ = 0;                      // the editor's last message shown (its serial)
+    juce::String editorNoticeText_;                  // its text while the banner may still show it
+    static constexpr int kEditorNoticeSeconds = 5;
 };

@@ -625,6 +625,12 @@ void testEditing() {
     CHECK(link.presses.empty() && link.arp.live[34] == 31 && link.arp.live[32] == 1 && c.noticeSerial() == notices + 1);
     CHECK(c.notice().find("normal mode") != std::string::npos && c.panelModeBeforeArpEdit() == 0x02);
     link.arp.mode = 0x01;
+    // The next edit clears the message (an empty text with a new serial: the plugin hides its banner).
+    const uint32_t refused = c.noticeSerial();
+    c.choose(c.refForTest('a', 13), 32);
+    CHECK(c.notice().empty() && c.noticeSerial() == refused + 1);
+    settle();
+    CHECK(link.arp.live[34] == 32 && c.notice().empty());
     // Safety: the panel leaves the arp menu while the editor waits (the variable keeps reading the control): the edit
     // stops without pressing -/No or +/Yes.
     link.presses.clear(); link.arp.stepVars.clear();

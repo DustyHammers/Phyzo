@@ -707,6 +707,7 @@ bool Controller::parseTyped(int ref, const std::string& s, int64_t& d) const {
 
 void Controller::write(int ref, int64_t d) {
     if (!open_ || !link_.running() || !editable(ref)) return;
+    if (!notice_.empty()) setNotice("");             // a new edit: an earlier message no longer applies
     int64_t lo, hi;
     if (!rangeOf(ref, lo, hi)) return;
     d = std::clamp(d, lo, hi);
