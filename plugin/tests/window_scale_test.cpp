@@ -50,10 +50,10 @@ juce::MemoryBlock projectState(int version, float scale, bool legacy) {
     return dest;
 }
 
-// The scale part of what a processor saves now: the last 5 bytes (float, then the old-scale flag).
+// The scale part of what a processor saves now: float, then the old-scale flag, then the editor-open byte.
 std::pair<float, bool> savedScale(juce::AudioProcessor& p) {
     const juce::MemoryBlock b = stateOf(p);
-    juce::MemoryInputStream in(static_cast<const char*>(b.getData()) + b.getSize() - 5, 5, false);
+    juce::MemoryInputStream in(static_cast<const char*>(b.getData()) + b.getSize() - 6, 5, false);
     const float s = in.readFloat();
     return {s, in.readByte() != 0};
 }
@@ -65,6 +65,13 @@ juce::Point<int> openEditor(PhyzoProcessor& p, std::function<void(juce::AudioPro
     ed->setVisible(true);
     pump(300);
     const juce::Point<int> size(ed->getWidth(), ed->getHeight());
+    // macOS applies the constrainer to the window's own size: it must keep it exactly.
+    if (auto* c = ed->getConstrainer()) {
+        c->setBoundsForComponent(ed.get(), ed->getBounds(), false, false, false, false);
+        CHECK(ed->getWidth() == size.x && ed->getHeight() == size.y);
+        if (ed->getWidth() != size.x || ed->getHeight() != size.y)
+            std::printf("  constrainer moved %d x %d to %d x %d\n", size.x, size.y, ed->getWidth(), ed->getHeight());
+    }
     if (also) also(*ed);
     p.editorBeingDeleted(ed.get());
     ed.reset();
@@ -102,8 +109,8 @@ int main(int argc, char** argv) {
     const juce::File skins = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile("Phyzo/skins/scaletest");
     skins.deleteRecursively();
     skins.createDirectory();
-    for (const char* f : {"test.rml", "test.rcss", "test.lua"})
-        juce::File(argv[1]).getChildFile(f).copyFileTo(skins.getChildFile(juce::String(f).replace("test.rml", "scaletest.rml")));
+    for (const char* f : {"test.rml", "test.rcss", "test.lua", "test-editor.rml"})
+        juce::File(argv[1]).getChildFile(f).copyFileTo(skins.getChildFile(juce::String(f).replace("test.rml", "scaletest.rml").replace("test-editor.rml", "scaletest-editor.rml")));
     const juce::String previousSkin = SkinSettings::skin();
     const float previousScale = SkinSettings::scale();
 
@@ -169,6 +176,25 @@ int main(int argc, char** argv) {
             CHECK(size.x == winscale::windowLength(1795, winscale::stepScale(z), true));
             CHECK(winscale::isStep(p.editorScale.load(), z));
         }
+
+        // The editor unit attached (F-30): the window grows from 848 to 1242 dp at the same scale; closing it restores
+        // the panel's size. The open state is saved with the project.
+        p.editorScale = 1.0f; p.editorScaleLegacy = false;
+        p.setEditorWanted(true);
+        size = openEditor(p, [&](juce::AudioProcessorEditor& ed) {
+            CHECK(ed.getHeight() == winscale::windowLength(1242, 1.0f, true) && ed.getWidth() == 1346);
+        });
+        std::printf("window_scale_test: with the editor unit at 100 %%: %d x %d\n", size.x, size.y);
+        CHECK(size == juce::Point<int>(1346, winscale::windowLength(1242, 1.0f, true)));
+        {
+            juce::MemoryBlock st = stateOf(p);
+            CHECK(st.getSize() > 0 && static_cast<const char*>(st.getData())[st.getSize() - 1] == 1);
+        }
+        p.editorScale = 4.0f / 3.0f;
+        CHECK(openEditor(p) == juce::Point<int>(1795, 1242));                          // full size: 1 point per dp
+        p.setEditorWanted(false);
+        p.editorScale = 1.0f;
+        CHECK(openEditor(p) == juce::Point<int>(1346, 636));
 
         // Built-in: its 100 % is unchanged, and an old-scale size is not converted.
         SkinSettings::setSkin(SkinSettings::kBuiltIn);

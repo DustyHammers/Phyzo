@@ -66,7 +66,8 @@ private:
     void skinFailed(const juce::String& name, const juce::String& reason);
     void applyScale(float scale);
     void cornerResize(int phase, juce::Point<int> offset);    // window = 100 % size (winscale) x scale (0.5-2.0)
-    juce::Point<int> baseSize() const;               // 1795 x 848 for file skins, Built-in's own size
+    juce::Point<int> baseSize() const;               // 1795 x 848 for file skins (+ 394 with the editor unit), Built-in's own size
+    void updateEditorUnit();                         // shows the editor unit if the project wants it and the skin has one
     void showMenu(const juce::MouseEvent&);
     void timerCallback() override;                   // missing-ROM message on file skins; saves the size
 
@@ -75,6 +76,7 @@ private:
     std::unique_ptr<RmlSkinComponent> rml_;
     juce::String current_;                           // the skin being shown
     float scale_ = 1.0f;
+    bool editorShown_ = false;                       // the editor unit is attached below the panel
     bool applying_ = false;
     bool scaleDirty_ = false;                        // global setting not yet written
     juce::ComponentBoundsConstrainer constrainer_;

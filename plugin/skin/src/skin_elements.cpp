@@ -34,6 +34,8 @@ void registerElements() {
     add<PButtonElement>("pbutton");
     add<LedElement>("led");
     add<VfDigitElement>("vfdigit");
+    add<VfdRowElement>("vfdrow");
+    add<LegendElement>("legend");
 }
 
 // ------------------------------------------------------------------ sprites
@@ -167,6 +169,70 @@ void VfDigitElement::OnAttributeChange(const Rml::ElementAttributes& changed) {
         pos_ = std::clamp(parseInt(attr(*this, "pos"), 0), 0, 3);
         if (view_) setByte(view_->displayBytes()[size_t(pos_)]);
     }
+}
+
+// ------------------------------------------------------------------ editor unit
+
+VfdRowElement::VfdRowElement(const Rml::String& tag) : Rml::Element(tag), view_(SkinView::current()) {
+    shown_.fill(0);
+    if (view_) view_->registerElement(this);
+}
+VfdRowElement::~VfdRowElement() { if (view_) view_->unregisterElement(this); }
+
+void VfdRowElement::OnAttributeChange(const Rml::ElementAttributes& changed) {
+    Rml::Element::OnAttributeChange(changed);
+    if (changed.count("row")) row_ = std::clamp(parseInt(attr(*this, "row"), 0), 0, 3);
+}
+
+void VfdRowElement::ensureCells() {
+    if (!cells_.empty()) return;
+    auto make = [](Rml::Element* parent, const char* cls) {
+        Rml::ElementPtr e = Rml::Factory::InstanceElement(parent, "span", "span", Rml::XMLAttributes());
+        e->SetClassNames(cls);
+        return parent->AppendChild(std::move(e));
+    };
+    for (int c = 0; c < 50; ++c) {
+        Rml::Element* cell = make(this, "cell ghost");
+        cells_.push_back(cell);
+        chars_.push_back(make(cell, "chr"));
+        uls_.push_back(make(cell, "ul"));
+        dps_.push_back(make(cell, "dp"));
+    }
+}
+
+void VfdRowElement::setRow(const std::string& text, const std::array<bool, 50>& underline, const std::array<bool, 50>& dot,
+                           int focusCol, int focusLen, bool blinkOff) {
+    ensureCells();
+    const Rml::Property* p = GetProperty("spriteprefix");
+    const std::string prefix = p ? p->Get<Rml::String>() : std::string();
+    for (int c = 0; c < 50; ++c) {
+        const char ch = c < int(text.size()) ? text[size_t(c)] : ' ';
+        const bool focus = focusLen > 0 && c >= focusCol && c < focusCol + focusLen;
+        Rml::Element* cell = cells_[size_t(c)];
+        if (ch != shown_[size_t(c)]) {
+            shown_[size_t(c)] = ch;
+            cell->SetClass("ghost", ch == ' ');
+            char num[8];
+            std::snprintf(num, sizeof num, "%03d", uint8_t(ch));
+            if (ch == ' ' || prefix.empty()) chars_[size_t(c)]->RemoveProperty("decorator");
+            else chars_[size_t(c)]->SetProperty("decorator", "image(" + prefix + num + ")");
+        }
+        cell->SetClass("focus", focus);
+        cell->SetClass("blink", focus && blinkOff);
+        uls_[size_t(c)]->SetClass("lit", underline[size_t(c)]);
+        dps_[size_t(c)]->SetClass("lit", dot[size_t(c)]);
+    }
+}
+
+LegendElement::LegendElement(const Rml::String& tag) : Rml::Element(tag), view_(SkinView::current()) {
+    if (view_) view_->registerElement(this);
+}
+LegendElement::~LegendElement() { if (view_) view_->unregisterElement(this); }
+
+void LegendElement::OnAttributeChange(const Rml::ElementAttributes& changed) {
+    Rml::Element::OnAttributeChange(changed);
+    if (changed.count("action")) action_ = attr(*this, "action");
+    if (changed.count("value")) value_ = attr(*this, "value");
 }
 
 }  // namespace skin

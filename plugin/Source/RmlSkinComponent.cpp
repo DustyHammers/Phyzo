@@ -64,6 +64,11 @@ void RmlSkinComponent::loadSkin(const juce::File& folder, const juce::String& na
 
 void RmlSkinComponent::reload() { post([this] { startLoad(); }); }
 
+void RmlSkinComponent::setEditorVisible(bool on) {
+    editorVisible_ = on;
+    post([this, on] { if (view_) view_->setEditorVisible(on); });
+}
+
 void RmlSkinComponent::setDebugger(bool on) {
     debugger_ = on;
     post([this, on] { if (view_) view_->setDebuggerVisible(on); });
@@ -102,10 +107,10 @@ void RmlSkinComponent::timerCallback() {
     const double now = juce::Time::getMillisecondCounterHiRes() / 1000.0;
     logRates(now);
     if (!visibleOnScreen()) return;
-    const uint32_t serial = proc_.engine().uiSerial();
+    const uint32_t serial = proc_.engine().uiSerial(), editorSerial = proc_.editorSerial();
     int why = -1;
     if (frameWanted_.exchange(false)) why = kWhyInput;
-    else if (serial != lastSerial_) why = kWhyPanel;
+    else if (serial != lastSerial_ || editorSerial != lastEditorSerial_) why = kWhyPanel;   // the panel or the editor's glass
     else if (now >= nextWake_.load()) {
         switch (skin::SkinView::Wake(wakeSource_.load())) {
             case skin::SkinView::Wake::Flash: why = kWhyFlash; break;
@@ -116,6 +121,7 @@ void RmlSkinComponent::timerCallback() {
     }
     if (why >= 0) {
         lastSerial_ = serial;
+        lastEditorSerial_ = editorSerial;
         ++why_[why];
         gl_.triggerRepaint();
     }
@@ -162,6 +168,8 @@ void RmlSkinComponent::startLoad() {
     std::string err;
     const bool ok = view_->load(folder_, name_, err);
     if (ok && debugger_) view_->setDebuggerVisible(true);
+    hasEditor_ = ok && view_->hasEditor();
+    if (ok) view_->setEditorVisible(editorVisible_.load());
     juce::Component::SafePointer<RmlSkinComponent> self(this);
     juce::MessageManager::callAsync([self, ok, err] {
         if (self && self->onLoaded) self->onLoaded(ok, juce::String::fromUTF8(err.c_str()));

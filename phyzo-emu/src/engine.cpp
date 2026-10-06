@@ -1,4 +1,5 @@
 #include "engine.h"
+#include "editor/editor_proto.h"
 #include <algorithm>
 #include <chrono>
 #include <thread>
@@ -122,10 +123,14 @@ void Engine::push(uint32_t entry) {
     btnHead_.store(head + 1, std::memory_order_release);
 }
 
-void Engine::pressButton(int osButton, bool down) { push(uint32_t((osButton << 1) | (down ? 1 : 0))); }
+void Engine::pressButton(int osButton, bool down) {
+    ++panelGestures_;
+    push(uint32_t((osButton << 1) | (down ? 1 : 0)));
+}
 
 void Engine::pressRaw(int raw, bool down) {
     if (raw < 0 || raw > 0x7F) return;
+    ++panelGestures_;
     push((2u << 24) | (down ? 0x100u : 0u) | uint32_t(raw));
 }
 
@@ -156,6 +161,7 @@ void Engine::attachLeds(Machine& m) {
             ++uiSerial_;
         } else if (st >= 0x90 && st <= 0x92) {
             if (ledMode_[code].load() != uint8_t(st - 0x90)) { ledMode_[code] = uint8_t(st - 0x90); ++uiSerial_; }
+            ++ledStateMessages_;                     // the editor's preset-load trigger (never the beat flash)
         }
         ++panelMessages_;
     };
@@ -179,6 +185,7 @@ void Engine::setControl(int cc, int raw) {
     { std::lock_guard<std::mutex> lk(controlsMtx_); controls_[size_t(cc)] = uint16_t(raw); }
     positions_[size_t(cc)] = uint16_t(raw);
     pendingControl_[size_t(cc)].store(uint16_t(0x8000 | raw), std::memory_order_release);   // latest value wins
+    ++panelGestures_;
 }
 
 // Audio thread, block start: one message per control that moved, at most one per kControlIntervalMs each, and
@@ -395,24 +402,54 @@ void Engine::process(float* left, float* right, int n, const MidiEvent* events, 
     const double r = 44100.0 / hostRate_, cyclesPerSample = m.config().cpuHz / 44100.0;
     // Virtual port first: whole messages at the block's start, while the port is not backed up (a message larger
     // than the backlog limit goes alone into an empty port).
-    if (vin_.peekSize()) {
+    const bool editor = editorOpen_.load(std::memory_order_relaxed);
+    auto blockStart = [&] {
         const double s = double(anchorSample_) + double(hostPos_) * r + resampler_.lookahead() + marginIn_;
-        uint64_t at = uint64_t(s * cyclesPerSample);
-        if (at < m.cycles()) at = m.cycles();
+        const uint64_t at = uint64_t(s * cyclesPerSample);
+        return at < m.cycles() ? m.cycles() : at;
+    };
+    if (vin_.peekSize()) {
+        const uint64_t at = blockStart();
         while (const size_t sz = vin_.peekSize()) {
             const size_t backlog = m.serial.rxBacklog(1);
             if (backlog > 0 && backlog + sz > kVirtualBacklog) break;
             size_t k = 0;
             vin_.pop([&](uint8_t b) { if (k < scratch_.size()) scratch_[k++] = b; });
             m.serial.queueRx(1, scratch_.data(), k, at);
+            if ((editor || ownersCount_) && edproto::isRequest(scratch_.data(), k)) noteRequest(false, m.samplesProduced());
+            if (edproto::isPresetTrigger(scratch_.data(), k)) {
+                ++presetTriggers_;
+                if (editor) queueStandingRead(m, at);    // directly behind it: the read sees the new preset
+            }
         }
     }
+    // Editor: whole messages after the virtual port's, paced like them (nothing while it is closed).
+    if (edOut_.peekSize()) {
+        if (!editor) {
+            while (edOut_.peekSize()) edOut_.pop([](uint8_t) {});
+        } else {
+            const uint64_t at = blockStart();
+            while (const size_t sz = edOut_.peekSize()) {
+                const size_t backlog = m.serial.rxBacklog(1);
+                if (backlog > 0 && backlog + sz > kVirtualBacklog) break;
+                size_t k = 0;
+                edOut_.pop([&](uint8_t b) { if (k < scratch_.size()) scratch_[k++] = b; });
+                queueEditor(m, scratch_.data(), k, at);
+            }
+        }
+    }
+    if (ownersCount_ && m.samplesProduced() - lastRequestSample_ > kEditorReplyTimeoutSamples) ownersCount_ = 0;   // unanswered
     for (int i = 0; i < numEvents; ++i) {
         const double s = double(anchorSample_) + double(hostPos_ + events[i].offset) * r + resampler_.lookahead() + marginIn_;
         uint64_t at = uint64_t(s * cyclesPerSample);
         if (at < m.cycles()) { at = m.cycles(); ++lateMidi_; }
         midiTimes_[midiCount_++ % midiTimes_.size()] = at;
         m.serial.queueRx(1, events[i].data, size_t(events[i].size), at);
+        if ((editor || ownersCount_) && edproto::isRequest(events[i].data, size_t(events[i].size))) noteRequest(false, m.samplesProduced());
+        if (edproto::isPresetTrigger(events[i].data, size_t(events[i].size))) {
+            ++presetTriggers_;
+            if (editor) queueStandingRead(m, at);
+        }
     }
 
     // Audio In: this block's input, converted to 44.1 kHz, queued for the ESP2's serial input.
@@ -497,6 +534,14 @@ void Engine::midiOut(Machine& m, int n) {
     const double r = 44100.0 / hostRate_, cyclesPerSample = m.config().cpuHz / 44100.0;
     for (const auto& e : m.midiOut) {
         if (!outParser_.feed(e.second)) continue;
+        // A reply to the editor's request: to the editor, not to the host or the virtual port. Replies to other
+        // senders' requests pass unchanged.
+        if (ownersCount_ && edproto::isReply(outParser_.data(), outParser_.size())) {
+            const bool mine = replyOwners_[ownersHead_] != 0;
+            ownersHead_ = (ownersHead_ + 1) % replyOwners_.size();
+            --ownersCount_;
+            if (mine) { edReplies_.push(outParser_.data(), outParser_.size()); continue; }
+        }
         const double h = (double(e.first) / cyclesPerSample - double(anchorSample_) + resampler_.lookahead()) / r - double(hostPos_);
         emitMidiOut(outParser_.data(), outParser_.size(), std::clamp(int(h), 0, n - 1));
     }
@@ -509,6 +554,77 @@ void Engine::emitMidiOut(const uint8_t* d, size_t size, int offset) {
     std::memcpy(hostBytes_.data() + hostUsed_, d, size);
     hostEvents_.push_back({offset, uint32_t(hostUsed_), uint32_t(size)});
     hostUsed_ += size;
+}
+
+// ------------------------------------------------------------------ editor
+
+void Engine::setEditorOpen(bool on) {
+    editorOpen_ = on;
+    if (!on) setEditorStandingRead({});
+}
+
+bool Engine::editorSend(const uint8_t* m, size_t n) {
+    if (!editorOpen_.load()) return false;
+    std::lock_guard<std::mutex> lk(edSendMtx_);
+    return edOut_.push(m, n);
+}
+
+// Seqlock: the sequence is odd while the bytes change; the audio thread copies and retries if it changed meanwhile.
+void Engine::setEditorStandingRead(const std::vector<std::vector<uint8_t>>& msgs) {
+    std::lock_guard<std::mutex> lk(standingMtx_);
+    standingSeq_.fetch_add(1, std::memory_order_acq_rel);
+    std::atomic_thread_fence(std::memory_order_release);
+    size_t p = 0;
+    for (const auto& m : msgs) {
+        if (m.empty() || p + 2 + m.size() + 2 > standing_.size()) break;   // whole messages only
+        standing_[p++].store(uint8_t(m.size() >> 8), std::memory_order_relaxed);
+        standing_[p++].store(uint8_t(m.size()), std::memory_order_relaxed);
+        for (uint8_t b : m) standing_[p++].store(b, std::memory_order_relaxed);
+    }
+    standing_[p].store(0, std::memory_order_relaxed);
+    standing_[p + 1].store(0, std::memory_order_relaxed);
+    standingSeq_.fetch_add(1, std::memory_order_release);
+}
+
+void Engine::queueStandingRead(Machine& m, uint64_t at) {
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        const uint32_t s1 = standingSeq_.load(std::memory_order_acquire);
+        if (s1 & 1) continue;
+        size_t p = 0;
+        for (;;) {
+            if (p + 2 > standing_.size()) break;
+            const size_t len = size_t(standing_[p].load(std::memory_order_relaxed)) << 8 | standing_[p + 1].load(std::memory_order_relaxed);
+            standingCopy_[p] = uint8_t(len >> 8);
+            standingCopy_[p + 1] = uint8_t(len);
+            if (len == 0 || p + 2 + len > standing_.size()) break;
+            for (size_t i = 0; i < len; ++i) standingCopy_[p + 2 + i] = standing_[p + 2 + i].load(std::memory_order_relaxed);
+            p += 2 + len;
+        }
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (standingSeq_.load(std::memory_order_relaxed) != s1) continue;
+        for (size_t q = 0; q + 2 <= standingCopy_.size();) {
+            const size_t len = size_t(standingCopy_[q]) << 8 | standingCopy_[q + 1];
+            if (len == 0 || q + 2 + len > standingCopy_.size()) break;
+            queueEditor(m, standingCopy_.data() + q + 2, len, at);
+            q += 2 + len;
+        }
+        return;
+    }
+}
+
+void Engine::queueEditor(Machine& m, const uint8_t* d, size_t n, uint64_t at) {
+    m.serial.queueRx(1, d, n, at);
+    if (edproto::isRequest(d, n)) {
+        noteRequest(true, m.samplesProduced());
+        ++editorRequests_;
+    }
+}
+
+void Engine::noteRequest(bool editor, uint64_t sample) {
+    lastRequestSample_ = sample;
+    if (ownersCount_ == replyOwners_.size()) { ownersHead_ = (ownersHead_ + 1) % replyOwners_.size(); --ownersCount_; }
+    replyOwners_[(ownersHead_ + ownersCount_) % replyOwners_.size()] = editor ? 1 : 0;
+    ++ownersCount_;
 }
 
 // ------------------------------------------------------------------ tests

@@ -22,6 +22,8 @@ class KnobElement;
 class PButtonElement;
 class LedElement;
 class VfDigitElement;
+class VfdRowElement;
+class LegendElement;
 
 // Assumed timings (named so they are easy to find and change).
 constexpr double kFlashHz = 2.5;              // 92 flash: blink rate, 50 % duty, all flashing LEDs in phase
@@ -29,6 +31,10 @@ constexpr double kBeatLitMs = 100;            // 9D beat flash: lit for min(this
 constexpr double kFrameEventHz = 60;          // body onframe at most this often
 constexpr double kLuaTimeoutSeconds = 3;      // longest a single entry into Lua may run
 constexpr float kBodyWidthDp = 1795, kBodyHeightDp = 848;   // document body size; window = body x zoom
+constexpr float kEditorHeightDp = 394;        // the editor unit (<name>-editor.rml), attached below the body
+
+// Whether a legend on the editor glass is lit (active) and whether clicking it leads somewhere.
+void legendState(const EditorState& s, const std::string& action, const std::string& value, bool& lit, bool& avail);
 
 // Modifier bits for input (same values as Rml::Input::KeyModifier).
 enum Modifier { ModCtrl = 1, ModShift = 2, ModAlt = 4, ModMeta = 8 };
@@ -41,8 +47,14 @@ public:
     SkinView(const SkinView&) = delete;
     SkinView& operator=(const SkinView&) = delete;
 
-    // Loads <folder>/<name>.rml. On failure returns false with a plain-language reason (the view is then empty).
+    // Loads <folder>/<name>.rml, and <folder>/<name>-editor.rml (the editor unit) if the skin has one. On failure
+    // returns false with a plain-language reason (the view is then empty). A broken editor file is logged and left
+    // out; the panel still loads.
     bool load(const std::string& folder, const std::string& name, std::string& error);
+    bool hasEditor() const { return editorDoc_ != nullptr; }
+    // Shows or hides the editor unit (placed kBodyHeightDp below the top, as wide as the body).
+    void setEditorVisible(bool on);
+    bool editorVisible() const { return editorVisible_; }
     bool loaded() const { return document_ != nullptr; }
     const std::string& folder() const { return folder_; }
 
@@ -100,6 +112,10 @@ public:
     void registerElement(PButtonElement* e);
     void registerElement(LedElement* e);
     void registerElement(VfDigitElement* e);
+    void registerElement(VfdRowElement* e);
+    void registerElement(LegendElement* e);
+    void unregisterElement(VfdRowElement* e);
+    void unregisterElement(LegendElement* e);
     void unregisterElement(KnobElement* e);
     void unregisterElement(PButtonElement* e);
     void unregisterElement(LedElement* e);
@@ -123,6 +139,7 @@ public:
     // Lua callbacks (registry references), see skin_lua.cpp.
     std::map<int, std::vector<int>> onLedFns, onBeatFns, onKnobFns, onButtonFns;
     std::vector<int> onDisplayFns;
+    std::vector<int> onEditorFns;              // editor.onChange
     int envRef = -2;                           // LUA_NOREF until the environment exists
 
 private:
@@ -133,6 +150,7 @@ private:
     bool applyLedClasses();
     void computeNextWake();
     void dispatchShow(Rml::Element* e);
+    bool applyEditor();                        // the editor's state onto the glass; true if anything changed
 
     bool systemOk_ = false;
     std::string systemError_;
@@ -152,6 +170,12 @@ private:
     std::set<PButtonElement*> buttons_;
     std::set<LedElement*> leds_;
     std::set<VfDigitElement*> digits_;
+    std::set<VfdRowElement*> rows_;
+    std::set<LegendElement*> legends_;
+    Rml::ElementDocument* editorDoc_ = nullptr;
+    bool editorVisible_ = false;
+    uint32_t editorSerial_ = 0;
+    bool editorApplied_ = false, editorBlinkOff_ = false, editorFocus_ = false;
     KnobElement* drag_ = nullptr;
     int dragY_ = 0, dragStartY_ = 0, dragStartRaw_ = 0;
     bool dragFine_ = false;

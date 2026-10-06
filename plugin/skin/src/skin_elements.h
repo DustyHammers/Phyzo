@@ -1,7 +1,10 @@
-// The custom skin elements: <knob cc>, <pbutton raw led>, <led code|source>, <vfdigit pos>.
+// The custom skin elements: <knob cc>, <pbutton raw led>, <led code|source>, <vfdigit pos>, and for the editor unit
+// <vfdrow row> and <legend action value>.
 #pragma once
 #include <RmlUi/Core/Element.h>
+#include <array>
 #include <string>
+#include <vector>
 
 namespace skin {
 
@@ -91,6 +94,47 @@ private:
     SkinView* view_;
     int pos_ = 0;
     int byte_ = 0;
+};
+
+// The editor unit's glass: one row of 50 character cells (row 0-3). Each cell is a <span class="cell"> holding
+// <span class="chr"> (sprite <spriteprefix><NNN>, NNN = the character's ASCII code; no sprite for a space),
+// <span class="ul"> (the underline) and <span class="dp"> (the decimal point), both with class "lit" when on. A cell
+// showing a space has class "ghost"; the focused value's cells have class "focus", and "blink" during the off half
+// of the 2.5 Hz blink. Positions and art come from the skin's RCSS.
+class VfdRowElement : public Rml::Element {
+public:
+    explicit VfdRowElement(const Rml::String& tag);
+    ~VfdRowElement() override;
+    int row() const { return row_; }
+    // Shows one row: 50 characters, underlines, decimal points, the focused cells [focusCol, focusCol + focusLen).
+    void setRow(const std::string& text, const std::array<bool, 50>& underline, const std::array<bool, 50>& dot,
+                int focusCol, int focusLen, bool blinkOff);
+    char shownChar(int col) const { return col >= 0 && col < 50 ? shown_[size_t(col)] : 0; }
+protected:
+    void OnAttributeChange(const Rml::ElementAttributes& changed) override;
+private:
+    void ensureCells();
+    SkinView* view_;
+    int row_ = 0;
+    std::vector<Rml::Element*> cells_, chars_, uls_, dps_;
+    std::array<char, 50> shown_{};
+};
+
+// A legend on the editor glass: action (area, section, target, page, page_prev, page_next, toggle_follow, indicator,
+// label) and value (its text). Class "lit" when active, "avail" when clicking it leads somewhere; hover is the
+// skin's :hover. A click sends the action to the editor.
+class LegendElement : public Rml::Element {
+public:
+    explicit LegendElement(const Rml::String& tag);
+    ~LegendElement() override;
+    const std::string& action() const { return action_; }
+    const std::string& value() const { return value_; }
+    bool clickable() const { return action_ != "indicator" && action_ != "label" && !action_.empty(); }
+protected:
+    void OnAttributeChange(const Rml::ElementAttributes& changed) override;
+private:
+    SkinView* view_;
+    std::string action_, value_;
 };
 
 int parseInt(const std::string& s, int fallback);   // decimal or 0x hex

@@ -29,6 +29,31 @@ The document body is **1795 × 848 dp**. At 100 % the window is 3/4 of that in s
 the right-click menu (50, 75, 100, 125, 133, 150, 175, 200 %). The dp ratio follows the window continuously; RmlUi
 redraws the art at each size (no bitmap stretching of the window). The bottom-right corner (24 screen points) is the resize grip: keep controls out of it.
 
+## The editor unit (optional)
+
+A skin can have an editor unit (F-30, docs/editor/): `<name>-editor.rml` in the skin folder, a second document
+**1795 × 394 dp** shown directly below the body when the user chooses right-click > **Editor** (the window grows from
+848 to 1242 dp at the same scale). Without that file the menu item is greyed out. It shares the skin's Lua environment;
+the geometry of the glass and every legend is in `docs/editor/EDITOR_PANEL_LAYOUT.md`.
+
+- `<vfdrow row="0">` … `row="3"`: one row of the glass, 50 character cells. The element creates the cells:
+  `<span class="cell">` holding `<span class="chr">` (sprite `<spriteprefix><NNN>` with NNN the character's ASCII code,
+  e.g. `chr_065` for A; no sprite for a space), `<span class="ul">` (underline) and `<span class="dp">` (decimal point),
+  the last two with class `lit` when on. A cell showing a space has class `ghost`; the focused value's cells have class
+  `focus`, plus `blink` during the off half of the 2.5 Hz blink. Set `spriteprefix` on the `vfdrow` and lay the cells out
+  in RCSS (cell pitch 30 dp, row pitch 55 dp in the layout table).
+- `<legend action="…" value="…">`: a legend; actions and values as in `EDITOR_PANEL_LAYOUT.json` (`area`, `section`,
+  `target`, `page`, `page_prev`, `page_next`, `toggle_follow`, `indicator`, `label`). Class `lit` when active, `avail`
+  when clicking it leads somewhere; style hover with `:hover`. A click goes to the editor.
+- Lua: `editor.isOpen()`, `editor.state()` (area, section, sound, osc, oscBoth (both oscillators edited), page, pages, follow, data, rows), `editor.click(action,
+  value)`, `editor.onChange(fn)` (called when the glass or the legends change), and
+  `editor.followLeds{sound = {…4 codes}, osc = {…2}, env = {pitch, filter, amp}}`: the panel LEDs Follow watches (the rack
+  skin's: sound 0x0B, 0x13, 0x03, 0x07; osc 0x06, 0x15; env 0x11, 0x0C, 0x0E).
+- Wave names (optional): `waves.txt` in the skin folder, one line per wave: number, a tab, the name. The wave value then
+  shows "number name"; without the file, the number only.
+
+The editor reads from the synth only while its unit is shown; with it closed, nothing is sent.
+
 ## Panel elements
 
 ### `<knob cc="N">`
