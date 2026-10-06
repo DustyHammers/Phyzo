@@ -136,6 +136,8 @@ private:
         int ledMode(int code) const override { return int(engine.led(code).mode); }
         std::array<char, 4> display() const override { return engine.display(); }
         bool running() const override { return engine.state() == Engine::State::Running; }
+        // The editor's arp edits: the panel's own buttons, as the skin presses them (81 / 80 raw).
+        void pressButton(int raw, bool down) override { engine.pressRaw(raw, down); }
         Engine& engine;
     };
     class EditorPort : public skin::EditorPort {

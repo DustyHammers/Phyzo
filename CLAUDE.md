@@ -80,9 +80,12 @@ owner step by step through anything they must do by hand on github.com or on the
   never affected: no panel messages, no change to its selection; with the editor closed nothing is sent.
   Editing (docs/editor/EDITOR_ROUND2.md): a field is editable only if its write path was verified live (oscillator
   NRPN, the wave ID by SysEx, sound settings / system partial writes with read-modify-write for bit fields, COMMON NRPN
-  MSB 1, ARP by whole-preset dump built from a fresh read with the live arp state folded in); everything else is
-  display only. COMMON and ARP fields (no OS table) are in `editor_fields.*`; ARP values come from the live arp state
-  in RAM. Follow also jumps to the page of the panel knob last moved (`Engine::lastPanelControl`).
+  MSB 1); everything else is display only. ARP settings change only through the panel's own buttons, as hands do
+  (docs/editor/ROUND2_REVIEW.md): the control's button steered by the OS's arp-control variable, then -/No / +/Yes,
+  pressed only right after that variable was read as the wanted control (outside the arp controls they step the main
+  preset); never a knob, never a write into the arp state, never a whole-preset dump (it stops a running arp). COMMON
+  and ARP fields (no OS table) are in `editor_fields.*`; ARP values come from the live arp state and the OS's arp
+  variables in RAM. Follow also jumps to the page of the panel knob last moved (`Engine::lastPanelControl`).
   The skin side: `<name>-editor.rml`, `<vfdrow>` (values take drags, double-click, right-click), `<legend>`, the Lua
   `editor` API with `editor.knobLabels` (docs/SKINS.md).
 - Real-time rules for `engine.*`: the audio thread never waits on other threads. `getState` asks the audio thread

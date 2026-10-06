@@ -526,10 +526,10 @@ void testController() {
     // The standing read is always the visible page's read.
     CHECK(link.standing == c.pageReadsForTest());
 
-    // Presets: names, 8 per view; a reply per name.
+    // Presets: names, 8 per view; a reply per name; and the current preset's name (the edit buffer's).
     link.sent.clear();
     c.command("area", "PRESETS");
-    CHECK(link.sent.size() == 8);
+    CHECK(link.sent.size() == 9 && link.sent[8] == edproto::partialRead({edproto::kPreset, 0, 0, 0, 8, 16}));
     CHECK(link.sent[3] == edproto::partialRead({edproto::kPreset, 0x103, 0, 0, 8, 16}));
     Bytes preset(24, ' ');
     const char* nm = "Big Pad 4       ";

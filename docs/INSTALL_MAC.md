@@ -110,7 +110,10 @@ In the editor unit:
   value selected (it blinks), the arrow keys move to the next value and **+** / **-** step it. The mouse wheel never
   changes values.
 - Values that can't be edited yet ignore the mouse. **EDITED** lights after an edit until another preset is loaded.
-- **PRESETS**: click a preset's name to load it.
+- **ARP**: the editor changes arp settings exactly as you would on the panel, with the panel's own buttons (the arp
+  control's button, then -/No and +/Yes; the main display shows the setting meanwhile). It takes a second or two per
+  setting; the arp keeps playing. It never moves a knob. Arp on/off and keyboard are switched with their own buttons.
+- **PRESETS**: the current preset is marked (it blinks); click a preset's name to load it.
 - The synth's main panel is never changed by the editor; save the preset on the panel as usual to keep your edits.
 - **Developer > RmlUi debugger**: RmlUi's inspector, for working on a skin.
 

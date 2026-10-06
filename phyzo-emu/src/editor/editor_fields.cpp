@@ -61,23 +61,30 @@ std::vector<Field> arpFields(const edtables::ArpText& t) {
         out.push_back(f);
         return out.back();
     };
-    add(0, "ARP", 383, 1, Kind::OnOff, 0, 1, true).onRaw = 2;
-    add(0, code(t.hold, "HOLD"), 351, 1, Kind::OnOff, 0, 1, true);
-    add(0, "KBD", 352, 1, Kind::Inverted, 0, 1, true);
-    add(0, code(t.centre, "CENT"), 382, 1, Kind::OnOff, 0, 1, true);
+    // The arp-control numbers (the OS's arp-control variable): 0 Tempo, 1 Range, 2 PrSt, 3 nrES, 4 ndur, 5 FEEL,
+    // 6-10 the intervals, 11 Lo n, 12 Hi n, 13 tch, 14 CEnt, 15 ntLt, 16 HELd.
+    Field& on = add(0, "ARP", 0, 1, Kind::RuntimeFlag, 0, 1, true);
+    on.flag = 0; on.button = kBtnArpOnOff;
+    add(0, code(t.hold, "HOLD"), 351, 1, Kind::OnOff, 0, 1, true).arpControl = 16;
+    Field& kbd = add(0, "KBD", 0, 1, Kind::RuntimeFlag, 0, 1, true);
+    kbd.flag = 1; kbd.button = kBtnArpKeyboard;
+    add(0, code(t.centre, "CENT"), 382, 1, Kind::OnOff, 0, 1, true).arpControl = 14;
     static const char* const kIntervals[5] = {"-3RD", "3RD", "4TH", "5TH", "OCT"};
-    for (uint32_t i = 0; i < 5; ++i) add(0, code(t.intervals[i], kIntervals[i]), 361 + i, 1, Kind::Interval, 0, 1, true);
-    add(0, "UP", 367, 1, Kind::OctaveUp, 0, 4, true);
-    add(0, "DOWN", 368, 1, Kind::OctaveDown, 0, 4, true);
-    add(0, code(t.low, "LO"), 370, 1, Kind::Note, 0, 127, true).mirror = 372;   // input filter and output bounds
-    add(0, code(t.high, "HI"), 371, 1, Kind::Note, 0, 127, true).mirror = 373;
-    add(0, code(t.touch, "TCH"), 384, 1, Kind::Touch, 0, 127, true);
-    add(0, code(t.duration, "DUR"), 385, 1, Kind::Duration, 0, 99, true);
-    add(0, code(t.limit, "LIM"), 386, 1, Kind::Number, 0, 99, true);
-    add(1, code(t.resolutionCode, "RES"), 402, 4, Kind::Resolution, 0, 11, true);
-    add(1, "TMPO", 406, 4, Kind::Tempo, 25, 320, true);
-    add(1, code(t.feel, "FEEL"), 392, 2, Kind::Feel, 0, 0, false);
-    add(1, code(t.presetCode, "PRST"), 0, 0, Kind::PresetAction, 0, kArpPresets - 1, false);
+    for (uint32_t i = 0; i < 5; ++i)
+        add(0, code(t.intervals[i], kIntervals[i]), 361 + i, 1, Kind::Interval, 0, 1, true).arpControl = 6 + int(i);
+    add(0, "UP", 367, 1, Kind::OctaveUp, 0, 4, true).arpControl = 1;      // the Range control sets up and down together
+    add(0, "DOWN", 368, 1, Kind::OctaveDown, 0, 4, true).arpControl = 1;
+    Field& lo = add(0, code(t.low, "LO"), 370, 1, Kind::Note, 0, 127, true);   // input filter; output bounds at 372
+    lo.mirror = 372; lo.arpControl = 11;
+    Field& hi = add(0, code(t.high, "HI"), 371, 1, Kind::Note, 0, 127, true);
+    hi.mirror = 373; hi.arpControl = 12;
+    add(0, code(t.touch, "TCH"), 384, 1, Kind::Touch, 0, 127, true).arpControl = 13;
+    add(0, code(t.duration, "DUR"), 385, 1, Kind::Duration, 0, 99, true).arpControl = 4;
+    add(0, code(t.limit, "LIM"), 386, 1, Kind::Number, 0, 99, true).arpControl = 15;
+    add(1, code(t.resolutionCode, "RES"), 402, 4, Kind::Resolution, 0, 11, true).arpControl = 3;
+    add(1, "TMPO", 406, 4, Kind::Tempo, 25, 320, true).arpControl = 0;
+    add(1, code(t.feel, "FEEL"), 392, 2, Kind::Feel, -1, 999, true).arpControl = 5;
+    add(1, code(t.presetCode, "PRST"), 0, 4, Kind::PresetAction, -1, kArpPresets - 1, true).arpControl = 2;
     add(1, "PATTERN", 390, 2, Kind::Pattern, 0, 0, false);
     add(1, "NAME", 334, 16, Kind::Text, 0, 0, false);
     return out;
@@ -107,6 +114,9 @@ int64_t toDomain(const Field& f, int64_t raw) {
     case Kind::OctaveUp: return raw / 12;
     case Kind::OctaveDown: return -raw / 12;
     case Kind::Duration: return raw * 100 / 256;
+    case Kind::Feel: return raw == kNone16 ? -1 : raw;
+    case Kind::RuntimeFlag: return raw != 0 ? 1 : 0;
+    case Kind::PresetAction: return int32_t(uint32_t(raw)) < 0 ? -1 : raw;
     case Kind::Resolution:
         for (int i = 0; i < 12; ++i) if (kResolutionTicks[i] == raw) return i;
         return -1;
@@ -122,6 +132,7 @@ int64_t toRaw(const Field& f, int64_t d) {
     case Kind::OctaveDown: return -12 * d;
     case Kind::Duration: return std::max<int64_t>(1, (d * 256 + 99) / 100);   // the smallest raw that shows d
     case Kind::Resolution: return d >= 0 && d < 12 ? kResolutionTicks[d] : kResolutionTicks[4];
+    case Kind::Feel: return d < 0 ? kNone16 : d;
     default: return d;
     }
 }
@@ -139,8 +150,11 @@ std::string format(const Field& f, int64_t d, const edtables::ArpText& t) {
         return n.empty() ? std::to_string(d) : n;
     }
     case Kind::Tempo: return edtables::formatNumber(t.tempoFmt.empty() ? std::string("t%3d") : t.tempoFmt, int(d));
-    case Kind::Feel: return d == kNone16 ? offText(t) : std::to_string(d);
-    case Kind::PresetAction: { const std::string s = edpages::trimmed(t.ownSettings); return s.empty() ? "SND" : s; }
+    case Kind::Feel: return d < 0 ? offText(t) : std::to_string(d);
+    case Kind::RuntimeFlag: return d ? onText(t) : offText(t);
+    case Kind::PresetAction:
+        if (d >= 0) return arpPresetLabel(t, int(d));
+        { const std::string s = edpages::trimmed(t.ownSettings); return s.empty() ? "SND" : s; }
     default: return std::to_string(d);
     }
 }

@@ -7,12 +7,14 @@
 //  - oscillator single-byte fields (value types 0, 1, 3): NRPN; the wave: SysEx partial write of the 4-byte wave ID;
 //  - sound settings and system: SysEx partial write of the byte (bit fields: read the byte, change the bits, write it);
 //  - COMMON sound slots and knob values: NRPN MSB 1;
-//  - ARP: a whole-preset dump into the edit buffer, built from a fresh whole read of the edit buffer with the live arp
-//    state folded into its arp block, then the edited fields; loading an arp preset replaces the block's body with the
-//    arp preset's record body, keeping held, keyboard and both key-range pairs. At most one dump in flight.
-//  - PRESETS: a click on a name sends its program change.
+//  - ARP (docs/editor/ROUND2_REVIEW.md): exactly as hands on the panel do, with the panel's own buttons only (never a
+//    knob, never a write into the arp state, never a whole-preset dump): the arp control's button (Tempo, Range, or Arp
+//    Mode pressed until the OS's arp-control variable reads the control), a 1.4 s wait, then -/No or +/Yes once per
+//    step (40 ms apart), reading the value back until it lands. Safety: -/No and +/Yes are pressed only right after the
+//    arp-control variable was read as the wanted control. Arp on/off and keyboard: their own button, pressed once.
+//  - PRESETS: a click on a name sends its program change; the current preset is marked (focused).
 // Every edit is clamped to the field's range, shown at once, sent (NRPN and partial writes paced like panel knob moves,
-// the latest value winning; dumps coalesced) and read back after the last write.
+// the latest value winning; arp edits one at a time, the latest target winning) and read back after the last write.
 //
 // No plugin framework here. Threads: everything runs on one thread (the plugin's message thread); view() may be
 // called from any thread (the skin's render thread).
@@ -47,6 +49,7 @@ struct Link {
     virtual int ledMode(int code) const = 0;          // 0 off, 1 on, 2 flash, 3 beat flash
     virtual std::array<char, 4> display() const = 0;
     virtual bool running() const = 0;                // the OS is running (requests can be answered)
+    virtual void pressButton(int /*raw*/, bool /*down*/) {}   // a front-panel button, as the panel sends it (81 / 80 raw)
 };
 
 // What the skin shows (a copy; legends by their text as in docs/editor/EDITOR_PANEL_LAYOUT.json).
@@ -125,6 +128,7 @@ public:
     std::vector<std::vector<uint8_t>> pageReadsForTest() const { return pageReads(); }
     int refForTest(char kind, int field) const { return refOf(kind, field); }
     int focusForTest() const { return focus_; }
+    bool arpBusyForTest() const { return jobActive_ || !pendingArp_.empty(); }
 
 private:
     struct Section { std::string name; std::vector<edpages::Page> pages; };
@@ -173,8 +177,11 @@ private:
     void apply(int ref, int64_t d);                  // into the bytes the editor holds (shown at once)
     void pump();                                     // paced sends
     void sendWrite(int ref, int64_t d);
-    void startDump();
-    void finishDump();
+    void arpPump();                                  // the arp edit in progress, through the panel's buttons
+    void arpFinish(bool done);
+    void press(int button, bool down);
+    void rawRead(uint32_t address, uint32_t length);
+    void updateCurrentPreset();                      // the stored preset whose name the edit buffer holds
     void afterWrite();
     void presetChanged();                            // a new preset: no revert values, EDITED off
     void moveFocus(int dr, int dc);
@@ -217,12 +224,31 @@ private:
     int64_t dragStart_ = 0, dragValue_ = 0;
     std::map<int, int64_t> pending_;                 // NRPN / partial writes waiting for their turn (latest wins)
     std::vector<Rmw> rmw_;                           // bit fields waiting for a fresh read of their byte
-    std::map<int, int64_t> pendingArp_;              // ARP edits for the next dump (by reference)
-    int pendingArpPreset_ = -1;                      // an arp preset to load with the next dump
-    enum class Dump { Idle, Reading } dump_ = Dump::Idle;
-    double dumpAt_ = 0;
-    bool dumpBuffer_ = false, dumpLive_ = false, dumpRecord_ = false;
-    std::vector<uint8_t> dumpObject_, dumpBody_;
+    std::map<int, int64_t> pendingArp_;              // ARP edits waiting for their turn (by reference; latest wins)
+    // The arp edit in progress (one at a time).
+    struct ArpJob {
+        enum class Stage { Select, SelectUp, ReadControl, Settle, Check, Step, StepUp, StepGap, ToggleUp, ToggleRead } stage;
+        int ref = -1;
+        int control = -1;                            // the arp-control number; -1: a flag switched by its own button
+        int64_t target = 0;
+        double at = 0;                               // when the stage started
+        bool asked = false;                          // the stage's reads are out
+        int selects = 0, reselects = 0, rounds = 0, presses = 0, dir = 0;
+        int64_t last = 0;
+    };
+    bool jobActive_ = false;
+    ArpJob job_;
+    int heldButton_ = -1;                            // a button the editor is holding down (released on close)
+    int arpControl_ = -1;                            // the OS's arp-control variable, as last read
+    bool arpControlFresh_ = false, liveFresh_ = false, arpPresetFresh_ = false, flagsFresh_ = false;
+    int64_t currentArpPreset_ = -1;                  // the OS's current arp preset (-1: the preset's own settings)
+    bool arpPresetValid_ = false;
+    std::array<uint8_t, 2> arpFlags_{};              // the OS's arp on / keyboard flags
+    bool flagsValid_ = false;
+    // PRESETS: the current preset (marked), the last one picked here (breaks ties between equal names)
+    int currentPreset_ = -1, lastPicked_ = -1;
+    std::array<bool, kPresets> presetNameRead_{};
+    int presetNamesRequested_ = 0;
     std::map<int, int64_t> before_;                  // values before the edits since the preset loaded (revert)
     bool edited_ = false;
     double nextSendAt_ = 0, lastWriteAt_ = -1e9, readBackAt_ = -1;

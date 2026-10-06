@@ -1,5 +1,11 @@
-# Editor round 2 — editing, Common and Arp pages, Follow on knobs, window fits the screen (F-30, F-32), 2026-10-06 (rev 2)
+# Editor round 2 — editing, Common and Arp pages, Follow on knobs, window fits the screen (F-30, F-32), 2026-10-06 (rev 6)
 
+Rev 6: **every arp setting through the panel's own buttons** (Tempo / Range / Arp Mode, then −/No +/Yes, steered by
+the OS's arp-control variable 0x0BE01877; no knob moves, no direct arp writes); details in ROUND2_REVIEW.md.
+Rev 5: **arp presets loaded through the panel's own Arp Mode and −/No +/Yes buttons** (the OS's load routine runs;
+no knob moves); verified while the arp runs. Rev 4 (superseded for arp presets): **arp edits and loading arp presets by direct writes to the live arp state** (§1b), verified while the arp
+runs; no whole-preset dump. Arp on/off and keyboard shown from the OS's runtime flags and switched like the panel's own buttons.
+Rev 3: arp editing withdrawn (superseded by rev 4).
 Rev 2: the live arp state, loading arp presets, the arp pattern field, the dump layout, knob labels, Common page 3
 labels. Mockups as approved in the Claude Code thread.
 
@@ -19,9 +25,9 @@ fields are the OS's own; the labels below are neutral descriptions.
 | System | **SysEx partial write** (type 0) | fine tune audible (+18.9 cents for 49); NRPN-transmit bit takes effect |
 | Bit fields written by SysEx (receive flags, system flags) | **read-modify-write the whole byte**: read it, change the field's bit, write the byte | the OS stores several flags per byte (system byte 25 holds 0x5F with the NRPN bit clear) |
 | Common: sound slots and knob values | **NRPN MSB 1** (the OS's validated path), LSB as in §2 | slot 1 set to User mode with top key B3: middle C silent, A3 sounds (live) |
-| Arp fields | **whole-preset dump into the edit buffer** (layout in §1a), built from a fresh read of the edit buffer **with the live arp state folded into its arp block** (§3) | arp on: the OS lights the arp LED and the held chord arpeggiates; a dump while notes sound changes nothing audible (level within ±0.1 dB); after a panel Sound 2 selection, a dump built from a fresh read keeps the panel's display, selection and LEDs (only the arp LEDs change) and the panel knobs still edit Sound 2 |
-| Load arp preset n (right-click list on the arp page) | the same dump, with the arp block's body replaced by arp preset n's record body (SysEx read, type 8, number n, record offsets 24–87), **keeping** live state bytes $1 (held), $2 (keyboard) and $14–$17 (both key-range pairs) | the resulting live arp state is identical, all 64 bytes, to selecting the same arp preset on the panel (PrSt) |
-| Presets page: click a name | program change (0–63) on the base channel | as the host's program changes |
+| ~~Arp fields by whole-preset dump~~ (replaced, §1b) | ~~whole-preset dump into the edit buffer~~ (layout in §1a), built from a fresh read of the edit buffer **with the live arp state folded into its arp block** (§3) | arp on: the OS lights the arp LED and the held chord arpeggiates; a dump while notes sound changes nothing audible (level within ±0.1 dB); after a panel Sound 2 selection, a dump built from a fresh read keeps the panel's display, selection and LEDs (only the arp LEDs change) and the panel knobs still edit Sound 2 |
+| ~~Load arp preset n by dump~~ (replaced, §1b) | the same dump, with the arp block's body replaced by arp preset n's record body (SysEx read, type 8, number n, record offsets 24–87), **keeping** live state bytes $1 (held), $2 (keyboard) and $14–$17 (both key-range pairs) | the resulting live arp state is identical, all 64 bytes, to selecting the same arp preset on the panel (PrSt) |
+| Presets page: click a name | program change (0–63) on the base channel; the current preset's name is marked (focused, blinking) | verified end to end (skin click → controller → engine): the clicked preset loads |
 
 **Whole-preset dump rules** (arp fields): before each dump, read the current edit buffer (command 01, whole object) and
 the live arp state (§3), copy the live state into the preset's arp block (preset offsets 350–413), then change only the
@@ -29,6 +35,27 @@ edited field. Panel edits made meanwhile are therefore kept (the panel writes th
 knobs straight into the edit buffer, verified; its arp edits go to the live arp state, which is folded in). At most one
 dump in flight; while dragging, coalesce to the latest value and send it when the previous dump has been answered
 (~350 ms round trip at cable speed).
+
+### 1b. Arp edits: direct writes to the live arp state (rev 4; verified on the real OS, 2026-10-06)
+
+**Route:** SysEx partial write of raw memory (command 05, type 0x7F, number 0) at 0x0BE093D0 + (preset offset − 350),
+the field's bytes; read the live state back afterwards. Load arp preset n (rev 5): through the panel's own buttons, see ROUND2_REVIEW.md: Arp Mode until 0x0BE01877 = 2 (PrSt),
+then +/Yes or −/No from 0x0BE01880 to n (never unless 0x0BE01877 = 2 was read after the Arp Mode press). Verified while the arp runs:
+range, resolution, an added interval and a full arp preset load all take effect at once, the arp keeps playing, no panel
+LED changes; the loaded settings equal the panel's own PrSt selection byte for byte ($0A and $10 are play state the arp
+sets itself). On/off and keyboard: shown from the OS's runtime flags (raw reads at 0x0BE018BA arp on, 0x0BE018BB keyboard; they follow
+the panel buttons and agree with the LEDs); edited as on/off by pressing the panel's own button once (0x06 / 0x05)
+through the plugin's button path (verified: display unchanged, only the arp LEDs change, the arp plays). Feel
+stays display-only. The preset's stored block is not written (the OS stores the current arp settings on save, as with
+the panel's arp edits).
+
+**Why not the whole-preset dump (rev 2):**
+
+A whole-preset dump runs the OS's preset recall, which (1) **stops a running arp** (a held chord falls silent within
+~200 ms of an unchanged dump), (2) **re-applies the arp keyboard (bypass) setting** by the system's bypass rule, undoing a
+panel Keyboard toggle (a change to the main panel's state), and (3) the live state's on/off ($21) and keyboard ($02)
+bytes don't reflect the panel (arp on with its LED lit, live on/off read 0), so a dump built from them can switch the
+arp off. The editor sends no whole-preset dump.
 
 ### 1a. Whole-object dump layout (from the OS's own 0x41 reply to a whole-object read; sending it with command 02 verified)
 
@@ -71,7 +98,9 @@ last four 16-bit words).
 
 ## 3. Arp page fields
 
-**Source of the values: the live arp state**, not the preset's stored block. The panel's arp edits (including selecting
+**Edited by direct writes to the live state (§1b).** **Source of the values: the live arp state**, not the preset's stored block, except
+**on/off and keyboard, shown from the OS's runtime flags** (0x0BE018BA, 0x0BE018BB; raw-memory reads), switched like the
+panel buttons (§1b). The panel's arp edits (including selecting
 an arp preset) change only the live state; the preset's block changes when the preset is saved (verified: selecting arp
 preset 23 on the panel left the preset block unchanged). The live state is 64 bytes in RAM at **0x0BE093D0** (read with
 the raw-memory SysEx read, type 0x7F, like the wave list), in the layout of an arp record's body: live byte $N = arp
@@ -97,7 +126,7 @@ Labels are the OS's own 4-character codes, read at runtime from the addresses in
 | nrES (0x8881E) | 402 | 4 | 1536, 768, 384, 192, 96, 48, 32, 64, 128, 256, 512, 1024 | the OS's names in its pointer-table order (0x8876C): whole, half, quarter, 8th, 16th, 32nd, then the triplets 32nd … whole. 384 ticks per quarter (factory presets: 96 = 16th in 58 of 64) |
 | t### tempo (0x88812) | 406 | 4 | 25–320 | `t%3d` |
 | arp pattern | 390 | 2 | arp pattern number, 0xFFFF none | display-only: the pattern's name (SysEx read, type 9, number n, offset 8, 16 characters) |
-| PrSt (0x88882) | — | — | action, not stored | shows the OS's " Snd" (0x88888: the preset's own arp settings); right-click lists the 121 arp presets by number and name (`AP%02d`, 0x8889E; names: type 8, number n, offset 8) and loads the chosen one as in §1 |
+| PrSt (0x88882) | — | — | the OS's current arp preset, 0x0BE01880 (32-bit, −1 = " Snd") | " Snd" (0x88888) or the number and name (`AP%02d`, 0x8889E; names: type 8, number n, offset 8); drag / typed / right-click list (121 arp presets) step to it through the panel's −/No +/Yes buttons (§1b) |
 | arp settings name | 334 | 16 | text | display-only |
 
 ## 4. Follow on panel knobs
@@ -133,7 +162,7 @@ The rack skin is not in the repo: the project chat adds the call to the rack ski
 - Double-click: typed entry (Enter sends, Esc cancels). Right-click: the OS's value or name list (waves by number and
   name; on the arp page's PrSt field, the 121 arp presets), and revert to the stored value.
 - Every edit: clamp to the field's range, send, read back, show what the OS holds. Display-only fields ignore drags.
-- Exclusive arp intervals: setting one clears the others in the same dump.
+- Arp: Lo n / Hi n write both pairs; setting an interval clears the others; on/off and keyboard are shown only.
 
 ## 6. F-32 — the window fits the screen
 

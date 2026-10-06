@@ -118,7 +118,10 @@ Controller::Controller(Link& link) : link_(link) {}
 void Controller::setTables(const edtables::OsTables& tables) {
     tables_ = tables;
     objs_.clear();
-    liveValid_ = false;
+    liveValid_ = flagsValid_ = arpPresetValid_ = false;
+    presetNameRead_ = {};
+    presetNamesRequested_ = 0;
+    currentPreset_ = -1;
     patternNames_.clear();
     patternRequested_.clear();
     arpPresetNames_ = {};
@@ -164,8 +167,8 @@ void Controller::setOpen(bool open) {
     } else {
         outstanding_ = 0;
         readDue_ = displayChangedAt_ = readBackAt_ = -1;
-        pending_.clear(); rmw_.clear(); pendingArp_.clear(); pendingArpPreset_ = -1;   // the engine drops its queue too
-        dump_ = Dump::Idle;
+        pending_.clear(); rmw_.clear(); pendingArp_.clear();   // the engine drops its queue too
+        if (jobActive_) arpFinish(false);            // lets go of a button the editor holds
         dragRef_ = -1;
         typing_ = false;
     }
@@ -184,7 +187,8 @@ void Controller::build() {
     focus_ = -1;
     typing_ = false;
     dragRef_ = -1;
-    pending_.clear(); rmw_.clear(); pendingArp_.clear(); pendingArpPreset_ = -1; before_.clear();
+    pending_.clear(); rmw_.clear(); pendingArp_.clear(); before_.clear();
+    if (jobActive_) arpFinish(false);
     size_t waveNameMax = 0;
     for (const auto& n : waveNames_) waveNameMax = std::max(waveNameMax, n.size());
     auto item = [&](const edtables::Table& t, int field, char kind) {
@@ -342,7 +346,7 @@ std::vector<std::vector<uint8_t>> Controller::pageReads() const {
     const Section& s = a->sections[size_t(section_)];
     if (s.pages.empty()) return reads;
     std::map<char, std::pair<uint32_t, uint32_t>> ranges;   // kind -> [from, to)
-    bool live = false;
+    bool live = false, arpPreset = false, flags = false, names = false;
     auto range = [&](char kind, uint32_t from, uint32_t to) {
         auto it = ranges.find(kind);
         if (it == ranges.end()) ranges[kind] = {from, to};
@@ -354,10 +358,12 @@ std::vector<std::vector<uint8_t>> Controller::pageReads() const {
             const Ref& ref = refs_[size_t(x.ref)];
             if (ref.kind == 'n') {                   // a preset name: 16 characters at offset 8 of the stored preset
                 reads.push_back(edproto::partialRead({edproto::kPreset, uint16_t(edproto::kStoredPreset + ref.field), 0, 0, 8, 16}));
+                names = true;
                 continue;
             }
             if (const edfields::Field* f = presetField(ref)) {
-                if (f->kind == Kind::PresetAction) continue;
+                if (f->kind == Kind::PresetAction) { arpPreset = true; continue; }
+                if (f->kind == Kind::RuntimeFlag) { flags = true; continue; }
                 if (f->live()) live = true;
                 else range('P', f->offset, f->offset + uint32_t(f->size));
                 continue;
@@ -369,7 +375,10 @@ std::vector<std::vector<uint8_t>> Controller::pageReads() const {
         const ObjKey k = keyFor(kv.first);
         reads.push_back(edproto::partialRead({k.type, k.number, k.subtype, k.subnumber, kv.second.first, kv.second.second - kv.second.first}));
     }
+    if (names) reads.push_back(edproto::partialRead({edproto::kPreset, 0, 0, 0, 8, 16}));   // the current preset's name
     if (live) reads.push_back(edproto::partialRead({edproto::kRawMemory, 0, 0, 0, edfields::kLiveArp, edfields::kArpBlockSize}));
+    if (flags) reads.push_back(edproto::partialRead({edproto::kRawMemory, 0, 0, 0, edfields::kArpFlags, 2}));
+    if (arpPreset) reads.push_back(edproto::partialRead({edproto::kRawMemory, 0, 0, 0, edfields::kCurrentArpPreset, 4}));
     return reads;
 }
 
@@ -388,20 +397,6 @@ void Controller::readPage() {
 
 void Controller::handleReply(const std::vector<uint8_t>& m) {
     if (outstanding_ > 0) --outstanding_;
-    {   // a whole object (the dump's fresh read of the edit buffer)
-        uint8_t type; uint16_t number; std::vector<uint8_t> obj;
-        if (m.size() > 6 && m[5] == edproto::kWholeReply) {
-            if (!edproto::parseWhole(m.data(), m.size(), type, number, obj)) return;
-            if (type == edproto::kPreset && number == 0) {
-                Obj& o = objs_[keyFor('P')];
-                o.bytes = obj;
-                o.valid.assign(obj.size(), true);
-                if (dump_ == Dump::Reading) { dumpObject_ = obj; dumpBuffer_ = true; }
-            }
-            if (dump_ == Dump::Reading && dumpBuffer_ && dumpLive_ && dumpRecord_) finishDump();
-            return;
-        }
-    }
     edproto::Message r;
     if (!edproto::parse(m.data(), m.size(), r) || r.command != edproto::kPartialReply) return;
     const edproto::Address& a = r.address;
@@ -413,15 +408,23 @@ void Controller::handleReply(const std::vector<uint8_t>& m) {
     }
     if (a.type == edproto::kRawMemory && a.offset == edfields::kLiveArp && r.data.size() >= edfields::kArpBlockSize) {
         std::copy(r.data.begin(), r.data.begin() + edfields::kArpBlockSize, live_.begin());
-        liveValid_ = true;
-        // The dump's live read is the one after its whole read (the OS answers in order).
-        if (dump_ == Dump::Reading && dumpBuffer_) {
-            dumpLive_ = true;
-            if (dumpObject_.size() >= edfields::kPresetSize)
-                std::copy(live_.begin(), live_.end(), dumpObject_.begin() + edfields::kArpBlock);
-        }
-        for (const auto& kv : pendingArp_) apply(kv.first, kv.second);   // edits not sent yet stay shown
-        if (dump_ == Dump::Reading && dumpBuffer_ && dumpLive_ && dumpRecord_) finishDump();
+        liveValid_ = liveFresh_ = true;
+        return;
+    }
+    if (a.type == edproto::kRawMemory && a.offset == edfields::kArpControlVar && !r.data.empty()) {
+        arpControl_ = r.data[0];
+        arpControlFresh_ = true;
+        return;
+    }
+    if (a.type == edproto::kRawMemory && a.offset == edfields::kCurrentArpPreset && r.data.size() >= 4) {
+        currentArpPreset_ = int32_t(uint32_t(r.data[0]) << 24 | uint32_t(r.data[1]) << 16 | uint32_t(r.data[2]) << 8 | r.data[3]);
+        if (currentArpPreset_ < 0) currentArpPreset_ = -1;
+        arpPresetValid_ = arpPresetFresh_ = true;
+        return;
+    }
+    if (a.type == edproto::kRawMemory && a.offset == edfields::kArpFlags && r.data.size() >= 2) {
+        arpFlags_ = {r.data[0], r.data[1]};
+        flagsValid_ = flagsFresh_ = true;
         return;
     }
     auto text = [&]() {
@@ -431,17 +434,13 @@ void Controller::handleReply(const std::vector<uint8_t>& m) {
     };
     if (a.type == edproto::kArpPreset && a.number < edfields::kArpPresets) {
         if (a.offset == 8) arpPresetNames_[a.number] = text();
-        if (a.offset == edfields::kArpRecordBody && r.data.size() >= edfields::kArpBlockSize && dump_ == Dump::Reading) {
-            dumpBody_.assign(r.data.begin(), r.data.begin() + edfields::kArpBlockSize);
-            dumpRecord_ = true;
-            if (dumpBuffer_ && dumpLive_) finishDump();
-        }
         return;
     }
     if (a.type == edproto::kArpPattern && a.offset == 8) { patternNames_[a.number] = text(); return; }
     if (a.type == edproto::kPreset && a.number >= edproto::kStoredPreset && a.offset == 8) {
         const int n = a.number - edproto::kStoredPreset;
-        if (n >= 0 && n < kPresets) presetNames_[size_t(n)] = text();
+        if (n >= 0 && n < kPresets) { presetNames_[size_t(n)] = text(); presetNameRead_[size_t(n)] = true; }
+        updateCurrentPreset();
         return;
     }
     const ObjKey key{a.type, a.number, a.subtype, a.subnumber};
@@ -470,6 +469,27 @@ void Controller::handleReply(const std::vector<uint8_t>& m) {
     // Writes not sent yet (and the value being dragged) stay shown.
     for (const auto& kv : pending_) apply(kv.first, kv.second);
     if (dragRef_ >= 0) apply(dragRef_, dragValue_);
+    if (key == keyFor('P') && a.offset <= 8 && end >= 24) updateCurrentPreset();   // the edit buffer's name
+}
+
+// The current preset: the stored preset whose name the edit buffer holds (the last one picked here if several match).
+void Controller::updateCurrentPreset() {
+    const Obj* o;
+    if (!bytesOf('P', o) || o->bytes.size() < 24 || !o->valid[8] || !o->valid[23]) return;
+    std::string name(o->bytes.begin() + 8, o->bytes.begin() + 24);
+    for (char& c : name) if (static_cast<unsigned char>(c) < 0x20 || static_cast<unsigned char>(c) > 0x7E) c = ' ';
+    name = edpages::trimmed(name);
+    int found = -1;
+    for (int n = 0; n < kPresets && !name.empty(); ++n) {
+        if (!presetNameRead_[size_t(n)] || edpages::trimmed(presetNames_[size_t(n)]) != name) continue;
+        if (found < 0 || n == lastPicked_ || (n == currentPreset_ && found != lastPicked_)) found = n;
+    }
+    if (found < 0 || found == currentPreset_) return;
+    currentPreset_ = found;
+    if (const Area* a = currentArea(); a && a->name == "PRESETS" && page_ != found / kPresetsPerPage) {
+        page_ = found / kPresetsPerPage;             // the page follows the current preset
+        readPage();
+    }
 }
 
 // ------------------------------------------------------------------ values
@@ -492,8 +512,13 @@ bool Controller::valueOf(int ref, int64_t& d) const {
     const Ref& r = refs_[size_t(ref)];
     if (r.kind == 'n') return false;
     if (const edfields::Field* f = presetField(r)) {
-        if (f->kind == Kind::PresetAction) { d = 0; return true; }
-        if (f->kind == Kind::Text) return false;
+        if (f->kind == Kind::PresetAction) { if (!arpPresetValid_) return false; d = currentArpPreset_; return true; }
+        if (f->kind == Kind::RuntimeFlag) {
+            if (!flagsValid_ || f->flag < 0 || f->flag > 1) return false;
+            d = arpFlags_[size_t(f->flag)] ? 1 : 0;
+            return true;
+        }
+        if (f->kind == Kind::Text || f->kind == Kind::Pattern) return false;
         int64_t raw;
         if (f->live()) {
             if (!liveValid_ || !edfields::rawOf(*f, live_.data(), live_.size(), edfields::kArpBlock, raw)) return false;
@@ -556,7 +581,8 @@ bool Controller::rangeOf(int ref, int64_t& lo, int64_t& hi) const {
 bool Controller::editable(int ref) const {
     if (ref < 0 || size_t(ref) >= refs_.size()) return false;
     const Ref& r = refs_[size_t(ref)];
-    if (const edfields::Field* f = presetField(r)) return f->editable;
+    if (const edfields::Field* f = presetField(r))
+        return f->editable && (r.kind == 'm' || f->arpControl >= 0 || f->button >= 0);   // ARP: through the panel's buttons
     if (!r.table) return false;
     using namespace edtables;
     const Field& f = r.table->fields[size_t(r.field)];
@@ -591,15 +617,16 @@ std::vector<Choice> Controller::listOf(int ref) const {
     int64_t cur = 0;
     const bool known = valueOf(ref, cur);
     if (const edfields::Field* f = presetField(r)) {
-        if (f->kind == Kind::PresetAction) {         // the arp presets by number and name
+        if (f->kind == Kind::PresetAction) {         // the preset's own settings, then the arp presets by number and name
+            out.push_back({edfields::format(*f, -1, tables_.arp), -1, known && cur == -1});
             for (int n = 0; n < edfields::kArpPresets; ++n) {
                 const std::string name = edpages::trimmed(arpPresetNames_[size_t(n)]);
-                out.push_back({edfields::arpPresetLabel(tables_.arp, n) + (name.empty() ? "" : " " + name), n, false});
+                out.push_back({edfields::arpPresetLabel(tables_.arp, n) + (name.empty() ? "" : " " + name), n, known && cur == n});
             }
             return out;
         }
         switch (f->kind) {
-        case Kind::List: case Kind::Note: case Kind::OnOff: case Kind::Interval: case Kind::Inverted:
+        case Kind::List: case Kind::Note: case Kind::OnOff: case Kind::Interval: case Kind::Inverted: case Kind::RuntimeFlag:
         case Kind::OctaveUp: case Kind::OctaveDown: case Kind::Resolution:
             if (!f->editable) return out;
             for (int d = f->lo; d <= f->hi; ++d) out.push_back({edfields::format(*f, d, tables_.arp), d, known && cur == d});
@@ -676,8 +703,12 @@ void Controller::write(int ref, int64_t d) {
     int64_t cur;
     if (!before_.count(ref) && valueOf(ref, cur)) before_[ref] = cur;
     apply(ref, d);
-    if (refs_[size_t(ref)].kind == 'a') pendingArp_[ref] = d;
-    else pending_[ref] = d;
+    if (refs_[size_t(ref)].kind == 'a') {            // through the panel's buttons, one edit at a time
+        if (jobActive_ && job_.ref == ref) job_.target = d;
+        else pendingArp_[ref] = d;
+    } else {
+        pending_[ref] = d;
+    }
     edited_ = true;
     lastWriteAt_ = now_;
     pump();
@@ -688,17 +719,8 @@ void Controller::apply(int ref, int64_t d) {
     const Ref& r = refs_[size_t(ref)];
     if (const edfields::Field* f = presetField(r)) {
         const int64_t raw = edfields::toRaw(*f, d);
-        if (f->live()) {
-            if (!liveValid_) return;
-            edfields::store(*f, raw, live_.data(), live_.size(), edfields::kArpBlock);
-            if (f->mirror) {
-                edfields::Field m = *f;
-                m.offset = f->mirror;
-                edfields::store(m, raw, live_.data(), live_.size(), edfields::kArpBlock);
-            }
-            if (f->kind == Kind::Interval && d)      // at most one interval on
-                for (const edfields::Field& g : arp_)
-                    if (g.kind == Kind::Interval && g.offset != f->offset) edfields::store(g, 0, live_.data(), live_.size(), edfields::kArpBlock);
+        if (r.kind == 'a') {
+            return;                                  // ARP: shown as the target until the OS holds it (see render)
         } else {
             Obj& o = objs_[keyFor('P')];
             const size_t end = f->offset + size_t(f->size);
@@ -740,7 +762,6 @@ void Controller::pump() {
         pending_.erase(it);
         sendWrite(ref, d);
     }
-    if (now_ >= nextSendAt_ && dump_ == Dump::Idle && (!pendingArp_.empty() || pendingArpPreset_ >= 0)) startDump();
 }
 
 void Controller::sendWrite(int ref, int64_t d) {
@@ -780,62 +801,6 @@ void Controller::sendWrite(int ref, int64_t d) {
     lastSendAt_ = now_;
     nextSendAt_ = now_ + std::max(kPaceMs, double(bytes) * kCableMsPerByte);
     afterWrite();
-}
-
-// The dump's fresh reads: the edit buffer (whole), the live arp state after it, and the arp preset to load.
-void Controller::startDump() {
-    std::vector<std::vector<uint8_t>> msgs = {
-        edproto::wholeRead(edproto::kPreset, 0),
-        edproto::partialRead({edproto::kRawMemory, 0, 0, 0, edfields::kLiveArp, edfields::kArpBlockSize})};
-    if (pendingArpPreset_ >= 0)
-        msgs.push_back(edproto::partialRead({edproto::kArpPreset, uint16_t(pendingArpPreset_), 0, 0, edfields::kArpRecordBody,
-                                             edfields::kArpBlockSize}));
-    for (const auto& m : msgs)
-        if (!link_.send(m)) { nextSendAt_ = now_ + kPaceMs; return; }   // nothing to undo: replies are only read in Reading
-    outstanding_ += int(msgs.size());
-    lastSendAt_ = now_;
-    dump_ = Dump::Reading;
-    dumpAt_ = now_;
-    dumpBuffer_ = dumpLive_ = false;
-    dumpRecord_ = pendingArpPreset_ < 0;
-    dumpObject_.clear();
-    dumpBody_.clear();
-}
-
-// The edit buffer with the live arp state folded in, the arp preset's body if one is loaded (keeping held, keyboard
-// and the key ranges), then the edited fields: into the edit buffer as one dump.
-void Controller::finishDump() {
-    dump_ = Dump::Idle;
-    if (dumpObject_.size() < edfields::kPresetSize) return;
-    std::vector<uint8_t>& obj = dumpObject_;
-    if (pendingArpPreset_ >= 0 && dumpBody_.size() >= edfields::kArpBlockSize) {
-        const std::vector<uint8_t> keep(obj.begin() + edfields::kArpBlock, obj.begin() + edfields::kArpBlock + edfields::kArpBlockSize);
-        std::copy(dumpBody_.begin(), dumpBody_.begin() + edfields::kArpBlockSize, obj.begin() + edfields::kArpBlock);
-        for (uint32_t i : edfields::kKeptOnLoad) obj[edfields::kArpBlock + i] = keep[i];
-    }
-    for (const auto& kv : pendingArp_) {
-        const edfields::Field* f = presetField(refs_[size_t(kv.first)]);
-        if (!f || !f->editable) continue;
-        const int64_t raw = edfields::toRaw(*f, kv.second);
-        edfields::store(*f, raw, obj.data(), obj.size(), 0);
-        if (f->mirror) { edfields::Field m = *f; m.offset = f->mirror; edfields::store(m, raw, obj.data(), obj.size(), 0); }
-        if (f->kind == Kind::Interval && kv.second)
-            for (const edfields::Field& g : arp_)
-                if (g.kind == Kind::Interval && g.offset != f->offset) edfields::store(g, 0, obj.data(), obj.size(), 0);
-    }
-    const std::vector<uint8_t> msg = edproto::wholeDump(edproto::kPreset, 0, obj);
-    if (!link_.send(msg)) { nextSendAt_ = now_ + kPaceMs; return; }   // edits stay pending: the next dump reads afresh
-    Obj& o = objs_[keyFor('P')];
-    o.bytes = obj;
-    o.valid.assign(obj.size(), true);
-    std::copy(obj.begin() + edfields::kArpBlock, obj.begin() + edfields::kArpBlock + edfields::kArpBlockSize, live_.begin());
-    liveValid_ = true;
-    pendingArp_.clear();
-    pendingArpPreset_ = -1;
-    lastSendAt_ = now_;
-    nextSendAt_ = now_ + double(msg.size()) * kCableMsPerByte;
-    afterWrite();
-    render();
 }
 
 void Controller::afterWrite() {
@@ -901,7 +866,11 @@ void Controller::render() {
                                 }
                             } else {
                                 int64_t d;
-                                if (valueOf(x.ref, d)) x.value = edfields::format(*f, d, tables_.arp);
+                                bool known = valueOf(x.ref, d);
+                                // An arp edit on its way through the panel's buttons: its target until the OS holds it.
+                                if (jobActive_ && job_.ref == x.ref) { d = job_.target; known = true; }
+                                else if (auto it = pendingArp_.find(x.ref); it != pendingArp_.end()) { d = it->second; known = true; }
+                                if (known) x.value = edfields::format(*f, d, tables_.arp);
                             }
                         } else {
                             const edtables::Field& tf = ref.table->fields[size_t(ref.field)];
@@ -915,8 +884,10 @@ void Controller::render() {
                         if (typing_ && x.ref == focus_) x.value = typed_ + "_";
                     }
                 v.screen = edpages::render(page);
+                // PRESETS: the current preset is the focused item (its name blinks, never underlined).
+                const int focus = a->name == "PRESETS" ? (currentPreset_ >= 0 ? refOf('n', currentPreset_) : -1) : focus_;
                 for (const auto& sp : v.screen.values)
-                    if (sp.ref == focus_ && !sp.pick) { v.focusRow = sp.row; v.focusCol = sp.col; v.focusLen = sp.len; break; }
+                    if (sp.ref == focus && (!sp.pick || a->name == "PRESETS")) { v.focusRow = sp.row; v.focusCol = sp.col; v.focusLen = sp.len; break; }
             }
         }
     }
@@ -948,6 +919,8 @@ View Controller::view() const {
 // ------------------------------------------------------------------ navigation and editing
 
 void Controller::go(int area, int section, int page) {
+    if (area != area_ && size_t(area) < areas_.size() && areas_[size_t(area)].name == "PRESETS" && currentPreset_ >= 0)
+        page = currentPreset_ / kPresetsPerPage;    // the presets open on the current preset's view
     area_ = area; section_ = section; page_ = page;
     focus_ = -1;
     typing_ = false;
@@ -1033,7 +1006,10 @@ void Controller::command(const std::string& action, const std::string& text) {
         typing_ = false;
         render();
     } else if (action == "pick" && validRef && refs_[size_t(ref)].kind == 'n') {
-        if (open_ && link_.running()) link_.send(edproto::programChange(channel_, refs_[size_t(ref)].field));
+        if (open_ && link_.running() && link_.send(edproto::programChange(channel_, refs_[size_t(ref)].field))) {
+            lastPicked_ = currentPreset_ = refs_[size_t(ref)].field;   // marked at once; the read after the load confirms
+            render();
+        }
     } else if (action == "drag_begin" && validRef) {
         focus_ = ref;
         typing_ = false;
@@ -1085,15 +1061,6 @@ bool Controller::key(const std::string& k) {
 
 void Controller::choose(int ref, int64_t value) {
     if (ref < 0 || size_t(ref) >= refs_.size() || !open_ || !link_.running()) return;
-    const edfields::Field* f = presetField(refs_[size_t(ref)]);
-    if (f && f->kind == Kind::PresetAction) {        // load an arp preset with the next dump
-        if (value < 0 || value >= edfields::kArpPresets) return;
-        pendingArpPreset_ = int(value);
-        edited_ = true;
-        pump();
-        render();
-        return;
-    }
     focus_ = ref;
     write(ref, value);
 }
@@ -1170,6 +1137,135 @@ void Controller::followKnob(int cc) {
     if (field >= 0) goToRef(refOf('o', field));
 }
 
+// ------------------------------------------------------------------ arp edits through the panel's buttons
+
+void Controller::press(int button, bool down) {
+    link_.pressButton(button, down);
+    heldButton_ = down ? button : -1;
+    lastWriteAt_ = now_;                             // the LEDs this switches are the edit's own
+}
+
+void Controller::rawRead(uint32_t address, uint32_t length) {
+    if (link_.send(edproto::partialRead({edproto::kRawMemory, 0, 0, 0, address, length}))) { ++outstanding_; lastSendAt_ = now_; }
+}
+
+void Controller::arpFinish(bool done) {
+    if (heldButton_ >= 0) link_.pressButton(heldButton_, false);   // never leave a button held
+    heldButton_ = -1;
+    jobActive_ = false;
+    if (done) afterWrite();
+    render();
+}
+
+// One arp edit at a time (docs/editor/ROUND2_REVIEW.md): the control's button (Tempo, Range, or Arp Mode until the
+// OS's arp-control variable reads the control), 1.4 s for the OS to show it, then -/No or +/Yes once per step, 40 ms
+// apart, reading the value back each round until it lands. -/No and +/Yes are pressed only in a round that began by
+// reading the arp-control variable as the wanted control (outside the arp controls they step the main preset). On/off
+// and keyboard: their own button once, if the OS's flag differs.
+void Controller::arpPump() {
+    if (!open_ || !link_.running()) return;
+    if (jobActive_) lastWriteAt_ = now_;            // the arp LEDs the edit switches are not a preset change
+    if (!jobActive_) {
+        if (pendingArp_.empty()) return;
+        const auto it = pendingArp_.begin();
+        const edfields::Field* f = presetField(refs_[size_t(it->first)]);
+        job_ = ArpJob();
+        job_.ref = it->first;
+        job_.target = it->second;
+        pendingArp_.erase(it);
+        if (!f || (f->arpControl < 0 && f->button < 0)) return;
+        job_.control = f->arpControl;
+        jobActive_ = true;
+        job_.at = now_;
+        if (f->arpControl < 0) {                     // a flag: its button once, only if the OS's flag differs
+            int64_t cur;
+            if (valueOf(job_.ref, cur) && cur == job_.target) { arpFinish(false); return; }
+            press(f->button, true);
+            job_.stage = ArpJob::Stage::ToggleUp;
+        } else {
+            job_.stage = ArpJob::Stage::Select;
+        }
+    }
+    const edfields::Field* f = presetField(refs_[size_t(job_.ref)]);
+    const double since = now_ - job_.at;
+    auto next = [&](ArpJob::Stage st) { job_.stage = st; job_.at = now_; job_.asked = false; };
+    const int selectButton = job_.control == 0 ? edfields::kBtnTempo : job_.control == 1 ? edfields::kBtnRange : edfields::kBtnArpMode;
+    auto readValue = [&] {
+        if (f->kind == Kind::PresetAction) { arpPresetFresh_ = false; rawRead(edfields::kCurrentArpPreset, 4); }
+        else { liveFresh_ = false; rawRead(edfields::kLiveArp, edfields::kArpBlockSize); }
+    };
+    auto valueFresh = [&] { return f->kind == Kind::PresetAction ? arpPresetFresh_ : liveFresh_; };
+    switch (job_.stage) {
+    case ArpJob::Stage::ToggleUp:
+        if (since >= 80) { press(f->button, false); next(ArpJob::Stage::ToggleRead); }
+        break;
+    case ArpJob::Stage::ToggleRead:
+        if (!job_.asked && since >= 150) { flagsFresh_ = false; rawRead(edfields::kArpFlags, 2); job_.asked = true; }
+        if (job_.asked && flagsFresh_) arpFinish(true);
+        else if (since > kReplyTimeoutMs) arpFinish(false);
+        break;
+    case ArpJob::Stage::Select:
+        press(selectButton, true);
+        ++job_.selects;
+        next(ArpJob::Stage::SelectUp);
+        break;
+    case ArpJob::Stage::SelectUp:
+        if (since >= 80) { press(selectButton, false); next(ArpJob::Stage::ReadControl); }
+        break;
+    case ArpJob::Stage::ReadControl:
+        if (!job_.asked && since >= 100) { arpControlFresh_ = false; rawRead(edfields::kArpControlVar, 1); job_.asked = true; }
+        if (job_.asked && arpControlFresh_) {
+            if (arpControl_ == job_.control) next(ArpJob::Stage::Settle);
+            else if (job_.control >= 2 && job_.selects < 20) next(ArpJob::Stage::Select);   // Arp Mode steps 2 -> 16 -> 2
+            else arpFinish(false);
+        } else if (since > kReplyTimeoutMs) {
+            arpFinish(false);
+        }
+        break;
+    case ArpJob::Stage::Settle:
+        if (since >= 1400) next(ArpJob::Stage::Check);
+        break;
+    case ArpJob::Stage::Check:                      // the control still shown, and the value now
+        if (!job_.asked) { arpControlFresh_ = false; rawRead(edfields::kArpControlVar, 1); readValue(); job_.asked = true; break; }
+        if (!(arpControlFresh_ && valueFresh())) { if (since > kReplyTimeoutMs) arpFinish(false); break; }
+        if (arpControl_ != job_.control) {          // the OS left the control: select it again (never step blind)
+            if (++job_.reselects > 3) { arpFinish(false); break; }
+            job_.selects = 0;
+            next(ArpJob::Stage::Select);
+            break;
+        }
+        {
+            int64_t cur;
+            if (!valueOf(job_.ref, cur)) { arpFinish(false); break; }
+            int64_t lo, hi;
+            if (rangeOf(job_.ref, lo, hi)) job_.target = std::clamp(job_.target, lo, hi);
+            if (cur == job_.target) { arpFinish(true); break; }
+            if (job_.rounds > 0 && cur == job_.last) { arpFinish(true); break; }   // no further step: the end of its range
+            if (++job_.rounds > 8) { arpFinish(true); break; }
+            job_.last = cur;
+            job_.dir = job_.target > cur ? 1 : -1;
+            job_.presses = int(std::min<int64_t>(std::abs(job_.target - cur), 128));
+            next(ArpJob::Stage::Step);
+        }
+        break;
+    case ArpJob::Stage::Step:
+        press(job_.dir > 0 ? edfields::kBtnYes : edfields::kBtnNo, true);
+        next(ArpJob::Stage::StepUp);
+        break;
+    case ArpJob::Stage::StepUp:
+        if (since >= 20) {
+            press(job_.dir > 0 ? edfields::kBtnYes : edfields::kBtnNo, false);
+            --job_.presses;
+            next(ArpJob::Stage::StepGap);
+        }
+        break;
+    case ArpJob::Stage::StepGap:                     // one press per 40 ms; after the last, let the OS settle and check
+        if (job_.presses > 0 && since >= 20) next(ArpJob::Stage::Step);
+        else if (job_.presses <= 0 && since >= 150) next(ArpJob::Stage::Check);
+        break;
+    }
+}
+
 // ------------------------------------------------------------------ tick
 
 void Controller::tick(double nowMs) {
@@ -1204,10 +1300,10 @@ void Controller::tick(double nowMs) {
     if (displayChangedAt_ >= 0 && now_ - displayChangedAt_ >= kDisplayFallbackMs) { displayChangedAt_ = -1; readDue_ = now_; }
     if (readDue_ >= 0 && now_ >= readDue_) { readDue_ = -1; readPage(); }
 
-    // Edits: paced sends, the dump, and the read-back once everything is out.
-    if (dump_ == Dump::Reading && now_ - dumpAt_ > kReplyTimeoutMs) dump_ = Dump::Idle;   // no answer: try again
+    // Edits: paced sends, the arp edit through the panel's buttons, and the read-back once everything is out.
     pump();
-    const bool quiet = pending_.empty() && pendingArp_.empty() && pendingArpPreset_ < 0 && dump_ == Dump::Idle && rmw_.empty();
+    arpPump();
+    const bool quiet = pending_.empty() && pendingArp_.empty() && !jobActive_ && rmw_.empty();
     if (readBackAt_ >= 0 && now_ >= readBackAt_ && quiet && dragRef_ < 0) { readBackAt_ = -1; readPage(); }
 
     // Names for the ARP area: the pattern shown, and the arp presets for the right-click list (a few per tick).
@@ -1226,6 +1322,13 @@ void Controller::tick(double nowMs) {
             ++outstanding_;
         }
     }
+    // PRESETS: every stored preset's name once (to find the current preset by its name), a few per tick.
+    if (currentArea() && currentArea()->name == "PRESETS" && quiet)
+        for (int i = 0; i < 2 && presetNamesRequested_ < kPresets; ++i, ++presetNamesRequested_) {
+            if (presetNameRead_[size_t(presetNamesRequested_)]) continue;
+            if (!link_.send(edproto::partialRead({edproto::kPreset, uint16_t(edproto::kStoredPreset + presetNamesRequested_), 0, 0, 8, 16}))) break;
+            ++outstanding_;
+        }
     if (outstanding_ > 0 && now_ - lastSendAt_ > kReplyTimeoutMs) outstanding_ = 0;
     render();
 }

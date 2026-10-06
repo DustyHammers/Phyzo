@@ -5,7 +5,10 @@
 // bytes.
 //
 // ARP values are read from the live arp state (64 bytes in RAM, the layout of the preset's arp block, preset offsets
-// 350-413): the panel's arp edits change only the live state. Live byte N = preset offset 350 + N.
+// 350-413): the panel's arp edits change only the live state. Live byte N = preset offset 350 + N. Arp on/off and
+// keyboard come from the OS's runtime flags, the arp preset from the OS's current arp preset. ARP settings are changed
+// only through the panel's own buttons (docs/editor/ROUND2_REVIEW.md): the arp control's button (Tempo, Range or Arp
+// Mode, steered by the OS's arp-control variable), then -/No and +/Yes; on/off and keyboard by their own buttons.
 #pragma once
 #include <array>
 #include <cstdint>
@@ -23,6 +26,13 @@ constexpr uint32_t kArpRecordBody = 24;                    // an arp preset reco
 // Live bytes kept when an arp preset is loaded: held, keyboard, both key-range pairs.
 constexpr uint32_t kKeptOnLoad[] = {0x01, 0x02, 0x14, 0x15, 0x16, 0x17};
 constexpr int64_t kNone16 = 0xFFFF;                         // feel off, no pattern
+// The OS's arp variables in RAM (raw-memory reads)
+constexpr uint32_t kArpControlVar = 0x0BE01877;            // the arp control the panel shows: 0 Tempo, 1 Range, 2 PrSt ...
+constexpr uint32_t kCurrentArpPreset = 0x0BE01880;         // 32-bit: -1 = the preset's own settings, else 0-120
+constexpr uint32_t kArpFlags = 0x0BE018BA;                 // 2 bytes: arp on, keyboard
+// Panel buttons (raw ids)
+constexpr int kBtnTempo = 0x1E, kBtnRange = 0x03, kBtnArpMode = 0x21, kBtnYes = 0x0D, kBtnNo = 0x0E,
+              kBtnArpOnOff = 0x06, kBtnArpKeyboard = 0x05;
 // The note resolutions (ticks, 384 per quarter) in the order of the OS's name pointer table.
 constexpr uint32_t kResolutionTicks[12] = {1536, 768, 384, 192, 96, 48, 32, 64, 128, 256, 512, 1024};
 
@@ -39,11 +49,12 @@ enum class Kind {
     Duration,     // stored 1-255, shown raw x 100 / 256
     Resolution,   // 4-byte tick count, shown by the OS's name
     Tempo,        // 4-byte number, the OS's tempo format
-    Feel,         // 16-bit, 0xFFFF = OFF (display only)
+    Feel,         // 16-bit, 0xFFFF = OFF (domain -1), else the number
+    RuntimeFlag,  // the OS's arp on / keyboard flag (shown 0 / 1), switched by its panel button
     Pattern,      // 16-bit arp pattern number, 0xFFFF = none, shown by its name (display only)
     Text,         // characters (display only)
     Signed16,     // 16-bit signed number (display only)
-    PresetAction  // the arp preset field: not stored, shows the OS's " Snd"; right-click loads an arp preset
+    PresetAction  // the OS's current arp preset: -1 = " Snd" (the preset's own settings), else 0-120
 };
 
 struct Field {
@@ -59,9 +70,15 @@ struct Field {
     int onRaw = 1;                                   // OnOff: the stored value for ON
     std::vector<std::string> list;                   // List
     int nrpnLsb = -1;                                // COMMON: NRPN MSB 1, this LSB
-    uint32_t mirror = 0;                             // ARP: also written at this preset offset (0: none)
+    uint32_t mirror = 0;                             // ARP: the second key-range pair (the OS writes both)
+    int arpControl = -1;                             // ARP: the OS's arp-control number (0 Tempo, 1 Range, 2 PrSt ...)
+    int button = -1;                                 // ARP on/off and keyboard: the panel button that switches it
+    int flag = -1;                                   // RuntimeFlag: 0 arp on, 1 keyboard
     bool editable = false;
-    bool live() const { return area == 'a' && offset >= kArpBlock && offset + uint32_t(size) <= kArpBlock + kArpBlockSize; }
+    bool live() const {
+        return area == 'a' && kind != Kind::RuntimeFlag && kind != Kind::PresetAction && offset >= kArpBlock &&
+               offset + uint32_t(size) <= kArpBlock + kArpBlockSize;
+    }
 };
 
 // COMMON: the four sound slots (mode, oscillators, key range), the five performance-knob values (labels from the

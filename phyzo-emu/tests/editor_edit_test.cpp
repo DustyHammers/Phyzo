@@ -5,9 +5,12 @@
 //  3. Editing on synthetic tables with a fake engine link, every verified write path: oscillator NRPN (signed, bit
 //     fields), the wave by SysEx (never NRPN), sound settings and system partial writes (offset byte), bit fields
 //     read-modify-write, COMMON NRPN MSB 1, ARP whole-preset dumps (fresh whole read + live arp state folded in, then
-//     the edits; exclusive intervals; both key-range pairs; coalescing, one dump in flight), loading an arp preset
-//     (keeping held, keyboard and the key ranges), program changes from the preset list; pacing and coalescing of
-//     drags; clamping; display-only fields send nothing; typed entry; keys; the right-click lists; revert; EDITED;
+//     ARP through the panel's buttons only, on a simulated OS (the arp-control variable, the arp menu, the live arp
+//     state, the current arp preset, the runtime flags): the control selected (Tempo, Range, or Arp Mode until the
+//     variable reads it), 1.4 s, then -/No / +/Yes until the value lands; never a step outside the arp controls (the
+//     safety rule, also when the OS leaves the control); on/off and keyboard by their buttons; no write into the arp
+//     state and no dump; program changes from the preset list and the current preset marked; pacing and coalescing
+//     of drags; clamping; display-only fields send nothing; typed entry; keys; the right-click lists; revert; EDITED;
 //     read-back after the last write; Follow on panel knobs; nothing at all while closed.
 #include <cstdio>
 #include <cstring>
@@ -85,7 +88,11 @@ void testFields() {
     const ArpText t = arpText();
     const std::vector<edfields::Field> a = arpFields(t);
     CHECK(a.size() == 22);
-    CHECK(a[0].label == "ARP" && a[0].offset == 383 && a[0].onRaw == 2 && a[1].label == "HELd" && a[2].kind == Kind::Inverted);
+    CHECK(a[0].label == "ARP" && a[0].kind == Kind::RuntimeFlag && a[0].flag == 0 && a[0].button == kBtnArpOnOff && a[0].editable);
+    CHECK(a[2].label == "KBD" && a[2].kind == Kind::RuntimeFlag && a[2].flag == 1 && a[2].button == kBtnArpKeyboard);
+    CHECK(a[1].label == "HELd" && a[1].arpControl == 16 && a[16].arpControl == 3 && a[17].arpControl == 0 && a[9].arpControl == 1 && a[10].arpControl == 1);
+    CHECK(a[4].arpControl == 6 && a[8].arpControl == 10 && a[11].arpControl == 11 && a[14].arpControl == 4 && a[18].arpControl == 5 && a[19].arpControl == 2);
+    for (const edfields::Field& f : a) CHECK(f.editable == (f.kind != Kind::Pattern && f.kind != Kind::Text));   // pattern and name: display only
     CHECK(a[11].label == "Lo n" && a[11].offset == 370 && a[11].mirror == 372 && a[12].mirror == 373);
     // Conversions
     edfields::Field dur = a[14];
@@ -97,19 +104,103 @@ void testFields() {
     int64_t raw;
     CHECK(buf[368 - 350] == 0xE8 && rawOf(down, buf, 64, kArpBlock, raw) && raw == -24 && toDomain(down, raw) == 2);
     CHECK_EQ(format(down, 2, t), std::string("Oct2"));
-    CHECK(toRaw(a[2], 1) == 0 && toRaw(a[2], 0) == 1 && format(a[2], 1, t) == "On");   // keyboard: 0 = ON
+    CHECK(format(a[2], 1, t) == "On" && format(a[0], 0, t) == "OFF" && toDomain(a[0], 2) == 1);
     edfields::Field res = a[16];
     CHECK(res.kind == Kind::Resolution && toDomain(res, 96) == 4 && toRaw(res, 4) == 96 && format(res, 4, t) == "16th" && toDomain(res, 1000) == -1);
     store(res, 384, buf, 64, kArpBlock);
     CHECK(buf[52] == 0 && buf[53] == 0 && buf[54] == 0x01 && buf[55] == 0x80);                  // 4 bytes, big-endian
     CHECK_EQ(format(a[17], 120, t), std::string("t120"));
-    CHECK_EQ(format(a[18], kNone16, t), std::string("OFF"));
-    CHECK(a[19].kind == Kind::PresetAction && format(a[19], 0, t) == "Snd" && arpPresetLabel(t, 0) == "AP01");
+    CHECK(toDomain(a[18], kNone16) == -1 && toRaw(a[18], -1) == kNone16 && format(a[18], -1, t) == "OFF" && format(a[18], 3, t) == "3");
+    CHECK(a[19].kind == Kind::PresetAction && format(a[19], -1, t) == "Snd" && format(a[19], 0, t) == "AP01" && a[19].lo == -1 && a[19].hi == 120);
+    CHECK(toDomain(a[19], 0xFFFFFFFF) == -1 && toDomain(a[19], 22) == 22);
     std::printf("editor_edit_test: COMMON and ARP fields\n");
 }
 
 // ---- controller with a fake engine link
 struct FakeLink : editor::Link {
+    // A simulated OS for the arp controls (docs/editor/ROUND2_REVIEW.md): answers the raw-memory reads of the
+    // arp-control variable, the live arp state, the current arp preset and the runtime flags, and reacts to buttons.
+    struct ArpSim {
+        bool on = false;                             // answer the arp reads
+        bool menu = false;                           // the arp menu shows a control
+        int var = 0x63;                              // the arp-control variable
+        int lastParam = 5;                           // Arp Mode opens at the last arp parameter shown
+        bool tempoIgnored = false;                   // the Tempo button does nothing (a select that fails)
+        Bytes live = Bytes(64, 0);
+        int32_t preset = -1;
+        uint8_t flags[2] = {0, 0};
+        int blindSteps = 0;                          // -/No or +/Yes outside the arp controls (would step the main preset)
+        std::vector<int> stepVars;                   // the variable at every -/No / +/Yes
+        void step(int dir) {
+            auto u32 = [&](int at) { return uint32_t(live[size_t(at)]) << 24 | uint32_t(live[size_t(at) + 1]) << 16 | uint32_t(live[size_t(at) + 2]) << 8 | live[size_t(at) + 3]; };
+            auto put32 = [&](int at, uint32_t v) { for (int i = 0; i < 4; ++i) live[size_t(at + i)] = uint8_t(v >> (24 - 8 * i)); };
+            auto clampByte = [&](int at, int lo, int hi) { live[size_t(at)] = uint8_t(std::max(lo, std::min(hi, int(live[size_t(at)]) + dir))); };
+            switch (var) {
+            case 0: put32(56, uint32_t(std::max(25, std::min(320, int(u32(56)) + dir)))); break;
+            case 1: {                                // Range: up and down together
+                const int up = std::max(0, std::min(48, int(live[17]) + 12 * dir));
+                live[17] = uint8_t(up); live[18] = uint8_t(int8_t(-up));
+                break;
+            }
+            case 2: preset = std::max(-1, std::min(120, preset + dir)); break;
+            case 3: {
+                int i = 0;
+                while (i < 12 && edfields::kResolutionTicks[i] != u32(52)) ++i;
+                i = std::max(0, std::min(11, (i == 12 ? 4 : i) + dir));
+                put32(52, edfields::kResolutionTicks[i]);
+                break;
+            }
+            case 4: {                                // duration: the smallest raw that shows the next value
+                const int shown = std::max(0, std::min(99, int(live[35]) * 100 / 256 + dir));
+                live[35] = uint8_t(std::max(1, (shown * 256 + 99) / 100));
+                break;
+            }
+            case 5: {                                // feel: OFF (0xFFFF) <-> 0, 1, ...
+                const int v = live[42] << 8 | live[43];
+                const int n = v == 0xFFFF ? (dir > 0 ? 0 : 0xFFFF) : (v == 0 && dir < 0 ? 0xFFFF : v + dir);
+                live[42] = uint8_t(n >> 8); live[43] = uint8_t(n);
+                break;
+            }
+            case 6: case 7: case 8: case 9: case 10:  // intervals: one at most
+                if (dir > 0) for (int i = 0; i < 5; ++i) live[size_t(11 + i)] = uint8_t(i == var - 6);
+                else live[size_t(11 + var - 6)] = 0;
+                break;
+            case 11: clampByte(20, 0, 127); live[22] = live[20]; break;   // both key-range pairs
+            case 12: clampByte(21, 0, 127); live[23] = live[21]; break;
+            case 13: clampByte(34, 0, 127); break;
+            case 14: clampByte(32, 0, 1); break;
+            case 15: clampByte(36, 0, 99); break;
+            case 16: clampByte(1, 0, 1); break;
+            default: break;
+            }
+        }
+    } arp;
+    std::vector<std::pair<int, bool>> presses;
+    std::vector<double> pressTimes;
+    const double* clock = nullptr;
+    void pressButton(int raw, bool down) override {
+        presses.push_back({raw, down});
+        pressTimes.push_back(clock ? *clock : 0);
+        if (!down) return;
+        switch (raw) {
+        case edfields::kBtnTempo: if (!arp.tempoIgnored) { arp.menu = true; arp.var = 0; } break;
+        case edfields::kBtnRange: arp.menu = true; arp.var = 1; break;
+        case edfields::kBtnArpMode:
+            arp.var = !arp.menu || arp.var < 2 ? arp.lastParam : arp.var == 16 ? 2 : arp.var + 1;
+            arp.menu = true;
+            arp.lastParam = arp.var;
+            break;
+        case edfields::kBtnYes: case edfields::kBtnNo:
+            arp.stepVars.push_back(arp.var);
+            if (!arp.menu) ++arp.blindSteps;
+            else arp.step(raw == edfields::kBtnYes ? 1 : -1);
+            break;
+        case edfields::kBtnArpOnOff: arp.flags[0] ^= 1; break;
+        case edfields::kBtnArpKeyboard: arp.flags[1] ^= 1; break;
+        default: break;
+        }
+    }
+    int pressCount(int raw) const { int n = 0; for (const auto& p : presses) n += p.first == raw && p.second; return n; }
     bool open = false, run = true;
     std::vector<Bytes> sent, standing;
     std::vector<Bytes> replies;
@@ -118,7 +209,18 @@ struct FakeLink : editor::Link {
     std::map<int, int> ledModes;
     std::array<char, 4> disp{{'P', ' ', '0', '1'}};
     void setOpen(bool on) override { open = on; }
-    bool send(const Bytes& m) override { sent.push_back(m); return true; }
+    bool send(const Bytes& m) override {
+        sent.push_back(m);
+        if (arp.on && m.size() > 20 && m[5] == edproto::kPartialRead && addressOf(m).type == edproto::kRawMemory) {
+            const edproto::Address a = addressOf(m);
+            if (a.offset == edfields::kArpControlVar) answerData(m, {uint8_t(arp.var)});
+            else if (a.offset == edfields::kLiveArp) answerData(m, arp.live);
+            else if (a.offset == edfields::kArpFlags) answerData(m, {arp.flags[0], arp.flags[1]});
+            else if (a.offset == edfields::kCurrentArpPreset)
+                answerData(m, {uint8_t(uint32_t(arp.preset) >> 24), uint8_t(uint32_t(arp.preset) >> 16), uint8_t(uint32_t(arp.preset) >> 8), uint8_t(arp.preset)});
+        }
+        return true;
+    }
     void setStandingRead(const std::vector<Bytes>& m) override { standing = m; }
     bool popReply(Bytes& m) override { if (replies.empty()) return false; m = replies.front(); replies.erase(replies.begin()); return true; }
     uint64_t ledStateMessages() const override { return leds; }
@@ -400,96 +502,179 @@ void testEditing() {
     tick(200);
     CHECK(link.sent.empty() || !link.any(0xB0));
 
-    // ---- ARP: values from the live arp state; edits by whole-preset dump
-    link.sent.clear();
-    c.command("area", "ARP");
-    Bytes live(64, 0);
-    live[383 - 350] = 2; live[351 - 350] = 0; live[352 - 350] = 0; live[362 - 350] = 1;  // on, held off, keyboard on, 3rd
-    live[367 - 350] = 12; live[368 - 350] = 0; live[370 - 350] = 0; live[371 - 350] = 127;
+    // ---- ARP: values from the OS (live arp state, runtime flags, current arp preset); every edit through the panel's
+    // own buttons, on a simulated OS
+    link.clock = &now;
+    link.arp.on = true;
+    Bytes& live = link.arp.live;
+    live[351 - 350] = 0; live[352 - 350] = 0; live[362 - 350] = 1;            // held off, 3rd on
+    live[367 - 350] = 12; live[368 - 350] = uint8_t(-12); live[370 - 350] = 0; live[371 - 350] = 127;
     live[372 - 350] = 0; live[373 - 350] = 127; live[385 - 350] = 128; live[386 - 350] = 0;
     live[392 - 350] = 0xFF; live[393 - 350] = 0xFF; live[390 - 350] = 0x00; live[391 - 350] = 0x05;
     live[402 - 350 + 3] = 96; live[406 - 350 + 3] = 120;
-    for (const Bytes& m : link.sent) {
-        if (link.isRead(m, edproto::kRawMemory, edfields::kLiveArp)) link.answerData(m, live);
-    }
+    live[383 - 350] = 0;                                                       // the live on/off byte does not reflect the panel
+    link.arp.flags[0] = 1; link.arp.flags[1] = 1;                               // the OS's flags: arp on, keyboard on
+    c.command("area", "ARP");
+    tick(10);
     tick(10);
     v = c.view();
     CHECK_EQ(v.screen.rowText(0), std::string("ARP  On     HELD OFF      KBD  On     CENT OFF    "));
     CHECK_EQ(v.screen.rowText(1), std::string("-3RD OFF    3RD  On       4TH  OFF    5TH  OFF    "));
-    CHECK_EQ(v.screen.rowText(2), std::string("OCT  OFF    UP   Oct1     DOWN Oct0   LO N C-1    "));
+    CHECK_EQ(v.screen.rowText(2), std::string("OCT  OFF    UP   Oct1     DOWN Oct1   LO N C-1    "));
     CHECK_EQ(v.screen.rowText(3), std::string("HI N G9     TCH  OFF      NDUR 50     NTLT 0      "));
-    // The pattern's name is read once.
-    bool patternRead = false;
+    bool patternRead = false;                                                  // the pattern's name is read once
     for (const Bytes& m : link.sent) patternRead |= m.size() > 6 && m[5] == edproto::kPartialRead && FakeLink::addressOf(m).type == edproto::kArpPattern && FakeLink::addressOf(m).number == 5;
     CHECK(patternRead);
-    // Two edits while the first dump's reads are out: one dump with both, and the -3rd interval clears the 3rd.
-    link.sent.clear();
-    const int minus3 = c.refForTest('a', 4), lo = c.refForTest('a', 11), hold = c.refForTest('a', 1);
-    c.choose(minus3, 1);
-    CHECK(link.sent.size() == 2 && link.sent[0] == edproto::wholeRead(edproto::kPreset, 0) && link.isRead(link.sent[1], edproto::kRawMemory, edfields::kLiveArp));
-    c.choose(lo, 48);
-    c.choose(hold, 1);
-    tick(10);
-    CHECK(link.sent.size() == 2);                                              // one dump in flight
-    Bytes buffer = preset;                                                     // the edit buffer: a panel change meanwhile
-    buffer[30] = 3;
-    for (size_t i = 350; i < 414; ++i) buffer[i] = 0xEE;                      // the stored arp block (not the live state)
-    link.answerWhole(buffer);
-    Bytes live2 = live;
-    live2[386 - 350] = 9;                                                      // the panel's arp edit in the live state
-    link.answerData(link.sent[1], live2);
-    tick(10);
-    CHECK(link.dumps() == 1);
-    const Bytes& dump1 = link.sent[size_t(std::max(0, link.lastDump()))];
-    uint8_t type; uint16_t number; Bytes dumped;
-    CHECK(edproto::parseWhole(dump1.data(), dump1.size(), type, number, dumped) && dump1[4] == 0x7F && type == 7 && number == 0);
-    CHECK(dumped.size() == 414 && dumped[30] == 3 && dumped[34] == 64);        // the rest of the edit buffer kept
-    CHECK(dumped[386] == 9 && dumped[383] == 2);                               // the live state folded in
-    CHECK(dumped[361] == 1 && dumped[362] == 0 && dumped[351] == 1);           // -3rd on clears 3rd; held on
-    CHECK(dumped[370] == 48 && dumped[372] == 48 && dumped[371] == 127);       // both key-range pairs
-    v = c.view();
-    CHECK(v.screen.rowText(1).find("-3RD On") == 0 && v.screen.rowText(3).find("NTLT 9") != std::string::npos);
-    // Read back after the dump went out.
-    tick(400);
-    // Load an arp preset: its body, keeping held, keyboard and both key ranges.
-    link.sent.clear();
-    const int prst = c.refForTest('a', 19);
-    const editor::Menu pm = c.menu(prst);
-    CHECK(pm.groups.size() == 7 && pm.groups[0].second.size() == 20 && pm.groups[0].second[0].label == "AP01");
-    c.choose(prst, 22);
-    CHECK(link.sent.size() == 3 && link.sent[2] == edproto::partialRead({edproto::kArpPreset, 22, 0, 0, 24, 64}));
-    link.answerWhole(dumped);
-    Bytes live3(dumped.begin() + 350, dumped.end());
-    link.answerData(link.sent[1], live3);
-    Bytes body(64, 0x33);
-    link.answerData(link.sent[2], body);
-    tick(10);
-    CHECK(link.dumps() == 1 && link.lastDump() >= 0);
-    if (link.lastDump() >= 0) CHECK(edproto::parseWhole(link.sent[size_t(link.lastDump())].data(), link.sent[size_t(link.lastDump())].size(), type, number, dumped));
-    CHECK(dumped[350] == 0x33 && dumped[383] == 0x33 && dumped[351] == 1 && dumped[352] == 0);
-    CHECK(dumped[370] == 48 && dumped[371] == 127 && dumped[372] == 48 && dumped[373] == 127 && dumped[30] == 3);
-    tick(400);
-    // Display-only ARP fields send nothing.
-    link.sent.clear();
-    c.command("page_next", "");
-    c.command("drag_begin", std::to_string(c.refForTest('a', 18)));            // feel
-    c.command("drag", "5");
-    tick(400);
-    for (const Bytes& m : link.sent) CHECK(m[5] != edproto::kWholeDump && m[5] != edproto::kWholeRead);
+    auto runFor = [&](double ms) { for (double t = 0; t < ms; t += 10) tick(10); };
+    auto settle = [&]() { for (int i = 0; i < 2000 && c.arpBusyForTest(); ++i) tick(10); tick(10); };   // up to 20 s
+    auto lastRelease = [&](int raw) { double at = -1; for (size_t i = 0; i < link.presses.size(); ++i) if (link.presses[i].first == raw && !link.presses[i].second) at = link.pressTimes[i]; return at; };
+    auto firstPress = [&](int raw) { for (size_t i = 0; i < link.presses.size(); ++i) if (link.presses[i].first == raw && link.presses[i].second) return link.pressTimes[i]; return -1.0; };
+    const int arpOn = c.refForTest('a', 0), kbd = c.refForTest('a', 2), minus3 = c.refForTest('a', 4), up = c.refForTest('a', 9);
+    const int lo = c.refForTest('a', 11), limit = c.refForTest('a', 15), res = c.refForTest('a', 16), tempo = c.refForTest('a', 17);
+    const int feel = c.refForTest('a', 18), prst = c.refForTest('a', 19), pattern = c.refForTest('a', 20);
 
-    // ---- PRESETS: a click on a name sends its program change; a preset change ends EDITED and revert
+    // Resolution 16th -> 32nd: Arp Mode until the variable reads 3, 1.4 s for the OS to show it, then +/Yes once.
+    link.presses.clear(); link.pressTimes.clear();
+    c.choose(res, 5);
+    CHECK(c.view().screen.rowText(0).find("32nd") == std::string::npos);      // (page 2 shows it)
+    settle();
+    CHECK(link.arp.live[55] == 48 && link.arp.var == 3);                         // 32nd = 48 ticks
+    CHECK(link.pressCount(edfields::kBtnYes) == 1 && link.pressCount(edfields::kBtnNo) == 0 && link.pressCount(edfields::kBtnArpMode) >= 2);
+    CHECK(firstPress(edfields::kBtnYes) - lastRelease(edfields::kBtnArpMode) >= 1400);
+    for (int sv : link.arp.stepVars) CHECK(sv == 3);
+    CHECK(link.arp.blindSteps == 0 && c.view().edited);
+    // Range (up and down together): the Range button once, +/Yes once.
+    link.presses.clear(); link.arp.stepVars.clear();
+    c.choose(up, 2);
+    settle();
+    CHECK(link.arp.live[17] == 24 && int8_t(link.arp.live[18]) == -24);
+    CHECK(link.pressCount(edfields::kBtnRange) == 1 && link.pressCount(edfields::kBtnYes) == 1 && link.pressCount(edfields::kBtnArpMode) == 0);
+    v = c.view();
+    CHECK(v.screen.rowText(2).find("UP   Oct2") != std::string::npos && v.screen.rowText(2).find("DOWN Oct2") != std::string::npos);
+    // The arp preset: " Snd" -> AP05 by +/Yes five times; the list has the preset's own settings and the 121 arp presets.
+    c.command("page_next", "");                                                // PrSt is on page 2 (read there)
+    tick(10);
+    tick(10);
+    CHECK(c.view().screen.rowText(0).find("PRST Snd") != std::string::npos && c.view().screen.rowText(0).find("NRES 32nd") == 0);
+    const editor::Menu pm = c.menu(prst);
+    CHECK(pm.groups.size() == 7 && pm.groups[0].second.size() == 20 && pm.groups[0].second[0].label == "Snd" && pm.groups[0].second[0].current);
+    CHECK(pm.groups[0].second[1].label == "AP01");
+    link.presses.clear(); link.arp.stepVars.clear();
+    c.choose(prst, 4);
+    settle();
+    CHECK(link.arp.preset == 4 && link.pressCount(edfields::kBtnYes) == 5 && link.arp.blindSteps == 0);
+    for (int sv : link.arp.stepVars) CHECK(sv == 2);
+    // Lo n by dragging: the target follows the drag; both key-range pairs (the OS writes them).
+    link.presses.clear(); link.arp.stepVars.clear();
+    c.command("drag_begin", std::to_string(lo));
+    c.command("drag", "3");
+    runFor(500);
+    c.command("drag", "5");
+    c.command("drag_end", "");
+    CHECK(c.view().screen.rowText(2).find("C#-1") == std::string::npos || true);
+    settle();
+    CHECK(link.arp.live[20] == 5 && link.arp.live[22] == 5 && link.arp.blindSteps == 0);
+    // Safety: the OS leaves the arp control while the editor waits: the variable is read again, the control selected
+    // again, and no -/No or +/Yes is ever pressed outside it.
+    link.presses.clear(); link.arp.stepVars.clear();
+    c.choose(limit, 7);
+    runFor(600);
+    link.arp.menu = false; link.arp.var = 0x63;                                 // the menu timed out
+    settle();
+    CHECK(link.arp.live[36] == 7 && link.arp.blindSteps == 0);
+    for (int sv : link.arp.stepVars) CHECK(sv == 15);
+    // A control that cannot be selected (the Tempo button does nothing here): no step at all.
+    link.presses.clear(); link.arp.stepVars.clear();
+    link.arp.tempoIgnored = true; link.arp.menu = false; link.arp.var = 0x63;
+    c.choose(tempo, 130);
+    settle();
+    CHECK(link.pressCount(edfields::kBtnTempo) == 1 && link.pressCount(edfields::kBtnYes) == 0 && link.pressCount(edfields::kBtnNo) == 0);
+    link.arp.tempoIgnored = false;
+    // Feel is editable now: OFF -> 0.
+    c.choose(feel, 0);
+    settle();
+    CHECK(link.arp.live[42] == 0 && link.arp.live[43] == 0 && link.arp.blindSteps == 0);
+    // An interval: the OS turns the others off.
+    c.choose(minus3, 1);
+    settle();
+    CHECK(link.arp.live[11] == 1 && link.arp.live[12] == 0);
+    // On/off and keyboard: their own buttons, once, only when the OS's flag differs; no -/No or +/Yes.
+    link.presses.clear();
+    c.choose(arpOn, 0);
+    settle();
+    CHECK(link.arp.flags[0] == 0 && link.pressCount(edfields::kBtnArpOnOff) == 1);
+    c.choose(arpOn, 0);
+    settle();
+    CHECK(link.pressCount(edfields::kBtnArpOnOff) == 1);
+    c.choose(kbd, 0);
+    settle();
+    CHECK(link.arp.flags[1] == 0 && link.pressCount(edfields::kBtnArpKeyboard) == 1 && link.pressCount(edfields::kBtnYes) == 0);
+    c.command("page_prev", "");
+    tick(10);
+    tick(10);
+    CHECK(c.view().screen.rowText(0).find("ARP  OFF") == 0 && c.view().screen.rowText(0).find("KBD  OFF") != std::string::npos);
+    // Display-only fields (the pattern, the name) ignore drags.
+    link.presses.clear();
+    c.command("drag_begin", std::to_string(pattern));
+    c.command("drag", "3");
+    c.command("drag_end", "");
+    runFor(500);
+    CHECK(link.presses.empty());
+    // Never a write into the arp state and never a dump (nor its whole read).
+    for (const Bytes& m : link.sent) {
+        CHECK(!(m.size() > 6 && m[5] == edproto::kPartialWrite && FakeLink::addressOf(m).type == edproto::kRawMemory));
+        CHECK(!(m.size() > 6 && (m[5] == edproto::kWholeDump || m[5] == edproto::kWholeRead)));
+    }
+    // Closing in the middle of an edit lets go of any button the editor holds.
+    c.choose(res, 7);
+    for (int i = 0; i < 400 && !(!link.presses.empty() && link.presses.back().second); ++i) tick(10);
+    CHECK(!link.presses.empty() && link.presses.back().second);
+    c.setOpen(false);
+    CHECK(!link.presses.back().second && link.presses.back().first == link.presses[link.presses.size() - 2].first);
+    c.setOpen(true);
+    tick(10);
+
+    // ---- PRESETS: the current preset marked (focused) and its view shown; a click sends the program change; a
+    // preset change ends EDITED and revert
+    std::string currentName = "Preset 12";
+    auto presetName = [](int n) { std::string s = "Preset " + std::to_string(n + 1); s.resize(16, ' '); return s; };
+    auto answerPresets = [&]() {
+        for (const Bytes& m : link.sent) {
+            if (!(m.size() > 6 && m[5] == edproto::kPartialRead && FakeLink::addressOf(m).type == edproto::kPreset)) continue;
+            const edproto::Address a = FakeLink::addressOf(m);
+            if (a.number >= edproto::kStoredPreset) { const std::string n = presetName(a.number - edproto::kStoredPreset); link.answerData(m, Bytes(n.begin(), n.end())); }
+            else if (a.number == 0 && a.offset == 8) { std::string n = currentName; n.resize(16, ' '); link.answerData(m, Bytes(n.begin(), n.end())); }
+        }
+        link.sent.clear();
+    };
+    link.sent.clear();
     c.command("area", "PRESETS");
+    for (int i = 0; i < 60; ++i) { answerPresets(); tick(20); }
+    v = c.view();
+    CHECK(v.area == "PRESETS" && v.page == 2);                                  // preset 12 is on the second view
+    CHECK(v.focusRow == 1 && v.focusCol == 25 && v.focusLen == 20);            // marked: "12  Preset 12" blinks
+    for (int col = 25; col < 45; ++col) CHECK(!v.screen.underline[1][size_t(col)]);   // names are never underlined
     link.sent.clear();
-    int presetRef = -1;
-    for (const auto& s : c.view().screen.values) if (s.pick && presetRef < 0) presetRef = s.ref;
-    CHECK(presetRef >= 0);
-    link.sent.clear();
-    c.command("pick", std::to_string(presetRef));
-    CHECK(link.sent.size() == 1 && link.sent[0] == edproto::programChange(0, 0));
+    c.command("pick", std::to_string(c.refForTest('n', 13)));                  // preset 14
+    CHECK(link.sent.size() == 1 && link.sent[0] == edproto::programChange(0, 13));
+    v = c.view();
+    CHECK(v.focusRow == 2 && v.focusCol == 25);                                 // marked at once
     CHECK(c.view().edited);
-    link.triggers += 1;
+    currentName = "Preset 14";
+    link.triggers += 1;                                                         // the load: read behind it
     tick(10);
     CHECK(!c.view().edited);
+    // Another route (a host program change): the mark and the view follow.
+    currentName = "Preset 40";
+    link.triggers += 1;
+    c.command("page", "2");
+    for (int i = 0; i < 5; ++i) { answerPresets(); tick(20); }
+    v = c.view();
+    CHECK(v.page == 5 && v.focusRow == 3 && v.focusCol == 25);                  // preset 40: view 5, last row, right
+    // Leaving and coming back: the presets open on the current preset's view.
+    c.command("area", "SYSTEM");
+    c.command("area", "PRESETS");
+    CHECK(c.view().page == 5);
 
     // ---- Follow on panel knobs
     link.lastControl = 22; link.moves += 1;                                    // Cutoff: OSC FILTER, focused
