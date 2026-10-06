@@ -25,6 +25,7 @@ struct EditorState {
     int focusRow = -1, focusCol = 0, focusLen = 0;   // the focused value (blinks); row -1: none
     std::string area, section;                       // legends of the current area and section
     int sound = 0, osc = 0;                          // 0-3, 0-1
+    bool oscBoth = false;                            // both oscillators edited: O1 and O2 both lit
     bool soundTargets = false, oscTargets = false;   // S1-S4 / O1 / O2 apply to the area
     int page = 0, pages = 0;                         // 1-based page in the section, pages in the section
     bool prev = false, next = false, follow = true, data = false, edited = false;

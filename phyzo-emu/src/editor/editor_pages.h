@@ -1,7 +1,9 @@
 // The editor's screens (docs/editor/EDITOR_SPEC.md, "Page generation"): 4 rows of 50 character cells (two halves of
 // 25), built from items (a name and its value text) in the OS's table order. Page types:
 //  - two-column list: two fields per row, name left and value right in each 25-cell half; a run of identically named
-//    fields is numbered 1, 2, ...; a field whose value does not fit a half takes the whole row;
+//    fields is numbered 1, 2, ...; a block of fields followed directly by a block with the same names in the same
+//    order becomes two columns numbered 1 and 2, row by row; a field whose value does not fit a half takes the whole
+//    row;
 //  - stage table: envelope fields named "... Time (n)" / "... Level (n)": stages across, time and level down;
 //  - code grid: the OS's 4-character codes with their values, four per row;
 //  - name list: names (e.g. presets), two per row, 8 per view.
@@ -44,6 +46,12 @@ struct Row {
 };
 using Page = std::vector<Row>;                       // at most kRows rows
 
+// A table name as shown: trimmed, words split at camel-case boundaries ("SemitoneTuning" -> "Semitone Tuning",
+// "LFORate" -> "LFO Rate", "Env1PitchModAmt" -> "Env1 Pitch Mod Amt": a digit stays with its word, a capital after it
+// starts a new one), single spaces.
+std::string displayName(const std::string& name);
+std::string trimmed(const std::string& s);          // without leading and trailing spaces
+
 // Name shortening (only when a name does not fit `width`): split at word and camel-case boundaries, replace words from
 // the fixed list (CUTOFF -> CUT, ...), then join word pairs from the end one at a time, then truncate, keeping a
 // trailing column number. Names are shown in capitals.
@@ -74,9 +82,13 @@ std::string formatValue(const edtables::Field& f, const edtables::Table& t, int6
 std::string noteName(int note);                     // MIDI note number -> C-1 ... G9 (60 = C4)
 
 // ---- sections (the legends of rows 2 and 3)
-// The oscillator section a field belongs to, from its name: WAVE, PITCH, FILTER, AMP, NOISE, LFO, ENV1, ENV2, ENV3 or
-// GEN. The sound area's: TRACK, RANGE or RECEIVE.
-std::string oscillatorSection(const std::string& name);
+// The oscillator section of a field by its index in the OS's oscillator table (each block of the oscillator object is
+// closed by a spare named after it; docs/editor/PR17_REVIEW.md): WAVE, PITCH, FILTER, AMP, NOISE, LFO, ENV1, ENV2,
+// ENV3 or GEN; "" for a field not shown; nullptr for an index outside the table (138 fields).
+const char* oscillatorSection(int index);
+constexpr int kOscillatorFields = 138;
+// The sound area's sections, from the name: TRACK, RANGE or RECEIVE.
+
 std::string soundSection(const std::string& name);
 
 }  // namespace edpages

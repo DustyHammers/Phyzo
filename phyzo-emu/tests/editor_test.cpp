@@ -186,6 +186,21 @@ void testTables() {
         CHECK(!rawValue(t.fields[3], obj.data(), 0x20, 0, v));          // not in the bytes read
         CHECK(rawValue(t.fields[3], obj.data() + 0x30, 0x10, 0x30, v) && v == 99);   // a partial read from 0x30
     }
+    {   // value type 2: stored = shown + 64; a list on it indexes with the list's start value
+        edtables::Field f;
+        f.type = kOffsetByte; f.min = -64; f.max = 63;
+        Table lt;
+        const uint8_t b[] = {64, 70, 0};
+        int64_t v;
+        CHECK(rawValue(f, b, 3, 0, v) && v == 0 && formatValue(f, lt, v) == "0");
+        CHECK(rawValue(f, b + 1, 2, 0, v) && v == 6 && formatValue(f, lt, v) == "+6");
+        CHECK(rawValue(f, b + 2, 1, 0, v) && v == -64 && formatValue(f, lt, v) == "-64");
+        lt.lists.push_back({true, -64, {}});
+        for (int i = -64; i < 64; ++i) lt.lists[0].entries.push_back(i == 0 ? " Center" : i < 0 ? "L" + std::to_string(-i) : "R" + std::to_string(i));
+        f.display = Display::List; f.listIndex = 0;
+        CHECK(rawValue(f, b, 3, 0, v) && formatValue(f, lt, v) == "Center");
+        CHECK(rawValue(f, b + 2, 1, 0, v) && formatValue(f, lt, v) == "L64");
+    }
     CHECK_EQ(noteName(60), std::string("C4"));
     CHECK_EQ(noteName(0), std::string("C-1"));
     CHECK_EQ(noteName(127), std::string("G9"));
@@ -220,7 +235,50 @@ void testPages() {
     CHECK(underlined == 5 + 3 + 2 + 27 + 2);
     CHECK(s.values.size() == 5 && s.values[0].ref == 0 && s.values[0].len == 5);
     for (int c = 0; c < 18; ++c) CHECK(!s.underline[0][size_t(c)]);   // names never underlined
-    std::printf("editor_test: two-column rows\n");
+    // Repeated blocks: two single fields, then two blocks with the same names in the same order -> numbered columns.
+    const std::vector<Item> filt = {{"Mode", "2LP", 0}, {"Link", "Indep", 1}, {"Cutoff", "19", 2}, {"Resonance", "16", 3},
+                                    {"Key Track", "+4", 4}, {"Cutoff", "19", 5}, {"Resonance", "0", 6}, {"Key Track", "-2", 7}};
+    const std::vector<Row> fr = twoColumnRows(filt);
+    CHECK(fr.size() == 4);
+    CHECK(fr[0].items.size() == 2 && fr[0].items[0].name == "Mode" && fr[0].items[1].name == "Link");
+    CHECK(fr[1].items[0].name == "Cutoff 1" && fr[1].items[1].name == "Cutoff 2" && fr[1].items[1].ref == 5);
+    CHECK(fr[3].items[0].name == "Key Track 1" && fr[3].items[1].name == "Key Track 2" && fr[3].items[1].value == "-2");
+    {   // a field after the blocks is laid out as usual
+        std::vector<Item> more = filt;
+        more.push_back({"Spread", "3", 8});
+        const std::vector<Row> mr = twoColumnRows(more);
+        CHECK(mr.size() == 5 && mr[4].items.size() == 1 && mr[4].items[0].name == "Spread");
+    }
+    CHECK(twoColumnRows({{"A", "1", 0}, {"A", "2", 1}}).size() == 1);    // a run of two: one row, numbered
+    CHECK(twoColumnRows({{"A", "1", 0}, {"A", "2", 1}})[0].items[1].name == "A 2");
+
+    // A name uses all the cells its half leaves after its own value and one space.
+    {
+        Row r;
+        r.items = {{"Wave", "58 Some Wave Name", 0, 0}, {"Wave Shift Amount", "7", 1, 2}};
+        const Screen ws = render(Page{r});
+        CHECK_EQ(ws.rowText(0).substr(25, 24), std::string("WAVE SHIFT AMOUNT      7"));
+    }
+    // Underlines: from the first to the last character shown, not over blanks (a value with spaces around it).
+    {
+        Row r;
+        r.kind = RowKind::Grid;
+        r.items = {{"  id", " 12 ", 0}};
+        const Screen us = render(Page{r});
+        CHECK_EQ(us.rowText(0).substr(0, 9), std::string("ID    12 "));
+        CHECK(!us.underline[0][5] && us.underline[0][6] && us.underline[0][7] && !us.underline[0][8]);
+        CHECK(us.values.size() == 1 && us.values[0].col == 6 && us.values[0].len == 2);
+    }
+    // Names as shown: trimmed, split at camel-case boundaries.
+    CHECK_EQ(displayName("SemitoneTuning"), std::string("SemitoneTuning").insert(8, " "));
+    CHECK_EQ(displayName("Env1PitchModAmt"), std::string("Env1 Pitch Mod Amt"));
+    CHECK_EQ(displayName("NoiseSource Rate"), std::string("Noise Source Rate"));
+    CHECK_EQ(displayName("TriggerCtrlHi"), std::string("Trigger Ctrl Hi"));
+    CHECK_EQ(displayName("  LFORate  "), std::string("LFO Rate"));
+    CHECK_EQ(displayName("Env2 Time (3)"), std::string("Env2 Time (3)"));
+    CHECK_EQ(displayName("Resonance (Q)"), std::string("Resonance (Q)"));
+    CHECK_EQ(trimmed(" tch"), std::string("tch"));
+    std::printf("editor_test: two-column rows, repeated blocks, name room, underlines, names\n");
 
     // Stage table
     bool isTime; int st;
@@ -253,10 +311,22 @@ void testPages() {
     for (auto& r : ns.underline) for (bool u : r) CHECK(!u);           // lists to pick from are never underlined
     std::printf("editor_test: stage table, code grid, name list, pages\n");
 
-    // Sections
-    CHECK(oscillatorSection("Env2 Time (1)") == "ENV2" && oscillatorSection("Filter Cutoff") == "FILTER" &&
-          oscillatorSection("LFO Rate") == "LFO" && oscillatorSection("Wave ID") == "WAVE" && oscillatorSection("Fine Tune") == "PITCH" &&
-          oscillatorSection("Glide Time") == "PITCH" && oscillatorSection("Amp Level") == "AMP" && oscillatorSection("Restrike") == "GEN");
+    // Oscillator sections by field index (docs/editor/PR17_REVIEW.md): every index 0-137 has exactly one, in these counts.
+    std::map<std::string, std::vector<int>> bySection;
+    for (int i = 0; i < kOscillatorFields; ++i) {
+        const char* sec = oscillatorSection(i);
+        CHECK(sec != nullptr);
+        if (sec) bySection[sec].push_back(i);
+    }
+    CHECK(oscillatorSection(kOscillatorFields) == nullptr && oscillatorSection(-1) == nullptr);
+    CHECK((bySection["WAVE"] == std::vector<int>{51, 53, 54, 55, 56, 57, 58}));
+    CHECK((bySection["PITCH"] == std::vector<int>{14, 15, 16, 17, 18, 23, 24, 25, 26, 27, 28, 74}));
+    CHECK((bySection["AMP"] == std::vector<int>{12, 13, 61, 62, 63, 64, 65, 66, 67}));
+    CHECK((bySection["NOISE"] == std::vector<int>{70, 77}));
+    CHECK((bySection["GEN"] == std::vector<int>{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 19, 20, 75}));
+    CHECK((bySection[""] == std::vector<int>{0, 21, 22, 29, 39, 40, 48, 49, 50, 52, 59, 60, 68, 69, 71, 72, 73, 76, 93, 109, 125, 137}));
+    CHECK(bySection["FILTER"].size() == 16 && bySection["FILTER"].front() == 30 && bySection["FILTER"].back() == 47);
+    CHECK(bySection["LFO"].size() == 11 && bySection["ENV1"].size() == 15 && bySection["ENV2"].front() == 94 && bySection["ENV3"].back() == 124);
     CHECK(soundSection("Low Key") == "RANGE" && soundSection("Rcv Pitch Bend") == "RECEIVE" && soundSection("Volume") == "TRACK");
 }
 
@@ -306,15 +376,22 @@ void testController() {
     for (int i = 0; i < 20; ++i) t.system.fields.push_back(mkField("S" + std::to_string(100 + i).substr(1), uint32_t(i), kUnsignedByte, 0, 127));
     t.system.fields.push_back(mkField("????", 30, kUnsignedByte, 0, 1));
     t.oscillator.lists.push_back({false, 0, {"Low Pass", "High Pass"}});
-    t.oscillator.fields = {mkField("Wave ID", 0x4C, kLong, 0, -1), mkField("Filter Cutoff", 0x39, kUnsignedByte, 0, 127),
-                           mkField("Filter Mode", 0x3A, kUnsignedByte, 0, 1, 0, 0), mkField("Env1 Time (1)", 0x60, kUnsignedByte, 0, 99),
-                           mkField("Env1 Level (1)", 0x61, kSignedByte, -99, 99), mkField("Env2 Time (1)", 0x70, kUnsignedByte, 0, 99),
-                           mkField("LFO Rate", 0x80, kUnsignedByte, 0, 99), mkField("Fine Tune", 0x20, kSignedByte, -64, 63),
-                           mkField("SPARE 9", 0x90, kUnsignedByte, 0, 1)};
+    // The oscillator table: 138 fields, sections by index (spares everywhere but the fields under test).
+    for (int i = 0; i < edpages::kOscillatorFields; ++i) t.oscillator.fields.push_back(mkField("SPARE " + std::to_string(i), 0xF0, kUnsignedByte, 0, 1));
+    t.oscillator.fields[51] = mkField("Wave ID", 0x4C, kLong, 0, -1);
+    t.oscillator.fields[30] = mkField("Filter Mode", 0x3A, kUnsignedByte, 0, 1, 0, 0);
+    t.oscillator.fields[32] = mkField("Filter Cutoff", 0x39, kUnsignedByte, 0, 127);
+    t.oscillator.fields[78] = mkField("Env1 Time (1)", 0x60, kUnsignedByte, 0, 99);
+    t.oscillator.fields[79] = mkField("Env1 Level (1)", 0x61, kSignedByte, -99, 99);
+    t.oscillator.fields[94] = mkField("Env2 Time (1)", 0x70, kUnsignedByte, 0, 99);
+    t.oscillator.fields[110] = mkField("Env3 Time (1)", 0x74, kUnsignedByte, 0, 99);
+    t.oscillator.fields[126] = mkField("LFO Rate", 0x80, kUnsignedByte, 0, 99);
+    t.oscillator.fields[14] = mkField("Fine Tune", 0x20, kSignedByte, -64, 63);
+    t.oscillator.fields[29] = mkField("Ramp Level", 0x21, kSignedByte, -64, 63);   // hidden by its index (not AMP)
     t.soundSettings.fields = {mkField("Volume", 4, kUnsignedByte, 0, 127), mkField("Pan", 5, kSignedByte, -64, 63),
                               mkField("Low Key", 6, kUnsignedByte, 0, 127, kFmtNote)};
     t.soundCommon.fields = {mkField("Glide Mode", 24, kUnsignedByte, 0, 3)};
-    for (int i = 0; i < 9; ++i) t.oscillator.fields[size_t(i)].index = i;
+    for (size_t i = 0; i < t.oscillator.fields.size(); ++i) t.oscillator.fields[i].index = int(i);
 
     FakeLink link;
     editor::Controller c(link);
@@ -362,9 +439,10 @@ void testController() {
     c.command("area", "OSC");
     v = c.view();
     CHECK(v.area == "OSC" && v.section == "WAVE" && v.oscTargets && v.soundTargets);
-    CHECK((v.sections == std::set<std::string>{"WAVE", "PITCH", "FILTER", "LFO", "ENV1", "ENV2"}));
+    CHECK((v.sections == std::set<std::string>{"WAVE", "PITCH", "FILTER", "LFO", "ENV1", "ENV2", "ENV3"}));
     CHECK(link.sent.size() == 2);
     CHECK(link.sent[0] == edproto::partialRead({edproto::kSound, 0, 2, 0, 0x4C, 4}));
+    CHECK(v.pages == 1 && !v.prev && !v.next);
     CHECK(link.sent[1] == edproto::partialRead({edproto::kRawMemory, 0, 0, 0, edtables::kWaveList + 4, 232}));
     Bytes osc(0x100, 0);
     osc[0x4C] = 0xAB; osc[0x4D] = 0xCD; osc[0x4E] = 0x00; osc[0x4F] = 0x07; osc[0x39] = 64; osc[0x3A] = 1; osc[0x60] = 12; osc[0x61] = uint8_t(-3);
@@ -404,7 +482,22 @@ void testController() {
     link.ledModes = {{0x0B, 1}, {0x06, 1}, {0x0C, 1}};
     c.command("toggle_follow", "");
     v = c.view();
-    CHECK(v.follow && v.sound == 0 && v.osc == 0 && v.section == "ENV2");
+    CHECK(v.follow && v.sound == 0 && v.osc == 0 && v.section == "ENV2" && !v.oscBoth);
+    // Only a solid LED counts: the sound being edited is solid, the other active sounds flash. Both OSC LEDs solid:
+    // both oscillators (oscillator 1's values). No solid LED: the target stays.
+    link.ledModes = {{0x0B, 2}, {0x13, 2}, {0x03, 2}, {0x07, 1}, {0x06, 1}, {0x15, 1}, {0x11, 2}, {0x0C, 2}, {0x0E, 1}};
+    link.leds += 1; c.tick(5200);
+    v = c.view();
+    CHECK(v.sound == 3 && v.osc == 0 && v.oscBoth && v.section == "ENV3");
+    link.ledModes = {{0x0B, 2}, {0x13, 2}, {0x15, 1}};
+    link.leds += 1; c.tick(5300);
+    v = c.view();
+    CHECK(v.sound == 3 && v.osc == 1 && !v.oscBoth && v.section == "ENV3");
+    // PREV / NEXT stay within the section: a single-page section has neither, and they do nothing.
+    CHECK(v.pages == 1 && !v.prev && !v.next);
+    c.command("page_next", "");
+    c.command("page_prev", "");
+    CHECK(c.view().section == "ENV3" && c.view().page == 1);
 
     // Triggers: an LED burst -> one read 50 ms after the last LED message; a panel gesture likewise.
     link.sent.clear();

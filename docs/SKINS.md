@@ -45,7 +45,7 @@ the geometry of the glass and every legend is in `docs/editor/EDITOR_PANEL_LAYOU
 - `<legend action="…" value="…">`: a legend; actions and values as in `EDITOR_PANEL_LAYOUT.json` (`area`, `section`,
   `target`, `page`, `page_prev`, `page_next`, `toggle_follow`, `indicator`, `label`). Class `lit` when active, `avail`
   when clicking it leads somewhere; style hover with `:hover`. A click goes to the editor.
-- Lua: `editor.isOpen()`, `editor.state()` (area, section, sound, osc, page, pages, follow, data, rows), `editor.click(action,
+- Lua: `editor.isOpen()`, `editor.state()` (area, section, sound, osc, oscBoth (both oscillators edited), page, pages, follow, data, rows), `editor.click(action,
   value)`, `editor.onChange(fn)` (called when the glass or the legends change), and
   `editor.followLeds{sound = {…4 codes}, osc = {…2}, env = {pitch, filter, amp}}`: the panel LEDs Follow watches (the rack
   skin's: sound 0x0B, 0x13, 0x03, 0x07; osc 0x06, 0x15; env 0x11, 0x0C, 0x0E).

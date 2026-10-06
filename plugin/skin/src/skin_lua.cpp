@@ -67,6 +67,7 @@ int editorState(lua_State* L) {
     lua_pushstring(L, s.section.c_str()); lua_setfield(L, -2, "section");
     lua_pushinteger(L, s.sound + 1); lua_setfield(L, -2, "sound");
     lua_pushinteger(L, s.osc + 1); lua_setfield(L, -2, "osc");
+    lua_pushboolean(L, s.oscBoth); lua_setfield(L, -2, "oscBoth");
     lua_pushinteger(L, s.page); lua_setfield(L, -2, "page");
     lua_pushinteger(L, s.pages); lua_setfield(L, -2, "pages");
     lua_pushboolean(L, s.follow); lua_setfield(L, -2, "follow");

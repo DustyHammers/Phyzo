@@ -63,6 +63,27 @@ std::string fit(const std::string& s, size_t width, bool right) {
 }
 }  // namespace
 
+std::string trimmed(const std::string& s) { return trim(s); }
+
+std::string displayName(const std::string& name) {
+    const std::string n = trim(name);
+    auto up = [](char c) { return std::isupper(static_cast<unsigned char>(c)) != 0; };
+    auto lo = [](char c) { return std::islower(static_cast<unsigned char>(c)) != 0; };
+    auto dig = [](char c) { return std::isdigit(static_cast<unsigned char>(c)) != 0; };
+    std::string out;
+    for (size_t i = 0; i < n.size(); ++i) {
+        const char c = n[i];
+        if (c == ' ') { if (!out.empty() && out.back() != ' ') out.push_back(' '); continue; }
+        if (i > 0 && up(c)) {
+            const char p = n[i - 1];
+            const bool next = i + 1 < n.size() && lo(n[i + 1]);
+            if (lo(p) || dig(p) || (up(p) && next)) if (!out.empty() && out.back() != ' ') out.push_back(' ');
+        }
+        out.push_back(c);
+    }
+    return out;
+}
+
 std::string shortenName(const std::string& name, size_t width) {
     std::string n = upper(trim(name));
     if (n.size() <= width) return n;
@@ -87,7 +108,11 @@ std::string shortenName(const std::string& name, size_t width) {
     return room ? core.substr(0, room) + " " + number : number.substr(0, width);
 }
 
-std::vector<Row> twoColumnRows(const std::vector<Item>& items) {
+namespace {
+bool tooLong(const Item& x) { return x.room() + 1 + 6 > size_t(kHalf); }   // a name needs at least 6 cells
+
+// Fields laid out in order: runs of identical names numbered, two per row, too long a value on a row of its own.
+void plainRows(const std::vector<Item>& items, std::vector<Row>& rows) {
     // Number runs of identically named fields 1, 2, ...
     std::vector<Item> it = items;
     for (size_t i = 0; i < it.size();) {
@@ -97,9 +122,7 @@ std::vector<Row> twoColumnRows(const std::vector<Item>& items) {
             for (size_t k = i; k < j; ++k) it[k].name += " " + std::to_string(k - i + 1);
         i = j;
     }
-    // Two per row; a value too long for a half (name needs at least 6 cells) takes the whole row.
-    std::vector<Row> rows;
-    const auto tooLong = [](const Item& x) { return x.room() + 1 + 6 > size_t(kHalf); };
+    // Two per row; a value too long for a half takes the whole row.
     for (size_t i = 0; i < it.size();) {
         if (tooLong(it[i]) || i + 1 == it.size() || tooLong(it[i + 1])) {
             Row r;
@@ -115,6 +138,49 @@ std::vector<Row> twoColumnRows(const std::vector<Item>& items) {
         rows.push_back(r);
         i += 2;
     }
+}
+
+// The length of the longest block at `i` (at least 2 items) followed directly by a block with the same names in the
+// same order; 0 if there is none.
+size_t repeatedBlock(const std::vector<Item>& it, size_t i) {
+    for (size_t n = (it.size() - i) / 2; n >= 2; --n) {
+        bool same = true;
+        for (size_t k = 0; k < n && same; ++k) same = it[i + k].name == it[i + n + k].name;
+        if (same) return n;
+    }
+    return 0;
+}
+}  // namespace
+
+std::vector<Row> twoColumnRows(const std::vector<Item>& items) {
+    std::vector<Row> rows;
+    std::vector<Item> plain;                         // fields before a repeated block, laid out as usual
+    for (size_t i = 0; i < items.size();) {
+        const size_t n = repeatedBlock(items, i);
+        if (n == 0) { plain.push_back(items[i]); ++i; continue; }
+        plainRows(plain, rows);
+        plain.clear();
+        for (size_t k = 0; k < n; ++k) {             // row by row: the first block left, the second right
+            Item a = items[i + k], b = items[i + n + k];
+            a.name += " 1";
+            b.name += " 2";
+            if (tooLong(a) || tooLong(b)) {
+                for (const Item& x : {a, b}) {
+                    Row r;
+                    r.kind = tooLong(x) ? RowKind::Full : RowKind::Pair;
+                    r.items.push_back(x);
+                    rows.push_back(r);
+                }
+                continue;
+            }
+            Row r;
+            r.kind = RowKind::Pair;
+            r.items = {a, b};
+            rows.push_back(r);
+        }
+        i += 2 * n;
+    }
+    plainRows(plain, rows);
     return rows;
 }
 
@@ -200,10 +266,13 @@ void put(Screen& s, int row, int col, const std::string& text, int width, bool r
     const std::string t = fit(text, size_t(width), right);
     for (int i = 0; i < width && col + i < kCols; ++i) s.chars[size_t(row)][size_t(col + i)] = t[size_t(i)];
     if (!value || text.empty()) return;
-    const int len = std::min<int>(int(text.size()), width);
-    const int first = right ? col + width - len : col;
-    for (int i = 0; i < len; ++i) s.underline[size_t(row)][size_t(first + i)] = true;
-    s.values.push_back({row, first, len, ref});
+    // Underlined from the first to the last character shown, never over blank cells around it.
+    int first = -1, last = -1;
+    for (int i = 0; i < width && col + i < kCols; ++i)
+        if (t[size_t(i)] != ' ') { if (first < 0) first = i; last = i; }
+    if (first < 0) return;
+    for (int i = first; i <= last; ++i) s.underline[size_t(row)][size_t(col + i)] = true;
+    s.values.push_back({row, col + first, last - first + 1, ref});
 }
 // A name and its value in `width` cells; `nameRoom` cells for the name; the value right-aligned.
 void field(Screen& s, int row, int col, int width, int nameRoom, const Item& x) {
@@ -222,14 +291,10 @@ Screen render(const Page& page) {
         case RowKind::Full:
             if (!r.items.empty()) field(s, row, 0, kCols, kCols - 1 - int(r.items[0].room()), r.items[0]);
             break;
-        case RowKind::Pair: {
-            size_t longest = 0;                      // both halves get the same room for their names
-            for (const Item& x : r.items) longest = std::max(longest, x.room());
-            const int room = std::max(1, kHalf - 2 - int(longest));
+        case RowKind::Pair:                          // each name takes what its half has left after its value and a space
             for (size_t k = 0; k < r.items.size() && k < 2; ++k)
-                field(s, row, int(k) * kHalf, kHalf - 1, room, r.items[k]);
+                field(s, row, int(k) * kHalf, kHalf - 1, std::max(1, kHalf - 2 - int(r.items[k].room())), r.items[k]);
             break;
-        }
         case RowKind::Stage: {
             const int label = 8, n = std::max<int>(1, int(r.items.size()));
             const int colW = (kCols - label) / n;
@@ -244,7 +309,7 @@ Screen render(const Page& page) {
             for (size_t k = 0; k < r.items.size() && k < 4; ++k) {
                 const Item& x = r.items[k];
                 const int col = int(k) * 12 + int(k > 1 ? 2 : 0);   // the halves' gap after the second code
-                put(s, row, col, x.name.substr(0, 4), 4, false, false, -1);
+                put(s, row, col, upper(trim(x.name)).substr(0, 4), 4, false, false, -1);
                 put(s, row, col + 5, x.value, 7, false, x.ref >= 0, x.ref);
             }
             break;
@@ -271,6 +336,7 @@ bool rawValue(const edtables::Field& f, const uint8_t* obj, size_t objSize, uint
     const uint8_t b = obj[at];
     switch (f.type) {
     case kSignedByte: case kSignedFormatted: case kSignedListMinusOne: v = int8_t(b); return true;
+    case kOffsetByte: v = int64_t(b) - 64; return true;   // stored = shown + 64
     case kLong: v = int64_t(uint32_t(obj[at]) << 24 | uint32_t(obj[at + 1]) << 16 | uint32_t(obj[at + 2]) << 8 | obj[at + 3]); return true;
     case kBitField: {
         const int width = (uint16_t(f.min) >> 8) & 0xFF, bit = uint16_t(f.min) & 0xFF;
@@ -309,7 +375,7 @@ std::string formatValue(const edtables::Field& f, const edtables::Table& t, int6
         if (i >= 0 && size_t(i) < l.entries.size()) return trim(l.entries[size_t(i)]);
         return std::to_string(v);                    // past the list's end: a number
     }
-    const bool sign = f.display == Display::Formatter || (f.format & kFmtSigned) || f.min < 0;
+    const bool sign = f.display == Display::Formatter || (f.format & kFmtSigned) || f.min < 0 || f.type == kOffsetByte;
     if (f.display == Display::Number) {
         if (f.format == kFmtOffOn) return v ? "On" : "Off";
         if (f.format == kFmtNote) return noteName(int(v));
@@ -321,22 +387,18 @@ std::string formatValue(const edtables::Field& f, const edtables::Table& t, int6
 
 // ------------------------------------------------------------------ sections
 
-std::string oscillatorSection(const std::string& name) {
-    const std::string s = lower(name);
-    for (int e = 1; e <= 3; ++e) {
-        const std::string n = std::to_string(e);
-        if (contains(s, ("env " + n).c_str()) || contains(s, ("env" + n).c_str()) || contains(s, ("envelope " + n).c_str()))
-            return "ENV" + n;
-    }
-    if (contains(s, "lfo")) return "LFO";
-    if (contains(s, "noise")) return "NOISE";
-    if (contains(s, "filter") || contains(s, "cutoff") || contains(s, "reson") || contains(s, "flt")) return "FILTER";
-    if (contains(s, "pitch") || contains(s, "tune") || contains(s, "transp") || contains(s, "octave") ||
-        contains(s, "semi") || contains(s, "glide") || contains(s, "porta") || contains(s, "bend"))
-        return "PITCH";
-    if (contains(s, "wave")) return "WAVE";
-    if (contains(s, "amp") || contains(s, "volume") || contains(s, "pan")) return "AMP";
-    return "GEN";
+const char* oscillatorSection(int index) {
+    struct Range { int from, to; const char* section; };
+    static const Range kMap[] = {
+        {0, 0, ""},        {1, 11, "GEN"},     {12, 13, "AMP"},    {14, 18, "PITCH"},  {19, 20, "GEN"},
+        {21, 22, ""},      {23, 28, "PITCH"},  {29, 29, ""},       {30, 38, "FILTER"}, {39, 40, ""},
+        {41, 47, "FILTER"}, {48, 50, ""},      {51, 51, "WAVE"},   {52, 52, ""},       {53, 58, "WAVE"},
+        {59, 60, ""},      {61, 67, "AMP"},    {68, 69, ""},       {70, 70, "NOISE"},  {71, 73, ""},
+        {74, 74, "PITCH"}, {75, 75, "GEN"},    {76, 76, ""},       {77, 77, "NOISE"},  {78, 92, "ENV1"},
+        {93, 93, ""},      {94, 108, "ENV2"},  {109, 109, ""},     {110, 124, "ENV3"}, {125, 125, ""},
+        {126, 136, "LFO"}, {137, 137, ""}};
+    for (const Range& r : kMap) if (index >= r.from && index <= r.to) return r.section;
+    return nullptr;
 }
 
 std::string soundSection(const std::string& name) {

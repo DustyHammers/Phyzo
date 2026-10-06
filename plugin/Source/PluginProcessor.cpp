@@ -105,7 +105,7 @@ void PhyzoProcessor::EditorPort::editorState(skin::EditorState& out) {
     }
     out.focusRow = -1;                               // no editing yet (F-30 step 4)
     out.area = v.area; out.section = v.section;
-    out.sound = v.sound; out.osc = v.osc;
+    out.sound = v.sound; out.osc = v.osc; out.oscBoth = v.oscBoth;
     out.soundTargets = v.soundTargets; out.oscTargets = v.oscTargets;
     out.page = v.page; out.pages = v.pages;
     out.prev = v.prev; out.next = v.next; out.follow = v.follow; out.data = v.data; out.edited = v.edited;

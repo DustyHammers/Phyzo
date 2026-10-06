@@ -517,7 +517,7 @@ void legendState(const EditorState& s, const std::string& action, const std::str
     else if (action == "target" && value.size() == 2) {
         const int n = value[1] - '1';
         if (value[0] == 'S') { avail = s.soundTargets && n >= 0 && n < 4; lit = avail && s.sound == n; }
-        if (value[0] == 'O') { avail = s.oscTargets && n >= 0 && n < 2; lit = avail && s.osc == n; }
+        if (value[0] == 'O') { avail = s.oscTargets && n >= 0 && n < 2; lit = avail && (s.osc == n || s.oscBoth); }
     } else if (action == "page") {
         const int n = std::atoi(value.c_str());
         avail = n >= 1 && n <= s.pages;

@@ -21,7 +21,7 @@ constexpr int kWaves = 58;
 
 // Value types (field record bytes 2-3)
 enum ValueType : uint16_t {
-    kUnsignedByte = 0, kSignedByte = 1, kBitField = 3, kLong = 4, kSmallUnsigned = 5, kSignedFormatted = 6,
+    kUnsignedByte = 0, kSignedByte = 1, kOffsetByte = 2 /* stored = shown + 64 */, kBitField = 3, kLong = 4, kSmallUnsigned = 5, kSignedFormatted = 6,
     kSignedListMinusOne = 7
 };
 // How a value is shown (the field record's sub-records)
@@ -49,7 +49,7 @@ struct Field {
     int formatter = -1;                              // built-in formatter number (Display::Formatter)
     bool hidden = false;                             // not shown (docs/editor/PR_B_ANSWERS.md 1.2)
     int size() const { return type == kLong ? 4 : 1; }
-    bool isSigned() const { return type == kSignedByte || type == kSignedFormatted || type == kSignedListMinusOne || min < 0; }
+    bool isSigned() const { return type == kSignedByte || type == kOffsetByte || type == kSignedFormatted || type == kSignedListMinusOne || min < 0; }
 };
 
 struct Table {

@@ -40,6 +40,7 @@ struct View {
     edpages::Screen screen;
     std::string area, section;                       // current area legend (e.g. "OSC") and section ("FILTER")
     int sound = 0, osc = 0;                          // the edited sound (0-3) and oscillator (0-1)
+    bool oscBoth = false;                            // both oscillators are edited (the panel's OSC LEDs both solid)
     bool soundTargets = false, oscTargets = false;   // S1-S4 / O1 / O2 apply to the current area
     int page = 0, pages = 0;                         // current page in the section (1-based), pages in the section
     bool prev = false, next = false;                 // a page to go to
@@ -112,6 +113,7 @@ private:
     std::vector<Ref> refs_;                          // page item reference -> source
     int area_ = 0, section_ = 0, page_ = 0;
     int sound_ = 0, osc_ = 0;
+    bool oscBoth_ = false;
     bool follow_ = true;
     std::map<ObjKey, Obj> objs_;
     std::array<std::string, kPresets> presetNames_;

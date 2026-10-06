@@ -27,7 +27,8 @@ void print(const edtables::Table& t, const char* which) {
     std::printf("%4s  %-28s %6s %5s %4s %6s %6s %-9s %6s %5s %-6s %s\n", "idx", "name", "offset", "flags", "type", "min", "max",
                 "display", "format", "list", "hidden", "section");
     for (const edtables::Field& f : t.fields) {
-        const std::string section = std::string(which) == "oscillator" ? edpages::oscillatorSection(f.name)
+        const char* osc = edpages::oscillatorSection(f.index);
+        const std::string section = std::string(which) == "oscillator" ? (osc ? (*osc ? osc : "hidden") : "GEN")
                                     : std::string(which) == "sound" || std::string(which) == "common" ? edpages::soundSection(f.name)
                                                                                                        : std::string("-");
         const int ref = f.display == edtables::Display::List ? f.listIndex : f.display == edtables::Display::Formatter ? f.formatter : -1;

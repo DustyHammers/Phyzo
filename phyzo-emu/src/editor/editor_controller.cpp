@@ -114,7 +114,9 @@ void Controller::build() {
     auto item = [&](const edtables::Table& t, int field, char kind) {
         const edtables::Field& f = t.fields[size_t(field)];
         refs_.push_back({&t, field, kind});
-        return Item{f.name, "", int(refs_.size()) - 1, valueWidth(f, t, waveNameMax)};
+        // System codes are the OS's 4-character codes (trimmed); other names split into words.
+        const std::string name = kind == 's' ? edpages::trimmed(f.name) : edpages::displayName(f.name);
+        return Item{name, "", int(refs_.size()) - 1, valueWidth(f, t, waveNameMax)};
     };
     if (!tables_.ok) return;
 
@@ -156,8 +158,9 @@ void Controller::build() {
         for (const char* sec : kOscSections) {
             std::vector<Item> items;
             for (size_t i = 0; i < tables_.oscillator.fields.size(); ++i) {
-                const auto& f = tables_.oscillator.fields[i];
-                if (!f.hidden && edpages::oscillatorSection(f.name) == sec) items.push_back(item(tables_.oscillator, int(i), 'o'));
+                const char* in = edpages::oscillatorSection(int(i));   // by field index; outside the known table: GEN
+                if (!tables_.oscillator.fields[i].hidden && std::string(in ? in : "GEN") == sec)
+                    items.push_back(item(tables_.oscillator, int(i), 'o'));
             }
             std::vector<Page> pages = twoColumnPages(items, std::string(sec).rfind("ENV", 0) == 0);
             if (!pages.empty()) a.sections.push_back({sec, pages});
@@ -265,7 +268,7 @@ void Controller::render() {
         v.serial = view_.serial;
     }
     v.follow = follow_;
-    v.sound = sound_; v.osc = osc_;
+    v.sound = sound_; v.osc = osc_; v.oscBoth = oscBoth_;
     v.data = open_ && outstanding_ > 0;
     for (const Area& a : areas_) v.areas.insert(a.name);
     if (const Area* a = currentArea()) {
@@ -278,8 +281,8 @@ void Controller::render() {
             v.section = s.name;
             v.page = page_ + 1;
             v.pages = int(s.pages.size());
-            v.prev = page_ > 0 || section_ > 0;
-            v.next = page_ + 1 < int(s.pages.size()) || section_ + 1 < int(a->sections.size());
+            v.prev = page_ > 0;                      // pages within the section; sections change by their legends
+            v.next = page_ + 1 < int(s.pages.size());
             if (!s.pages.empty()) {
                 Page page = s.pages[size_t(page_)];
                 for (Row& r : page)
@@ -304,7 +307,7 @@ void Controller::render() {
     std::lock_guard<std::mutex> lk(viewMtx_);
     const bool same = v.screen.chars == view_.screen.chars && v.screen.underline == view_.screen.underline && v.area == view_.area &&
                       v.section == view_.section && v.page == view_.page && v.pages == view_.pages && v.sound == view_.sound &&
-                      v.osc == view_.osc && v.prev == view_.prev && v.next == view_.next && v.follow == view_.follow &&
+                      v.osc == view_.osc && v.oscBoth == view_.oscBoth && v.prev == view_.prev && v.next == view_.next && v.follow == view_.follow &&
                       v.data == view_.data && v.areas == view_.areas && v.sections == view_.sections &&
                       v.soundTargets == view_.soundTargets && v.oscTargets == view_.oscTargets;
     v.serial = same ? view_.serial : view_.serial + 1;
@@ -333,16 +336,14 @@ void Controller::command(const std::string& action, const std::string& text) {
     } else if (action == "target" && text.size() == 2) {
         const int n = text[1] - '1';
         if (text[0] == 'S' && n >= 0 && n < 4) { sound_ = n; follow_ = false; objs_.clear(); render(); readPage(); }
-        if (text[0] == 'O' && n >= 0 && n < 2) { osc_ = n; follow_ = false; render(); readPage(); }
+        if (text[0] == 'O' && n >= 0 && n < 2) { osc_ = n; oscBoth_ = false; follow_ = false; render(); readPage(); }
     } else if (action == "page" && a && !a->sections.empty()) {
         const int n = std::atoi(text.c_str()) - 1;
         if (n >= 0 && n < int(a->sections[size_t(section_)].pages.size())) go(area_, section_, n);
     } else if (action == "page_prev" && a && !a->sections.empty()) {
         if (page_ > 0) go(area_, section_, page_ - 1);
-        else if (section_ > 0) go(area_, section_ - 1, int(a->sections[size_t(section_ - 1)].pages.size()) - 1);
     } else if (action == "page_next" && a && !a->sections.empty()) {
         if (page_ + 1 < int(a->sections[size_t(section_)].pages.size())) go(area_, section_, page_ + 1);
-        else if (section_ + 1 < int(a->sections.size())) go(area_, section_ + 1, 0);
     } else if (action == "toggle_follow") {
         follow_ = !follow_;
         if (follow_) followLeds();
@@ -350,18 +351,23 @@ void Controller::command(const std::string& action, const std::string& text) {
     }
 }
 
-// Follow: the panel's Sound / OSC LEDs pick the target, the envelope LEDs the envelope section.
+// Follow: the panel's solidly lit LEDs pick the target (the sound being edited is solid, the other active sounds
+// flash); the envelope LEDs the envelope section. Both OSC LEDs solid: both oscillators are edited (oscillator 1's
+// values shown). No solid LED: the target stays.
 void Controller::followLeds() {
     if (!follow_) return;
+    const auto solid = [&](int code) { return code >= 0 && link_.ledMode(code) == 1; };
     int sound = sound_, osc = osc_;
-    for (int i = 0; i < 4; ++i) if (soundLeds_[size_t(i)] >= 0 && link_.ledMode(soundLeds_[size_t(i)]) != 0) { sound = i; break; }
-    for (int i = 0; i < 2; ++i) if (oscLeds_[size_t(i)] >= 0 && link_.ledMode(oscLeds_[size_t(i)]) != 0) { osc = i; break; }
-    bool changed = sound != sound_ || osc != osc_;
+    bool both = oscBoth_;
+    for (int i = 0; i < 4; ++i) if (solid(soundLeds_[size_t(i)])) { sound = i; break; }
+    const bool o1 = solid(oscLeds_[0]), o2 = solid(oscLeds_[1]);
+    if (o1 || o2) { osc = o1 ? 0 : 1; both = o1 && o2; }
+    bool changed = sound != sound_ || osc != osc_ || both != oscBoth_;
     if (sound != sound_) objs_.clear();
-    sound_ = sound; osc_ = osc;
+    sound_ = sound; osc_ = osc; oscBoth_ = both;
     if (Area* a = currentArea(); a && a->name == "OSC" && !a->sections.empty() && a->sections[size_t(section_)].name.rfind("ENV", 0) == 0) {
         for (int e = 0; e < 3; ++e)
-            if (envLeds_[size_t(e)] >= 0 && link_.ledMode(envLeds_[size_t(e)]) != 0) {
+            if (solid(envLeds_[size_t(e)])) {
                 const std::string want = "ENV" + std::to_string(e + 1);
                 for (size_t j = 0; j < a->sections.size(); ++j)
                     if (a->sections[j].name == want && int(j) != section_) { section_ = int(j); page_ = 0; changed = true; }

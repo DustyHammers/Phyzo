@@ -493,6 +493,9 @@ int main() {
         bool l, a;
         legendState(s, "target", "O2", l, a); CHECK(l && a);
         legendState(s, "target", "O1", l, a); CHECK(!l && a);
+        s.oscBoth = true;                                                 // both oscillators edited: both lit
+        legendState(s, "target", "O1", l, a); CHECK(l && a);
+        legendState(s, "target", "O2", l, a); CHECK(l && a);
         s.oscTargets = false;
         legendState(s, "target", "O2", l, a); CHECK(!l && !a);
         legendState(s, "page", "3", l, a); CHECK(!l && !a);
