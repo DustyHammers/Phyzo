@@ -122,14 +122,18 @@ struct FakeLink : editor::Link {
     // arp-control variable, the live arp state, the current arp preset and the runtime flags, and reacts to buttons.
     struct ArpSim {
         bool on = false;                             // answer the arp reads
-        bool menu = false;                           // the arp menu shows a control
-        int var = 0x63;                              // the arp-control variable
+        int mode = 0x01;                             // the panel mode: 0x01 normal, 0x0C the arp menu
+        int var = 2;                                 // the arp-control variable (keeps its value outside the arp menu)
         int lastParam = 5;                           // Arp Mode opens at the last arp parameter shown
         bool tempoIgnored = false;                   // the Tempo button does nothing (a select that fails)
+        bool selectIgnored = false;                  // Tempo / Range / Arp Mode do not open the arp menu
+        int leaveMenuAfterSteps = -1;                // the panel leaves the arp menu after this many steps
+        int mainPresetSteps = 0;                     // -/No or +/Yes outside the arp menu: the main preset stepped
+        int bankSwitches = 0;                        // the bank button outside the arp menu: the bank switched
         Bytes live = Bytes(64, 0);
         int32_t preset = -1;
         uint8_t flags[2] = {0, 0};
-        int blindSteps = 0;                          // -/No or +/Yes outside the arp controls (would step the main preset)
+        int blindSteps = 0;                          // -/No or +/Yes outside the arp menu (would step the main preset)
         std::vector<int> stepVars;                   // the variable at every -/No / +/Yes
         void step(int dir) {
             auto u32 = [&](int at) { return uint32_t(live[size_t(at)]) << 24 | uint32_t(live[size_t(at) + 1]) << 16 | uint32_t(live[size_t(at) + 2]) << 8 | live[size_t(at) + 3]; };
@@ -181,19 +185,26 @@ struct FakeLink : editor::Link {
     void pressButton(int raw, bool down) override {
         presses.push_back({raw, down});
         pressTimes.push_back(clock ? *clock : 0);
+        ++gestures;                                  // the engine counts every edge as panel input
         if (!down) return;
+        const bool inMenu = arp.mode == 0x0C;
         switch (raw) {
-        case edfields::kBtnTempo: if (!arp.tempoIgnored) { arp.menu = true; arp.var = 0; } break;
-        case edfields::kBtnRange: arp.menu = true; arp.var = 1; break;
+        case edfields::kBtnTempo: if (!arp.tempoIgnored && !arp.selectIgnored) { arp.mode = 0x0C; arp.var = 0; } break;
+        case edfields::kBtnRange: if (!arp.selectIgnored) { arp.mode = 0x0C; arp.var = 1; } break;
         case edfields::kBtnArpMode:
-            arp.var = !arp.menu || arp.var < 2 ? arp.lastParam : arp.var == 16 ? 2 : arp.var + 1;
-            arp.menu = true;
+            if (arp.selectIgnored) break;
+            arp.var = !inMenu || arp.var < 2 ? arp.lastParam : arp.var == 16 ? 2 : arp.var + 1;
+            arp.mode = 0x0C;
             arp.lastParam = arp.var;
             break;
         case edfields::kBtnYes: case edfields::kBtnNo:
             arp.stepVars.push_back(arp.var);
-            if (!arp.menu) ++arp.blindSteps;
+            if (!inMenu) { ++arp.blindSteps; ++arp.mainPresetSteps; }
             else arp.step(raw == edfields::kBtnYes ? 1 : -1);
+            if (inMenu && arp.leaveMenuAfterSteps > 0 && --arp.leaveMenuAfterSteps == 0) arp.mode = 0x01;
+            break;
+        case edfields::kBtnBank:                     // from the arp menu: back to normal; in normal mode: the bank
+            if (inMenu) arp.mode = 0x01; else ++arp.bankSwitches;
             break;
         case edfields::kBtnArpOnOff: arp.flags[0] ^= 1; break;
         case edfields::kBtnArpKeyboard: arp.flags[1] ^= 1; break;
@@ -204,7 +215,7 @@ struct FakeLink : editor::Link {
     bool open = false, run = true;
     std::vector<Bytes> sent, standing;
     std::vector<Bytes> replies;
-    uint64_t leds = 0, triggers = 0, gestures = 0, moves = 0;
+    uint64_t leds = 0, triggers = 0, gestures = 0, moves = 0, midi = 0;
     int lastControl = -1;
     std::map<int, int> ledModes;
     std::array<char, 4> disp{{'P', ' ', '0', '1'}};
@@ -214,6 +225,7 @@ struct FakeLink : editor::Link {
         if (arp.on && m.size() > 20 && m[5] == edproto::kPartialRead && addressOf(m).type == edproto::kRawMemory) {
             const edproto::Address a = addressOf(m);
             if (a.offset == edfields::kArpControlVar) answerData(m, {uint8_t(arp.var)});
+            else if (a.offset == edfields::kPanelMode) answerData(m, {uint8_t(arp.mode)});
             else if (a.offset == edfields::kLiveArp) answerData(m, arp.live);
             else if (a.offset == edfields::kArpFlags) answerData(m, {arp.flags[0], arp.flags[1]});
             else if (a.offset == edfields::kCurrentArpPreset)
@@ -227,6 +239,7 @@ struct FakeLink : editor::Link {
     uint64_t presetTriggers() const override { return triggers; }
     uint64_t panelGestures() const override { return gestures; }
     uint64_t panelControlMoves() const override { return moves; }
+    uint64_t externalMidi() const override { return midi; }
     int lastPanelControl() const override { return lastControl; }
     int ledMode(int code) const override { auto it = ledModes.find(code); return it == ledModes.end() ? 0 : it->second; }
     std::array<char, 4> display() const override { return disp; }
@@ -543,6 +556,17 @@ void testEditing() {
     CHECK(firstPress(edfields::kBtnYes) - lastRelease(edfields::kBtnArpMode) >= 1400);
     for (int sv : link.arp.stepVars) CHECK(sv == 3);
     CHECK(link.arp.blindSteps == 0 && c.view().edited);
+    // Begun in normal mode: back there with the bank button, pressed once (in the arp menu), never a bank switch.
+    CHECK(c.panelModeBeforeArpEdit() == 0x01 && link.arp.mode == 0x01 && link.pressCount(edfields::kBtnBank) == 1);
+    CHECK(link.arp.bankSwitches == 0);
+    {   // the bank button came after the last step, while the mode read the arp menu
+        size_t bank = 0, yes = 0;
+        for (size_t i = 0; i < link.presses.size(); ++i) {
+            if (link.presses[i].first == edfields::kBtnBank && link.presses[i].second) bank = i;
+            if (link.presses[i].first == edfields::kBtnYes && link.presses[i].second) yes = i;
+        }
+        CHECK(bank > yes);
+    }
     // Range (up and down together): the Range button once, +/Yes once.
     link.presses.clear(); link.arp.stepVars.clear();
     c.choose(up, 2);
@@ -574,18 +598,78 @@ void testEditing() {
     CHECK(c.view().screen.rowText(2).find("C#-1") == std::string::npos || true);
     settle();
     CHECK(link.arp.live[20] == 5 && link.arp.live[22] == 5 && link.arp.blindSteps == 0);
-    // Safety: the OS leaves the arp control while the editor waits: the variable is read again, the control selected
-    // again, and no -/No or +/Yes is ever pressed outside it.
+    CHECK(c.panelModeBeforeArpEdit() == 0x01 && link.arp.mode == 0x01 && link.arp.bankSwitches == 0);
+    // Begun in the arp menu: the editor stays there (no bank button).
+    link.presses.clear();
+    link.arp.mode = 0x0C; link.arp.var = 9;
+    c.choose(c.refForTest('a', 13), 30);                                         // tch
+    settle();
+    CHECK(link.arp.live[34] == 30 && link.arp.mode == 0x0C && link.pressCount(edfields::kBtnBank) == 0);
+    CHECK(c.panelModeBeforeArpEdit() == 0x0C);
+    link.arp.mode = 0x01;
+    // A run of edits begun in normal mode: each lands, then the bank button once at the end.
+    link.presses.clear();
+    c.choose(c.refForTest('a', 13), 31);
+    c.choose(c.refForTest('a', 3), 1);                                           // CEnt
+    settle();
+    CHECK(link.arp.live[34] == 31 && link.arp.live[32] == 1 && link.pressCount(edfields::kBtnBank) == 1 && link.arp.mode == 0x01);
+    CHECK(link.presses.size() >= 2 && link.presses[link.presses.size() - 2].first == edfields::kBtnBank);
+    // Another panel mode (a sound edit, 0x02): no arp edit, nothing pressed, and a message for the user.
+    link.presses.clear();
+    link.arp.mode = 0x02;
+    const uint32_t notices = c.noticeSerial();
+    c.choose(c.refForTest('a', 13), 50);
+    c.choose(c.refForTest('a', 3), 0);
+    settle();
+    CHECK(link.presses.empty() && link.arp.live[34] == 31 && link.arp.live[32] == 1 && c.noticeSerial() == notices + 1);
+    CHECK(c.notice().find("normal mode") != std::string::npos && c.panelModeBeforeArpEdit() == 0x02);
+    link.arp.mode = 0x01;
+    // Safety: the panel leaves the arp menu while the editor waits (the variable keeps reading the control): the edit
+    // stops without pressing -/No or +/Yes.
     link.presses.clear(); link.arp.stepVars.clear();
     c.choose(limit, 7);
     runFor(600);
-    link.arp.menu = false; link.arp.var = 0x63;                                 // the menu timed out
+    link.arp.mode = 0x01;                                                       // back to normal mode
     settle();
-    CHECK(link.arp.live[36] == 7 && link.arp.blindSteps == 0);
+    CHECK(link.arp.live[36] == 0 && link.arp.blindSteps == 0 && link.arp.mainPresetSteps == 0);
+    CHECK(link.pressCount(edfields::kBtnYes) == 0 && link.pressCount(edfields::kBtnNo) == 0);
+    // Normal mode, and the select does not open the arp menu (the variable reads 2 = PrSt there): no -/No or +/Yes,
+    // the main preset unchanged.
+    link.presses.clear(); link.arp.stepVars.clear();
+    link.arp.selectIgnored = true; link.arp.mode = 0x01; link.arp.var = 2;
+    const int32_t arpPresetBefore = link.arp.preset;
+    c.choose(prst, link.arp.preset + 3);
+    settle();
+    CHECK(link.pressCount(edfields::kBtnYes) == 0 && link.pressCount(edfields::kBtnNo) == 0 && link.arp.mainPresetSteps == 0);
+    CHECK(link.arp.preset == arpPresetBefore && c.panelModeBeforeArpEdit() == 0x01);
+    CHECK(link.pressCount(edfields::kBtnBank) == 0);                           // the mode never read the arp menu
+    link.arp.selectIgnored = false;
+    // Every press is checked: the panel leaves the arp menu after the first step: no second press.
+    link.presses.clear();
+    link.arp.leaveMenuAfterSteps = 1;
+    c.choose(limit, 5);
+    settle();
+    CHECK(link.pressCount(edfields::kBtnYes) == 1 && link.arp.live[36] == 1 && link.arp.mainPresetSteps == 0);
+    link.arp.leaveMenuAfterSteps = -1;
+    // Panel input or other MIDI during an edit: it stops at once (no -/No or +/Yes after it).
+    for (int which = 0; which < 2; ++which) {
+        link.presses.clear();
+        c.choose(limit, 9);
+        runFor(600);                                                            // waiting for the OS to show the control
+        if (which == 0) link.gestures += 1;                                     // a panel button or knob
+        else link.midi += 1;                                                    // a note from the host
+        settle();
+        CHECK(link.pressCount(edfields::kBtnYes) == 0 && link.pressCount(edfields::kBtnNo) == 0 && link.arp.live[36] == 1);
+        CHECK(link.pressCount(edfields::kBtnBank) == 0);                       // nothing more pressed at all
+        link.arp.mode = 0x01;                                                   // (the panel's user takes it from here)
+    }
+    c.choose(limit, 7);
+    settle();
+    CHECK(link.arp.live[36] == 7 && link.arp.mainPresetSteps == 0);
     for (int sv : link.arp.stepVars) CHECK(sv == 15);
     // A control that cannot be selected (the Tempo button does nothing here): no step at all.
     link.presses.clear(); link.arp.stepVars.clear();
-    link.arp.tempoIgnored = true; link.arp.menu = false; link.arp.var = 0x63;
+    link.arp.tempoIgnored = true; link.arp.mode = 0x01; link.arp.var = 2;
     c.choose(tempo, 130);
     settle();
     CHECK(link.pressCount(edfields::kBtnTempo) == 1 && link.pressCount(edfields::kBtnYes) == 0 && link.pressCount(edfields::kBtnNo) == 0);
@@ -620,6 +704,8 @@ void testEditing() {
     c.command("drag_end", "");
     runFor(500);
     CHECK(link.presses.empty());
+    // Over every arp edit above: the bank never switched, the main preset never stepped.
+    CHECK(link.arp.bankSwitches == 0 && link.arp.mainPresetSteps == 0 && link.arp.blindSteps == 0);
     // Never a write into the arp state and never a dump (nor its whole read).
     for (const Bytes& m : link.sent) {
         CHECK(!(m.size() > 6 && m[5] == edproto::kPartialWrite && FakeLink::addressOf(m).type == edproto::kRawMemory));

@@ -49,7 +49,9 @@ struct Link {
     virtual int ledMode(int code) const = 0;          // 0 off, 1 on, 2 flash, 3 beat flash
     virtual std::array<char, 4> display() const = 0;
     virtual bool running() const = 0;                // the OS is running (requests can be answered)
-    virtual void pressButton(int /*raw*/, bool /*down*/) {}   // a front-panel button, as the panel sends it (81 / 80 raw)
+    virtual void pressButton(int /*raw*/, bool /*down*/) {}   // a front-panel button, as the panel sends it (81 / 80 raw);
+                                                              // counted in panelGestures like the panel's own presses
+    virtual uint64_t externalMidi() const { return 0; }       // MIDI messages into the OS from the host / virtual port
 };
 
 // What the skin shows (a copy; legends by their text as in docs/editor/EDITOR_PANEL_LAYOUT.json).
@@ -129,6 +131,12 @@ public:
     int refForTest(char kind, int field) const { return refOf(kind, field); }
     int focusForTest() const { return focus_; }
     bool arpBusyForTest() const { return jobActive_ || !pendingArp_.empty(); }
+    // The OS's panel mode read before the last arp edit pressed any button (-1: none yet). After an arp edit the panel
+    // stays in the arp menu; the editor does not try to return it (docs/editor/ROUND2_REVIEW.md, to be settled).
+    int panelModeBeforeArpEdit() const { return modeBeforeArpEdit_; }
+    // Messages for the user (message thread): the latest text and a serial that changes with each new one.
+    const std::string& notice() const { return notice_; }
+    uint32_t noticeSerial() const { return noticeSerial_; }
 
 private:
     struct Section { std::string name; std::vector<edpages::Page> pages; };
@@ -178,7 +186,11 @@ private:
     void pump();                                     // paced sends
     void sendWrite(int ref, int64_t d);
     void arpPump();                                  // the arp edit in progress, through the panel's buttons
-    void arpFinish(bool done);
+    // The arp edit ends: `done` if it landed; `interrupted` by panel input or other MIDI (or the editor closing):
+    // nothing more is pressed. Otherwise, after the last queued edit of a run that began in normal mode, the panel is
+    // returned from the arp menu with the bank button (once, only while the mode reads the arp menu).
+    void arpFinish(bool done, bool interrupted = false);
+    void arpEnd();
     void press(int button, bool down);
     void rawRead(uint32_t address, uint32_t length);
     void updateCurrentPreset();                      // the stored preset whose name the edit buffer holds
@@ -227,20 +239,29 @@ private:
     std::map<int, int64_t> pendingArp_;              // ARP edits waiting for their turn (by reference; latest wins)
     // The arp edit in progress (one at a time).
     struct ArpJob {
-        enum class Stage { Select, SelectUp, ReadControl, Settle, Check, Step, StepUp, StepGap, ToggleUp, ToggleRead } stage;
+        enum class Stage { ReadMode, Select, SelectUp, ReadControl, Settle, Check, PreStep, Step, StepUp, StepGap, ToggleUp,
+                           ToggleRead, Leave, LeaveUp, LeaveCheck } stage;
         int ref = -1;
         int control = -1;                            // the arp-control number; -1: a flag switched by its own button
         int64_t target = 0;
         double at = 0;                               // when the stage started
         bool asked = false;                          // the stage's reads are out
-        int selects = 0, reselects = 0, rounds = 0, presses = 0, dir = 0;
+        int selects = 0, rounds = 0, presses = 0, dir = 0;
+        uint64_t gestures = 0, midi = 0;             // the panel's and the MIDI input's counts when the edit began
+        int ownPresses = 0;                          // button edges the editor itself sent since then
         int64_t last = 0;
     };
     bool jobActive_ = false;
     ArpJob job_;
     int heldButton_ = -1;                            // a button the editor is holding down (released on close)
     int arpControl_ = -1;                            // the OS's arp-control variable, as last read
-    bool arpControlFresh_ = false, liveFresh_ = false, arpPresetFresh_ = false, flagsFresh_ = false;
+    int panelMode_ = -1;                             // the OS's panel mode, as last read
+    int modeBeforeArpEdit_ = -1;                     // the panel mode read before the last arp edit pressed anything
+    int runMode_ = -1;                               // the panel mode when the current run of arp edits began
+    std::string notice_;                             // a message for the user (the plugin shows it), with its serial
+    uint32_t noticeSerial_ = 0;
+    void setNotice(const std::string& text) { notice_ = text; ++noticeSerial_; }
+    bool arpControlFresh_ = false, panelModeFresh_ = false, liveFresh_ = false, arpPresetFresh_ = false, flagsFresh_ = false;
     int64_t currentArpPreset_ = -1;                  // the OS's current arp preset (-1: the preset's own settings)
     bool arpPresetValid_ = false;
     std::array<uint8_t, 2> arpFlags_{};              // the OS's arp on / keyboard flags

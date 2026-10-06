@@ -82,8 +82,13 @@ owner step by step through anything they must do by hand on github.com or on the
   NRPN, the wave ID by SysEx, sound settings / system partial writes with read-modify-write for bit fields, COMMON NRPN
   MSB 1); everything else is display only. ARP settings change only through the panel's own buttons, as hands do
   (docs/editor/ROUND2_REVIEW.md): the control's button steered by the OS's arp-control variable, then -/No / +/Yes,
-  pressed only right after that variable was read as the wanted control (outside the arp controls they step the main
-  preset); never a knob, never a write into the arp state, never a whole-preset dump (it stops a running arp). COMMON
+  each press only right after the OS's panel mode (0x0BE01A8B) read 0x0C (the arp menu) AND the arp-control variable
+  read the wanted control, else the edit stops without pressing (the variable keeps its value outside the arp menu;
+  there -/No / +/Yes step the main preset); any panel input or other MIDI during an edit stops it at once (nothing more
+  is pressed). Arp edits start only in panel mode 0x01 (normal) or 0x0C (arp menu); in any other mode nothing is pressed
+  and the user is told. A run begun in normal mode ends with the preset bank button (0x19) pressed once, only while the
+  mode reads 0x0C, back to 0x01 (in normal mode that button switches the bank); begun in the arp menu, it stays there.
+  Never a knob, never a write into the arp state, never a whole-preset dump (it stops a running arp). COMMON
   and ARP fields (no OS table) are in `editor_fields.*`; ARP values come from the live arp state and the OS's arp
   variables in RAM. Follow also jumps to the page of the panel knob last moved (`Engine::lastPanelControl`).
   The skin side: `<name>-editor.rml`, `<vfdrow>` (values take drags, double-click, right-click), `<legend>`, the Lua

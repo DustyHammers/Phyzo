@@ -30,9 +30,17 @@ constexpr int64_t kNone16 = 0xFFFF;                         // feel off, no patt
 constexpr uint32_t kArpControlVar = 0x0BE01877;            // the arp control the panel shows: 0 Tempo, 1 Range, 2 PrSt ...
 constexpr uint32_t kCurrentArpPreset = 0x0BE01880;         // 32-bit: -1 = the preset's own settings, else 0-120
 constexpr uint32_t kArpFlags = 0x0BE018BA;                 // 2 bytes: arp on, keyboard
+// The OS's panel mode: 0x01 normal, 0x02 sound, 0x05 effects, 0x0C the arp menu (Arp Mode, Tempo, Range). The
+// arp-control variable keeps its value in every mode (it reads 2 in normal mode), so -/No and +/Yes are pressed only
+// when this reads 0x0C as well.
+constexpr uint32_t kPanelMode = 0x0BE01A8B;
+constexpr int kModeNormal = 0x01, kModeArpMenu = 0x0C;
 // Panel buttons (raw ids)
 constexpr int kBtnTempo = 0x1E, kBtnRange = 0x03, kBtnArpMode = 0x21, kBtnYes = 0x0D, kBtnNo = 0x0E,
               kBtnArpOnOff = 0x06, kBtnArpKeyboard = 0x05;
+// The preset bank button: pressed once in the arp menu (mode 0x0C) it returns the panel to normal mode (0x01) with the
+// display and LEDs as before; in normal mode it switches the bank, so it is pressed only when the mode reads 0x0C.
+constexpr int kBtnBank = 0x19;
 // The note resolutions (ticks, 384 per quarter) in the order of the OS's name pointer table.
 constexpr uint32_t kResolutionTicks[12] = {1536, 768, 384, 192, 96, 48, 32, 64, 128, 256, 512, 1024};
 

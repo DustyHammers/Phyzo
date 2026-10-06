@@ -290,6 +290,12 @@ static juce::String romMessage(const PhyzoProcessor& proc) {
 
 void PhyzoEditor::timerCallback() {
     if (rml_) rml_->setPersistentMessage(romMessage(proc));
+    // The editor unit's messages (e.g. why an arp setting was not changed), in the skin's message banner.
+    const editor::Controller& ec = proc.editorController();
+    if (ec.noticeSerial() != editorNotice_) {
+        editorNotice_ = ec.noticeSerial();
+        if (rml_ && editorShown_) rml_->showMessage(juce::String::fromUTF8(ec.notice().c_str()));
+    }
     if (scaleDirty_) { scaleDirty_ = false; SkinSettings::setScale(scale_); }   // not on every drag step
 }
 

@@ -113,6 +113,11 @@ In the editor unit:
 - **ARP**: the editor changes arp settings exactly as you would on the panel, with the panel's own buttons (the arp
   control's button, then -/No and +/Yes; the main display shows the setting meanwhile). It takes a second or two per
   setting; the arp keeps playing. It never moves a knob. Arp on/off and keyboard are switched with their own buttons.
+  Don't touch the panel and don't play while it does this: any panel input or incoming MIDI stops the edit at once
+  (nothing more is pressed). If the panel was in its normal mode, the editor returns it there afterwards (display and
+  LEDs as before); if it was already in the arp menu, it stays. While the panel is in a sound, oscillator, MIDI or
+  effects edit, arp settings can't be changed from the editor (a message says so and nothing is pressed). Any panel
+  message shifts the arp's timing very slightly, as on the hardware.
 - **PRESETS**: the current preset is marked (it blinks); click a preset's name to load it.
 - The synth's main panel is never changed by the editor; save the preset on the panel as usual to keep your edits.
 - **Developer > RmlUi debugger**: RmlUi's inspector, for working on a skin.

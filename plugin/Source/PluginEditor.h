@@ -87,4 +87,5 @@ private:
     juce::ComponentBoundsConstrainer constrainer_;
     juce::Rectangle<int> dragStartBounds_;
     bool debugger_ = false;
+    uint32_t editorNotice_ = 0;                      // the editor's last message shown (its serial)
 };

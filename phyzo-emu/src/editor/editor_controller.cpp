@@ -168,7 +168,7 @@ void Controller::setOpen(bool open) {
         outstanding_ = 0;
         readDue_ = displayChangedAt_ = readBackAt_ = -1;
         pending_.clear(); rmw_.clear(); pendingArp_.clear();   // the engine drops its queue too
-        if (jobActive_) arpFinish(false);            // lets go of a button the editor holds
+        if (jobActive_) arpFinish(false, true);      // lets go of a button the editor holds; presses nothing more
         dragRef_ = -1;
         typing_ = false;
     }
@@ -188,7 +188,7 @@ void Controller::build() {
     typing_ = false;
     dragRef_ = -1;
     pending_.clear(); rmw_.clear(); pendingArp_.clear(); before_.clear();
-    if (jobActive_) arpFinish(false);
+    if (jobActive_) arpFinish(false, true);
     size_t waveNameMax = 0;
     for (const auto& n : waveNames_) waveNameMax = std::max(waveNameMax, n.size());
     auto item = [&](const edtables::Table& t, int field, char kind) {
@@ -414,6 +414,11 @@ void Controller::handleReply(const std::vector<uint8_t>& m) {
     if (a.type == edproto::kRawMemory && a.offset == edfields::kArpControlVar && !r.data.empty()) {
         arpControl_ = r.data[0];
         arpControlFresh_ = true;
+        return;
+    }
+    if (a.type == edproto::kRawMemory && a.offset == edfields::kPanelMode && !r.data.empty()) {
+        panelMode_ = r.data[0];
+        panelModeFresh_ = true;
         return;
     }
     if (a.type == edproto::kRawMemory && a.offset == edfields::kCurrentArpPreset && r.data.size() >= 4) {
@@ -704,7 +709,7 @@ void Controller::write(int ref, int64_t d) {
     if (!before_.count(ref) && valueOf(ref, cur)) before_[ref] = cur;
     apply(ref, d);
     if (refs_[size_t(ref)].kind == 'a') {            // through the panel's buttons, one edit at a time
-        if (jobActive_ && job_.ref == ref) job_.target = d;
+        if (jobActive_ && job_.ref == ref && job_.stage < ArpJob::Stage::Leave) job_.target = d;
         else pendingArp_[ref] = d;
     } else {
         pending_[ref] = d;
@@ -1141,6 +1146,7 @@ void Controller::followKnob(int cc) {
 
 void Controller::press(int button, bool down) {
     link_.pressButton(button, down);
+    if (jobActive_) ++job_.ownPresses;               // the editor's own edges in the panel's count
     heldButton_ = down ? button : -1;
     lastWriteAt_ = now_;                             // the LEDs this switches are the edit's own
 }
@@ -1149,22 +1155,53 @@ void Controller::rawRead(uint32_t address, uint32_t length) {
     if (link_.send(edproto::partialRead({edproto::kRawMemory, 0, 0, 0, address, length}))) { ++outstanding_; lastSendAt_ = now_; }
 }
 
-void Controller::arpFinish(bool done) {
+void Controller::arpFinish(bool done, bool interrupted) {
     if (heldButton_ >= 0) link_.pressButton(heldButton_, false);   // never leave a button held
     heldButton_ = -1;
-    jobActive_ = false;
     if (done) afterWrite();
+    if (interrupted) {                               // someone else at the panel or the MIDI input, or closing
+        pendingArp_.clear();
+        arpEnd();
+        return;
+    }
+    if (pendingArp_.empty() && runMode_ == edfields::kModeNormal &&
+        (job_.stage < ArpJob::Stage::Leave)) {       // the run began in normal mode: back there from the arp menu
+        job_.stage = ArpJob::Stage::Leave;
+        job_.at = now_;
+        job_.asked = false;
+        render();
+        return;
+    }
+    if (pendingArp_.empty()) runMode_ = -1;          // (a run that began in the arp menu stays there)
+    jobActive_ = false;
     render();
 }
 
-// One arp edit at a time (docs/editor/ROUND2_REVIEW.md): the control's button (Tempo, Range, or Arp Mode until the
-// OS's arp-control variable reads the control), 1.4 s for the OS to show it, then -/No or +/Yes once per step, 40 ms
-// apart, reading the value back each round until it lands. -/No and +/Yes are pressed only in a round that began by
-// reading the arp-control variable as the wanted control (outside the arp controls they step the main preset). On/off
-// and keyboard: their own button once, if the OS's flag differs.
+void Controller::arpEnd() {
+    jobActive_ = false;
+    runMode_ = -1;
+    render();
+}
+
+// One arp edit at a time (docs/editor/ROUND2_REVIEW.md), as hands on the panel do it:
+//  1. read the OS's panel mode (recorded: after the edit the panel stays in the arp menu; it is not returned);
+//  2. the control's button: Tempo, Range, or Arp Mode until the arp-control variable reads the control, with the panel
+//     mode reading the arp menu (0x0C); 1.4 s for the OS to show it;
+//  3. -/No or +/Yes once per step, each press only right after the panel mode read 0x0C AND the arp-control variable
+//     read the control; otherwise the edit stops without pressing (the variable keeps its value outside the arp
+//     menu: in normal mode those buttons step the main preset);
+//  4. the value read back each round until it lands.
+// Any panel input or other MIDI during the edit stops it at once (and the edits queued behind it). On/off and keyboard:
+// their own button once, if the OS's flag differs.
 void Controller::arpPump() {
     if (!open_ || !link_.running()) return;
-    if (jobActive_) lastWriteAt_ = now_;            // the arp LEDs the edit switches are not a preset change
+    if (jobActive_) {
+        lastWriteAt_ = now_;                         // the arp LEDs the edit switches are not a preset change
+        if (link_.panelGestures() != job_.gestures + uint64_t(job_.ownPresses) || link_.externalMidi() != job_.midi) {
+            arpFinish(false, true);                  // someone else is at the panel or the MIDI input: stop at once
+            return;
+        }
+    }
     if (!jobActive_) {
         if (pendingArp_.empty()) return;
         const auto it = pendingArp_.begin();
@@ -1174,28 +1211,53 @@ void Controller::arpPump() {
         job_.target = it->second;
         pendingArp_.erase(it);
         if (!f || (f->arpControl < 0 && f->button < 0)) return;
-        job_.control = f->arpControl;
-        jobActive_ = true;
-        job_.at = now_;
-        if (f->arpControl < 0) {                     // a flag: its button once, only if the OS's flag differs
+        if (f->arpControl < 0) {                     // a flag: nothing to do if the OS's flag is already so
             int64_t cur;
-            if (valueOf(job_.ref, cur) && cur == job_.target) { arpFinish(false); return; }
-            press(f->button, true);
-            job_.stage = ArpJob::Stage::ToggleUp;
-        } else {
-            job_.stage = ArpJob::Stage::Select;
+            if (valueOf(job_.ref, cur) && cur == job_.target) return;
         }
+        job_.control = f->arpControl;
+        job_.gestures = link_.panelGestures();
+        job_.midi = link_.externalMidi();
+        jobActive_ = true;
+        job_.stage = ArpJob::Stage::ReadMode;
+        job_.at = now_;
     }
     const edfields::Field* f = presetField(refs_[size_t(job_.ref)]);
     const double since = now_ - job_.at;
     auto next = [&](ArpJob::Stage st) { job_.stage = st; job_.at = now_; job_.asked = false; };
     const int selectButton = job_.control == 0 ? edfields::kBtnTempo : job_.control == 1 ? edfields::kBtnRange : edfields::kBtnArpMode;
+    const int stepButton = job_.dir > 0 ? edfields::kBtnYes : edfields::kBtnNo;
+    auto readModeAndControl = [&] {
+        panelModeFresh_ = arpControlFresh_ = false;
+        rawRead(edfields::kPanelMode, 1);
+        rawRead(edfields::kArpControlVar, 1);
+    };
+    auto inControl = [&] { return panelMode_ == edfields::kModeArpMenu && arpControl_ == job_.control; };
     auto readValue = [&] {
         if (f->kind == Kind::PresetAction) { arpPresetFresh_ = false; rawRead(edfields::kCurrentArpPreset, 4); }
         else { liveFresh_ = false; rawRead(edfields::kLiveArp, edfields::kArpBlockSize); }
     };
     auto valueFresh = [&] { return f->kind == Kind::PresetAction ? arpPresetFresh_ : liveFresh_; };
     switch (job_.stage) {
+    case ArpJob::Stage::ReadMode:                    // the panel mode before anything is pressed
+        if (!job_.asked) { readModeAndControl(); job_.asked = true; break; }
+        if (panelModeFresh_ && arpControlFresh_) {
+            modeBeforeArpEdit_ = panelMode_;
+            if (panelMode_ != edfields::kModeNormal && panelMode_ != edfields::kModeArpMenu) {
+                // A sound, oscillator, MIDI or effects edit on the panel: no arp edit; nothing is pressed.
+                setNotice("The arp settings can be changed only while the panel is in its normal mode "
+                          "(not in a sound, oscillator, MIDI or effects edit). Nothing was changed.");
+                pendingArp_.clear();
+                arpEnd();
+                break;
+            }
+            if (runMode_ < 0) runMode_ = panelMode_;
+            if (job_.control < 0) { press(f->button, true); next(ArpJob::Stage::ToggleUp); }
+            else next(ArpJob::Stage::Select);
+        } else if (since > kReplyTimeoutMs) {
+            arpFinish(false, true);
+        }
+        break;
     case ArpJob::Stage::ToggleUp:
         if (since >= 80) { press(f->button, false); next(ArpJob::Stage::ToggleRead); }
         break;
@@ -1212,12 +1274,12 @@ void Controller::arpPump() {
     case ArpJob::Stage::SelectUp:
         if (since >= 80) { press(selectButton, false); next(ArpJob::Stage::ReadControl); }
         break;
-    case ArpJob::Stage::ReadControl:
-        if (!job_.asked && since >= 100) { arpControlFresh_ = false; rawRead(edfields::kArpControlVar, 1); job_.asked = true; }
-        if (job_.asked && arpControlFresh_) {
-            if (arpControl_ == job_.control) next(ArpJob::Stage::Settle);
-            else if (job_.control >= 2 && job_.selects < 20) next(ArpJob::Stage::Select);   // Arp Mode steps 2 -> 16 -> 2
-            else arpFinish(false);
+    case ArpJob::Stage::ReadControl:                 // the arp menu, showing the control?
+        if (!job_.asked && since >= 100) { readModeAndControl(); job_.asked = true; }
+        if (job_.asked && panelModeFresh_ && arpControlFresh_) {
+            if (inControl()) next(ArpJob::Stage::Settle);
+            else if (panelMode_ == edfields::kModeArpMenu && job_.control >= 2 && job_.selects < 20) next(ArpJob::Stage::Select);
+            else arpFinish(false);                   // not in the arp menu after the press: stop, press nothing more
         } else if (since > kReplyTimeoutMs) {
             arpFinish(false);
         }
@@ -1225,15 +1287,10 @@ void Controller::arpPump() {
     case ArpJob::Stage::Settle:
         if (since >= 1400) next(ArpJob::Stage::Check);
         break;
-    case ArpJob::Stage::Check:                      // the control still shown, and the value now
-        if (!job_.asked) { arpControlFresh_ = false; rawRead(edfields::kArpControlVar, 1); readValue(); job_.asked = true; break; }
-        if (!(arpControlFresh_ && valueFresh())) { if (since > kReplyTimeoutMs) arpFinish(false); break; }
-        if (arpControl_ != job_.control) {          // the OS left the control: select it again (never step blind)
-            if (++job_.reselects > 3) { arpFinish(false); break; }
-            job_.selects = 0;
-            next(ArpJob::Stage::Select);
-            break;
-        }
+    case ArpJob::Stage::Check:                       // still in the control, and the value now
+        if (!job_.asked) { readModeAndControl(); readValue(); job_.asked = true; break; }
+        if (!(panelModeFresh_ && arpControlFresh_ && valueFresh())) { if (since > kReplyTimeoutMs) arpFinish(false); break; }
+        if (!inControl()) { arpFinish(false); break; }   // the panel left the control: stop
         {
             int64_t cur;
             if (!valueOf(job_.ref, cur)) { arpFinish(false); break; }
@@ -1245,23 +1302,49 @@ void Controller::arpPump() {
             job_.last = cur;
             job_.dir = job_.target > cur ? 1 : -1;
             job_.presses = int(std::min<int64_t>(std::abs(job_.target - cur), 128));
-            next(ArpJob::Stage::Step);
+            next(ArpJob::Stage::PreStep);
         }
         break;
+    case ArpJob::Stage::PreStep:                     // before EVERY -/No or +/Yes: the arp menu and the control, read now
+        if (!job_.asked) { readModeAndControl(); job_.asked = true; break; }
+        if (!(panelModeFresh_ && arpControlFresh_)) { if (since > kReplyTimeoutMs) arpFinish(false); break; }
+        if (!inControl()) { arpFinish(false); break; }   // stop without pressing
+        next(ArpJob::Stage::Step);
+        [[fallthrough]];
     case ArpJob::Stage::Step:
-        press(job_.dir > 0 ? edfields::kBtnYes : edfields::kBtnNo, true);
+        press(stepButton, true);
         next(ArpJob::Stage::StepUp);
         break;
     case ArpJob::Stage::StepUp:
         if (since >= 20) {
-            press(job_.dir > 0 ? edfields::kBtnYes : edfields::kBtnNo, false);
+            press(stepButton, false);
             --job_.presses;
             next(ArpJob::Stage::StepGap);
         }
         break;
-    case ArpJob::Stage::StepGap:                     // one press per 40 ms; after the last, let the OS settle and check
-        if (job_.presses > 0 && since >= 20) next(ArpJob::Stage::Step);
+    case ArpJob::Stage::StepGap:                     // the next press (checked again); after the last, settle and check
+        if (job_.presses > 0 && since >= 20) next(ArpJob::Stage::PreStep);
         else if (job_.presses <= 0 && since >= 150) next(ArpJob::Stage::Check);
+        break;
+    case ArpJob::Stage::Leave:                       // the bank button once, only while the mode reads the arp menu
+        if (!job_.asked) { panelModeFresh_ = false; rawRead(edfields::kPanelMode, 1); job_.asked = true; break; }
+        if (!panelModeFresh_) { if (since > kReplyTimeoutMs) arpEnd(); break; }
+        if (panelMode_ != edfields::kModeArpMenu) { arpEnd(); break; }   // not in the arp menu: press nothing
+        press(edfields::kBtnBank, true);
+        next(ArpJob::Stage::LeaveUp);
+        break;
+    case ArpJob::Stage::LeaveUp:
+        if (since >= 80) { press(edfields::kBtnBank, false); next(ArpJob::Stage::LeaveCheck); }
+        break;
+    case ArpJob::Stage::LeaveCheck:                  // back in normal mode? (never a second press)
+        if (!job_.asked && since >= 150) { panelModeFresh_ = false; rawRead(edfields::kPanelMode, 1); job_.asked = true; }
+        if (job_.asked && panelModeFresh_) {
+            if (panelMode_ != edfields::kModeNormal)
+                setNotice("The panel did not return to its normal mode after the arp edit; please check it.");
+            arpEnd();
+        } else if (since > kReplyTimeoutMs) {
+            arpEnd();
+        }
         break;
     }
 }

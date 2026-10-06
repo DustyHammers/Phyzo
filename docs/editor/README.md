@@ -26,7 +26,10 @@ Name-free design documents for the editor unit, from the project chat:
   OS's list and revert, arrows and +/-; every edit is clamped, shown at once, sent (paced like panel knob moves, the
   latest value winning) and read back. ARP settings change only through the panel's own buttons, as hands on the
   panel do (ROUND2_REVIEW.md): the arp control's button, steered by the OS's arp-control variable, then -/No and +/Yes,
-  never outside the arp controls; arp on/off and keyboard by their buttons. No writes into the arp state, no whole-preset
+  each press only right after the OS's panel mode read the arp menu (0x0C) and the variable read the control, else the
+  edit stops without pressing; any panel input or other MIDI during an edit stops it (nothing more pressed); edits start
+  only in panel mode 0x01 or 0x0C (otherwise nothing is pressed and the user is told); a run begun in 0x01 returns there
+  with the preset bank button, pressed once only while the mode reads 0x0C; arp on/off and keyboard by their buttons. No writes into the arp state, no whole-preset
   dump (the encoders stay, tested, unused). PRESETS: a click loads the preset; the current preset is marked.
 - `Engine` (`setEditorOpen`, `editorSend`, `setEditorStandingRead`, `editorReplies`, `lastPanelControl`): the editor's
   messages enter the OS's MIDI input as whole messages at cable speed; the read of the visible page goes in directly

@@ -138,6 +138,7 @@ private:
         bool running() const override { return engine.state() == Engine::State::Running; }
         // The editor's arp edits: the panel's own buttons, as the skin presses them (81 / 80 raw).
         void pressButton(int raw, bool down) override { engine.pressRaw(raw, down); }
+        uint64_t externalMidi() const override { return engine.externalMidi(); }
         Engine& engine;
     };
     class EditorPort : public skin::EditorPort {

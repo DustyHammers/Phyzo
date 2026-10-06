@@ -418,6 +418,7 @@ void Engine::process(float* left, float* right, int n, const MidiEvent* events, 
             size_t k = 0;
             vin_.pop([&](uint8_t b) { if (k < scratch_.size()) scratch_[k++] = b; });
             m.serial.queueRx(1, scratch_.data(), k, at);
+            externalMidi_.fetch_add(1, std::memory_order_relaxed);
             if ((editor || ownersCount_) && edproto::isRequest(scratch_.data(), k)) noteRequest(false, m.samplesProduced());
             if (edproto::isPresetTrigger(scratch_.data(), k)) {
                 ++presetTriggers_;
@@ -447,6 +448,7 @@ void Engine::process(float* left, float* right, int n, const MidiEvent* events, 
         if (at < m.cycles()) { at = m.cycles(); ++lateMidi_; }
         midiTimes_[midiCount_++ % midiTimes_.size()] = at;
         m.serial.queueRx(1, events[i].data, size_t(events[i].size), at);
+        externalMidi_.fetch_add(1, std::memory_order_relaxed);
         if ((editor || ownersCount_) && edproto::isRequest(events[i].data, size_t(events[i].size))) noteRequest(false, m.samplesProduced());
         if (edproto::isPresetTrigger(events[i].data, size_t(events[i].size))) {
             ++presetTriggers_;
