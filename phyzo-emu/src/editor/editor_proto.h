@@ -58,6 +58,12 @@ std::vector<uint8_t> programChange(int channel, int program);
 // NRPN: Bn 63 msb, Bn 62 lsb, Bn 06 (value >> 7), Bn 26 (value & 7F), then the null Bn 63 7F, Bn 62 7F. The OS
 // applies the value when CC 38 arrives; the value is 14 bits, two's complement (sign-extended from bit 13).
 std::vector<std::vector<uint8_t>> nrpn(int channel, int msb, int lsb, int value);
+// The OS's effect parameter message (docs/editor/EFFECTS_EDITOR_SPEC.md, write path 1): applies a value live,
+// F0 0F 7F 7F 00 00 00 00 <slot> 00 <param> <value & 7F> <(value >> 7) & 7F> F7 (slot 0 routing, 1 insert, 3 reverb;
+// the value 14 bits, two's complement). The OS does not clamp it.
+std::vector<uint8_t> fxParameter(int slot, int param, int value);
+// The preset edit buffer in RAM (raw-memory writes of effect values go to kEditBufferRam + preset offset).
+constexpr uint32_t kEditBufferRam = 0x0BE0DA20;
 // NRPN numbers: MSB 1 = preset-common parameter `param`; oscillator parameters MSB 2 + sound*4 + osc*2 + (param>>7).
 void oscillatorNrpn(int sound, int osc, int param, int& msb, int& lsb);
 

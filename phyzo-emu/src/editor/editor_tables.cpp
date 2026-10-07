@@ -1,6 +1,7 @@
 #include "editor_tables.h"
 #include <algorithm>
 #include <cctype>
+#include <map>
 
 namespace edtables {
 
@@ -176,6 +177,7 @@ std::string formatNumber(const std::string& fmt, int v) {
         const bool zero = j < fmt.size() && fmt[j] == '0';
         int width = 0;
         while (j < fmt.size() && std::isdigit(static_cast<unsigned char>(fmt[j])) && width < 16) width = width * 10 + (fmt[j++] - '0');
+        while (j < fmt.size() && fmt[j] == 'l') ++j;
         if (j < fmt.size() && fmt[j] == 'd') {
             std::string n = std::to_string(v);
             if (int(n.size()) < width) n.insert(0, size_t(width) - n.size(), zero ? '0' : ' ');
@@ -188,6 +190,232 @@ std::string formatNumber(const std::string& fmt, int v) {
     return out;
 }
 
+// ------------------------------------------------------------------ effects
+
+namespace {
+// A RAM address in the initialised data section, read from its image copy; image addresses unchanged.
+uint32_t imageOf(uint32_t a) {
+    using namespace fxaddr;
+    return a >= kDataRam && a < kDataRam + 0x100000 ? kDataImage + (a - kDataRam) : a;
+}
+
+struct FxReader {
+    Reader r;
+    std::vector<uint8_t> recordSizes, displaySizes;  // the OS's walker tables (bytes)
+    std::map<uint32_t, ValueList> lists;             // decoded value lists by address
+    // The start of sub-block n of `block` (the OS's walker): byte 1 is the mask of the sub-blocks present; the first
+    // starts after the header (table[0]); each present one before n adds table[1 + i], 0xFF: its own length byte.
+    bool walk(uint32_t block, int n, const std::vector<uint8_t>& table, uint32_t& out) {
+        if (n + 1 >= int(table.size())) return false;
+        const uint8_t mask = r.u8(block + 1);
+        uint32_t pos = block + table[0];
+        for (int i = 0; i < n; ++i) {
+            if (!(mask & (1 << i))) continue;
+            const uint8_t size = table[size_t(1 + i)];
+            pos += size == 0xFF ? r.u8(pos) : size;
+        }
+        if (!(mask & (1 << n)) || !r.ok) return false;
+        out = pos;
+        return true;
+    }
+    const ValueList& list(uint32_t a) {
+        auto it = lists.find(a);
+        if (it == lists.end()) it = lists.emplace(a, decodeList(r.img, a)).first;
+        return it->second;
+    }
+    // One record at `a` (byte 0 = its length): range, display and PID (`hasPid` false without section 7).
+    void record(uint32_t a, const std::vector<std::string>& names, uint32_t listArray, FxParam& p, bool& hasPid) {
+        p.min = int16_t(r.u16(a + 4));
+        p.max = int16_t(r.u16(a + 6));
+        uint32_t s0, at;
+        if (walk(a, 0, recordSizes, s0)) {
+            if (walk(s0, 0, displaySizes, at)) {
+                const uint32_t n = r.u32(at);
+                if (n < names.size()) p.name = names[n];
+            }
+            if (walk(s0, 1, displaySizes, at)) {
+                const uint32_t n = r.u32(at), count = r.u32(listArray);
+                if (r.ok && n < count && n < 4096) { p.hasList = true; p.list = list(r.u32(listArray + 4 + 4 * n)).entries; }
+            }
+            if (walk(s0, 2, displaySizes, at)) p.formatter = int(r.u32(at));
+            if (walk(s0, 3, displaySizes, at)) { p.prefix = r.u8(at); p.suffix = r.u8(at + 1); }
+            if (walk(s0, 4, displaySizes, at)) p.decimals = std::min<int>(r.u8(at + 1), 6);
+        }
+        hasPid = walk(a, 7, recordSizes, at);
+        if (hasPid) p.pid = r.u16(at);
+    }
+    std::vector<std::string> names(uint32_t a) {
+        std::vector<std::string> out;
+        for (uint32_t p : r.array(imageOf(a), 1024)) out.push_back(r.str(imageOf(p), 64));
+        return out;
+    }
+    // A family descriptor's records (byte 0 = length; zero bytes between records are padding): each record's PID is
+    // its section 7, or the previous id + 1 (from 0) without one.
+    bool family(uint32_t desc, int fam, std::map<uint16_t, FxParam>& out, std::vector<FxParam>* inOrder) {
+        const uint32_t recs = imageOf(r.u32(desc)), namesA = r.u32(desc + 4), listsA = imageOf(r.u32(desc + 12));
+        const uint16_t count = r.u16(desc + 0x14);
+        if (!r.ok) return false;
+        const std::vector<std::string> nm = names(namesA);
+        uint32_t a = recs;
+        int prevId = -1;
+        for (uint16_t i = 0; i < count && r.ok; ++i) {
+            while (r.in(a, 1) && r.u8(a) == 0) ++a;
+            const uint8_t len = r.u8(a);
+            if (!r.ok || len < 8) return false;
+            FxParam p;
+            bool hasPid = false;
+            record(a, nm, listsA, p, hasPid);
+            if (!hasPid) p.pid = uint16_t(fam << 8 | ((prevId + 1) & 0xFF));
+            prevId = p.pid & 0xFF;
+            p.found = true;
+            if (inOrder) inOrder->push_back(p);
+            out.emplace(p.pid, p);
+            a += len;
+        }
+        return r.ok;
+    }
+};
+
+std::string fixed16(Reader& r, uint32_t a) {         // a 16-character field ('~' shown as a space)
+    std::string s;
+    for (uint32_t i = 0; i < 16 && r.in(a + i, 1); ++i) {
+        const char c = char(r.u8(a + i));
+        if (!c) break;
+        s.push_back(c == '~' ? ' ' : c);
+    }
+    return s;
+}
+}  // namespace
+
+FxTables readEffects(const std::vector<uint8_t>& image) {
+    using namespace fxaddr;
+    FxTables t;
+    FxReader x{Reader{image}, {}, {}, {}};
+    Reader& r = x.r;
+    for (int i = 0; i < 9; ++i) x.recordSizes.push_back(r.u8(kRecordSizes + uint32_t(i)));
+    for (int i = 0; i < 6; ++i) x.displaySizes.push_back(r.u8(kDisplaySizes + uint32_t(i)));
+    if (!r.ok) { t.error = "effects: walker tables outside the image"; return t; }
+    // Every family's records by PID.
+    std::map<uint16_t, FxParam> params;
+    for (int f = 0; f < kFamilyCount; ++f) {
+        const uint32_t d = r.u32(kFamilies + 4 * uint32_t(f));
+        if (!r.ok) break;
+        if (d && !x.family(d, f, params, nullptr)) { t.error = "effects: family " + std::to_string(f) + " is malformed"; return t; }
+    }
+    for (int i = 0; i < kSyncCount; ++i) t.syncNames.push_back(r.str(r.u32(kSyncNames + 4 * uint32_t(i)), 32));
+    t.msFormat = r.str(kMsFormat, 16);
+    for (const std::string& e : x.list(r.u32(kPrefixList)).entries) t.prefixes.push_back(e);
+    for (const std::string& e : x.list(r.u32(kSuffixList)).entries) t.suffixes.push_back(e);
+    auto sync = [&](FxParam& p) {
+        bool same = p.hasList && p.list.size() >= size_t(kSyncCount);
+        for (int i = 0; same && i < kSyncCount; ++i) same = p.list[size_t(i)] == t.syncNames[size_t(i)];
+        p.tempoSync = p.formatter == 80 || same;
+    };
+    for (auto& kv : params) sync(kv.second);
+    // Edit-order maps: family, sub, count, count slots.
+    std::vector<uint32_t> maps;
+    for (uint32_t i = 0; i < 256; ++i) {
+        const uint32_t m = r.u32(kEditOrder + 4 * i);
+        if (!r.ok || !m) break;
+        maps.push_back(m);
+    }
+    auto algo = [&](uint32_t h) {
+        FxAlgo a;
+        if (!h) return a;
+        const uint32_t namePtr = r.u32(h);
+        a.name = namePtr ? fixed16(r, namePtr) : std::string();
+        a.family = r.u16(h + 6);
+        a.sub = r.u16(h + 8);
+        const uint16_t n = r.u16(h + 0x0E);
+        const uint32_t map = r.u32(h + 0x10);
+        const uint16_t nv = r.u16(h + 0x18);
+        const uint32_t vt = r.u32(h + 0x1A);
+        if (!r.ok || n > 64 || nv > 128) return a;
+        for (uint16_t k = 0; k < n; ++k) {
+            const uint32_t e = map + 16u * k;
+            const uint16_t pid = uint16_t((r.u16(e) & 0xFF) << 8 | (r.u16(e + 2) & 0xFF));
+            auto it = params.find(pid);
+            FxParam p;
+            if (it != params.end()) p = it->second;
+            p.pid = pid;
+            a.params.push_back(p);
+        }
+        for (uint16_t v = 0; v < nv; ++v) a.variations.push_back(fixed16(r, r.u32(vt + 16u * v)));
+        bool mapped = false;
+        for (uint32_t m : maps) {
+            if (r.u8(m) != (a.family & 0xFF) || r.u8(m + 1) != (a.sub & 0xFF)) continue;
+            const uint8_t count = r.u8(m + 2);
+            for (uint8_t i = 0; i < count; ++i) if (r.u8(m + 3 + i) < n) a.order.push_back(r.u8(m + 3 + i));
+            mapped = true;
+            break;
+        }
+        if (!mapped) for (int k = 0; k < n; ++k) if (!a.params[size_t(k)].hidden()) a.order.push_back(k);
+        a.ok = r.ok;
+        return a;
+    };
+    for (int i = 0; i < kInsertCount; ++i) t.inserts.push_back(algo(r.u32(kInsertAlgos + 4 * uint32_t(i))));
+    t.routing = algo(r.u32(kRoutingAlgo));
+    t.reverb = algo(r.u32(kReverbAlgo));
+    for (int i = 0; i < kInsertCount; ++i) t.codes.push_back(r.str(kCodes + 5 * uint32_t(i), 5));
+    t.preset = r.str(kPreset, 8);
+    t.insertVariationFmt = r.str(kInsertVariationFmt, 8);
+    t.reverbVariationFmt = r.str(kReverbVariationFmt, 8);
+    // The insert modulation: an ordinary descriptor whose records, names and offsets are in RAM (image copy).
+    {
+        std::map<uint16_t, FxParam> byPid;
+        std::vector<FxParam> inOrder;
+        const uint32_t d = kModDescriptor;
+        if (x.family(d, 0, byPid, &inOrder)) {
+            const std::vector<uint32_t> offs = r.array(imageOf(r.u32(d + 8)), 64);
+            for (size_t i = 0; i < inOrder.size() && i < offs.size(); ++i) {
+                sync(inOrder[i]);
+                t.mod.push_back(inOrder[i]);
+                t.modOffsets.push_back(offs[i]);
+            }
+        }
+    }
+    bool all = r.ok && t.routing.ok && t.reverb.ok && t.routing.params.size() >= 32 && t.mod.size() == 6;
+    for (const FxAlgo& a : t.inserts) all = all && a.ok;
+    t.ok = all;
+    if (!all && t.error.empty()) t.error = "effects: an algorithm, the routing shell, the reverb or the modulation fields could not be read";
+    return t;
+}
+
+std::string formatEffect(const FxParam& p, int v, const FxTables& t, const FxAlgo* insert) {
+    auto trim = [](std::string s) {
+        while (!s.empty() && s.back() == ' ') s.pop_back();
+        size_t i = 0;
+        while (i < s.size() && s[i] == ' ') ++i;
+        return s.substr(i);
+    };
+    if (p.hasList) {
+        if (v >= 0 && size_t(v) < p.list.size()) return trim(p.list[size_t(v)]);
+        return std::to_string(v);
+    }
+    if (p.formatter == 80) {
+        if (v >= 0 && v < int(t.syncNames.size())) return trim(t.syncNames[size_t(v)]);
+        return formatNumber(t.msFormat, v - int(t.syncNames.size()));
+    }
+    if (p.formatter == 81) return formatNumber(t.msFormat, v);
+    if (p.formatter == 82) {
+        if (insert && v >= 0 && size_t(v) < insert->params.size()) return trim(insert->params[size_t(v)].name);
+        return std::to_string(v);
+    }
+    std::string n;
+    if (p.decimals > 0) {
+        int scale = 1;
+        for (int i = 0; i < p.decimals; ++i) scale *= 10;
+        const int a = v < 0 ? -v : v;
+        std::string frac = std::to_string(a % scale);
+        frac.insert(0, size_t(p.decimals) - frac.size(), '0');
+        n = (v < 0 ? "-" : "") + std::to_string(a / scale) + "." + frac;
+    } else {
+        n = std::to_string(v);
+    }
+    auto from = [](const std::vector<std::string>& l, uint8_t i) { return i >= 1 && size_t(i) <= l.size() ? l[size_t(i - 1)] : std::string(); };
+    return from(t.prefixes, p.prefix) + n + from(t.suffixes, p.suffix);
+}
+
 OsTables readAll(const std::vector<uint8_t>& image) {
     OsTables t;
     std::string err;
@@ -197,6 +425,7 @@ OsTables readAll(const std::vector<uint8_t>& image) {
            readTable(image, kSystemTable, "system", t.system, err);
     t.error = err;
     if (t.ok) t.arp = readArpText(image);
+    if (t.ok) t.fx = readEffects(image);
     return t;
 }
 
