@@ -25,6 +25,17 @@ const int kInsertSends[] = {6, 7, 8, 9, 10, 0, 17, 3};           // routing-shel
 const int kInsertAlgoRouting[] = {14, 11, 12, 15, 16};
 const int kReverbSends[] = {25, 26, 28, 29, 30, 31, 2};
 const uint32_t kModOrder[] = {0, 1, 2, 4, 6, 8};      // source, destination, source min / max, destination min / max
+// Copying a variation to PSEt (write path 4b): preset bytes [from, to) of the running performance (or of the edit
+// buffer) raw-written into the edit buffer at `into`, in this order.
+struct CopyRange { uint32_t from, to; bool running; uint32_t into; };
+const CopyRange kInsertCopy[] = {{174, 258, true, 174},   // the insert area
+                                 {64, 74, true, 64},      // the modulation block
+                                 {118, 120, true, 118},   // the two routing words a variation sets (slots 4 and 6)
+                                 {122, 124, true, 122},
+                                 {292, 294, false, 136}}; // the insert mix: the edit buffer's word 292 into word 136
+const CopyRange kReverbCopy[] = {{294, 330, true, 294}};  // the reverb area
+const char* const kCopyFailed = "The variation could not be copied to PSEt (the OS did not store the copy). It stays "
+                                "selected; nothing more was sent.";
 
 // The widest text a field's value can take (cells reserved for it on the page).
 int valueWidth(const edtables::Field& f, const edtables::Table& t, size_t waveNameMax) {
@@ -182,6 +193,8 @@ void Controller::setOpen(bool open) {
         readDue_ = displayChangedAt_ = readBackAt_ = -1;
         pending_.clear(); rmw_.clear(); pendingArp_.clear();   // the engine drops its queue too
         modPending_ = modReady_ = false;
+        copy_ = {};                                  // nothing more is sent
+        copyFailed_ = {};
         if (jobActive_) arpFinish(false, true);      // lets go of a button the editor holds; presses nothing more
         dragRef_ = -1;
         typing_ = false;
@@ -203,6 +216,8 @@ void Controller::build() {
     dragRef_ = -1;
     pending_.clear(); rmw_.clear(); pendingArp_.clear(); before_.clear();
     modPending_ = modReady_ = false;
+    copy_ = {};
+    copyFailed_ = {};
     fx_.clear();
     if (jobActive_) arpFinish(false, true);
     size_t waveNameMax = 0;
@@ -513,6 +528,18 @@ void Controller::handleReply(const std::vector<uint8_t>& m) {
         return;
     }
     const ObjKey key{a.type, a.number, a.subtype, a.subnumber};
+    if (key == keyFor('P'))                          // a copy's read-back: does the edit buffer hold the copy?
+        for (VarCopy& c : copy_) {
+            if (!c.active || c.readsOut <= 0) continue;
+            for (const auto& rg : c.ranges) {
+                if (rg.first != a.offset || rg.second.size() != r.data.size()) continue;
+                if (r.data != rg.second) c.mismatch = true;
+                if (--c.readsOut == 0) {
+                    if (c.mismatch) c.rereadAt = now_ + kCopyRereadMs;
+                    else c.matched = true;
+                }
+            }
+        }
     Obj& o = objs_[key];
     const size_t end = size_t(a.offset) + r.data.size();
     if (end > 1 << 16) return;
@@ -535,6 +562,15 @@ void Controller::handleReply(const std::vector<uint8_t>& m) {
             afterWrite();
         }
     }
+    if (key == keyFor('R')) runningAt_ = now_;
+    if (key == keyFor('P'))                          // a variation being copied: the copy stays shown
+        for (const VarCopy& c : copy_)
+            if (c.active)
+                for (const auto& rg : c.ranges)
+                    for (size_t i = 0; i < rg.second.size() && rg.first + i < o.bytes.size(); ++i) {
+                        o.bytes[rg.first + i] = rg.second[i];
+                        o.valid[rg.first + i] = true;
+                    }
     // Writes not sent yet (and the value being dragged) stay shown.
     for (const auto& kv : pending_) apply(kv.first, kv.second);
     if (dragRef_ >= 0) apply(dragRef_, dragValue_);
@@ -706,12 +742,14 @@ bool Controller::editable(int ref) const {
         if (f->kind == Kind::PresetAction && !arpPresetValid_) return false;   // clickable once the OS's value is read
         return f->editable && (r.kind == 'm' || f->arpControl >= 0 || f->button >= 0);   // ARP: through the panel's buttons
     }
-    if (r.kind == 'x') {                             // not while a variation plays it; once its bytes are read
+    if (r.kind == 'x') {                             // once its bytes are read; under a variation if it can be copied
         const FxRef& e = fx_[size_t(r.field)];
         int64_t lo, hi, d;
-        if (fxLocked(e) || !rangeOf(ref, lo, hi) || !valueOf(ref, d)) return false;
+        if (!rangeOf(ref, lo, hi) || !valueOf(ref, d)) return false;
+        const bool locked = fxLocked(e);
+        if (locked && !copyPossible(lockSlot(e))) return false;
         if (e.k == FxRef::K::Mod)                    // the whole block is written
-            for (uint32_t i = 64; i < 74; ++i) { int b; if (!fxByte(i, b)) return false; }
+            for (uint32_t i = 64; i < 74; ++i) { int64_t b; if (!fxRaw(i, 1, locked, b)) return false; }
         return true;
     }
     if (!r.table) return false;
@@ -897,6 +935,14 @@ void Controller::write(int ref, int64_t d, bool exact) {
     if (!exact) d = std::clamp(d, lo, hi);          // a revert restores the stored value, even outside the table's range
     int64_t cur;
     if (!before_.count(ref) && valueOf(ref, cur)) before_[ref] = cur;
+    if (refs_[size_t(ref)].kind == 'x') {
+        const FxRef& e = fx_[size_t(refs_[size_t(ref)].field)];
+        if (e.k == FxRef::K::InsertVar) copyFailed_[0] = false;   // another variation: a copy may be tried again
+        if (e.k == FxRef::K::ReverbVar) copyFailed_[1] = false;
+        // A field a variation plays: the first edit copies the variation to PSEt (write path 4b); the edit is queued
+        // behind the copy.
+        if (fxLocked(e) && !startCopy(lockSlot(e))) return;
+    }
     if (refs_[size_t(ref)].kind == 'x' && fx_[size_t(refs_[size_t(ref)].field)].k == FxRef::K::Mod) {
         // The insert modulation: the whole block from the last read-back with this field changed (a new destination
         // also resets dest min / max to its range, as the OS does), written once per gesture.
@@ -996,8 +1042,9 @@ void Controller::apply(int ref, int64_t d) {
 // The next write, paced: at most one per kPaceMs, or the time the last one takes on the cable if longer.
 void Controller::pump() {
     if (!open_ || !link_.running()) return;
-    // Effect sends wait while the OS rebuilds its effects (the rebuild hold); other writes go on.
-    auto held = [&](int ref) { return refs_[size_t(ref)].kind == 'x' && now_ < fxHoldUntil_; };
+    // Effect sends wait while the OS rebuilds its effects (the rebuild hold) and while a variation is copied to PSEt;
+    // other writes go on.
+    auto held = [&](int ref) { return refs_[size_t(ref)].kind == 'x' && (now_ < fxHoldUntil_ || copying()); };
     while (now_ >= nextSendAt_ && !pending_.empty()) {
         auto it = pending_.find(dragRef_);           // the value being dragged first
         if (it == pending_.end() || held(it->first))
@@ -1084,6 +1131,8 @@ void Controller::afterWrite() {
 void Controller::presetChanged() {
     before_.clear();
     edited_ = false;
+    for (int s = 0; s < 2; ++s) copyAbort(s, false);   // a copy never lands in another preset
+    copyFailed_ = {};
 }
 
 // ------------------------------------------------------------------ rendering
@@ -1160,9 +1209,10 @@ void Controller::render() {
                         if (typing_ && x.ref == focus_) x.value = typed_ + "_";
                     }
                 v.screen = edpages::render(page);
-                // Effect values a variation plays: display only, not underlined.
+                // Effect values a variation plays that cannot be edited now (no copy possible): not underlined.
                 for (const auto& sp : v.screen.values)
-                    if (sp.ref >= 0 && refs_[size_t(sp.ref)].kind == 'x' && fxLocked(fx_[size_t(refs_[size_t(sp.ref)].field)]))
+                    if (sp.ref >= 0 && refs_[size_t(sp.ref)].kind == 'x' && fxLocked(fx_[size_t(refs_[size_t(sp.ref)].field)]) &&
+                        !editable(sp.ref))
                         for (int c = sp.col; c < sp.col + sp.len && c < edpages::kCols; ++c) v.screen.underline[size_t(sp.row)][size_t(c)] = false;
                 // PRESETS: the current preset is the focused item (its name blinks, never underlined).
                 const int focus = a->name == "PRESETS" ? (currentPreset_ >= 0 ? refOf('n', currentPreset_) : -1) : focus_;
@@ -1685,16 +1735,25 @@ bool Controller::reverbVariation(int& v) const {
     return true;
 }
 
-bool Controller::fxLocked(const FxRef& e) const {
-    int v = 0;
+int Controller::lockSlot(const FxRef& e) const {
     switch (e.k) {
-    case FxRef::K::Insert: case FxRef::K::Mod: return !insertVariation(v) || v >= 0;
-    case FxRef::K::Routing:                          // the FX-bus 1 reverb send plays the insert variation's value
-        if (e.n == 4 || e.n == 6) return !insertVariation(v) || v >= 0;
-        return false;
-    case FxRef::K::Reverb: return !reverbVariation(v) || v >= 0;
-    default: return false;
+    case FxRef::K::Insert: case FxRef::K::Mod: return 0;
+    case FxRef::K::Routing: return e.n == 4 || e.n == 6 ? 0 : -1;   // the FX-bus 1 reverb send plays the insert variation's
+    case FxRef::K::Reverb: return 1;
+    default: return -1;
     }
+}
+
+bool Controller::variationPlays(int slot) const {
+    int v = 0;
+    return slot == 0 ? !insertVariation(v) || v >= 0 : !reverbVariation(v) || v >= 0;
+}
+
+// The value a variation plays (shown from the running performance); not while the slot is being copied to PSEt.
+bool Controller::fxLocked(const FxRef& e) const {
+    const int slot = lockSlot(e);
+    if (slot < 0 || copy_[size_t(slot)].active) return false;
+    return variationPlays(slot);
 }
 
 uint32_t Controller::fxOffset(const FxRef& e) const {
@@ -1823,16 +1882,113 @@ void Controller::checkFxAlgo() {
 
 bool Controller::lockedHint(int ref) {
     if (ref < 0 || size_t(ref) >= refs_.size() || refs_[size_t(ref)].kind != 'x') return false;
-    if (!fxLocked(fx_[size_t(refs_[size_t(ref)].field)])) return false;
-    setNotice("select PSEt to edit");
-    render();
+    const FxRef& e = fx_[size_t(refs_[size_t(ref)].field)];
+    if (!fxLocked(e) || editable(ref)) return false;  // editable under a variation: the edit copies it to PSEt
+    if (copyFailed_[size_t(lockSlot(e))]) { setNotice(kCopyFailed); render(); }
     return true;
+}
+
+// ---- copying a variation to PSEt (write path 4b)
+
+bool Controller::copyPossible(int slot) const {
+    if (slot < 0 || slot > 1 || copyFailed_[size_t(slot)] || !open_ || !link_.running()) return false;
+    if (now_ < fxHoldUntil_ || runningAt_ < fxHoldUntil_) return false;   // after a rebuild: what plays, read anew
+    int v;
+    if (!(slot == 0 ? insertVariation(v) : reverbVariation(v)) || v < 0) return false;
+    for (const CopyRange& c : slot == 0 ? std::vector<CopyRange>(std::begin(kInsertCopy), std::end(kInsertCopy))
+                                        : std::vector<CopyRange>(std::begin(kReverbCopy), std::end(kReverbCopy)))
+        for (uint32_t o = c.from; o < c.to; ++o) { int64_t b; if (!fxRaw(o, 1, c.running, b)) return false; }
+    return true;
+}
+
+bool Controller::startCopy(int slot) {
+    if (slot < 0 || slot > 1) return false;
+    if (copy_[size_t(slot)].active) return true;
+    if (!copyPossible(slot)) return false;
+    VarCopy c;
+    c.active = true;
+    for (const CopyRange& r : slot == 0 ? std::vector<CopyRange>(std::begin(kInsertCopy), std::end(kInsertCopy))
+                                        : std::vector<CopyRange>(std::begin(kReverbCopy), std::end(kReverbCopy))) {
+        std::vector<uint8_t> bytes;
+        for (uint32_t o = r.from; o < r.to; ++o) { int64_t b = 0; fxRaw(o, 1, r.running, b); bytes.push_back(uint8_t(b)); }
+        c.ranges.push_back({r.into, bytes});
+    }
+    Obj& o = objs_[keyFor('P')];                     // the editor holds the copy at once (the slot as under PSEt)
+    for (const auto& rg : c.ranges) {
+        if (o.bytes.size() < rg.first + rg.second.size()) { o.bytes.resize(rg.first + rg.second.size(), 0); o.valid.resize(o.bytes.size(), false); }
+        for (size_t i = 0; i < rg.second.size(); ++i) { o.bytes[rg.first + i] = rg.second[i]; o.valid[rg.first + i] = true; }
+    }
+    copy_[size_t(slot)] = c;
+    copyWrite(slot);
+    return true;
+}
+
+void Controller::copyWrite(int slot) {
+    VarCopy& c = copy_[size_t(slot)];
+    ++c.attempt;
+    for (const auto& rg : c.ranges)
+        link_.send(edproto::partialWrite({edproto::kRawMemory, 0, 0, 0, edproto::kEditBufferRam + rg.first, uint32_t(rg.second.size())}, rg.second));
+    c.writtenAt = lastWriteAt_ = lastSendAt_ = now_;
+    copyRead(slot);
+}
+
+void Controller::copyRead(int slot) {
+    VarCopy& c = copy_[size_t(slot)];
+    c.readsOut = 0;
+    c.mismatch = c.matched = false;
+    c.rereadAt = -1;
+    for (const auto& rg : c.ranges)
+        if (link_.send(edproto::partialRead({edproto::kPreset, 0, 0, 0, rg.first, uint32_t(rg.second.size())}))) {
+            ++c.readsOut;
+            ++outstanding_;
+            lastSendAt_ = now_;
+        }
+}
+
+void Controller::copyPump() {
+    if (!open_ || !link_.running()) return;
+    for (int s = 0; s < 2; ++s) {
+        VarCopy& c = copy_[size_t(s)];
+        if (!c.active) continue;
+        if (c.matched) {                             // the edit buffer holds the copy: PSEt, then the rebuild hold
+            for (const auto& m : edproto::nrpn(channel_, 1, s == 0 ? 32 : 33, -1)) link_.send(m);
+            c.active = false;
+            copyFailed_[size_t(s)] = false;
+            fxHoldUntil_ = now_ + kFxHoldMs;
+            Obj& o = objs_[keyFor('P')];
+            const size_t at = s == 0 ? 332 : 333;
+            if (at < o.bytes.size() && o.valid[at]) o.bytes[at] = 0xFF;
+            lastSendAt_ = now_;
+            afterWrite();                            // the read-back after the hold
+            checkFxAlgo();
+            render();
+        } else if (now_ - c.writtenAt >= kCopyVerifyMs) {   // not stored within 1 s: write once more, then give up
+            if (c.attempt < 2) copyWrite(s);
+            else copyAbort(s, true);
+        } else if (c.readsOut == 0 && c.mismatch && c.rereadAt >= 0 && now_ >= c.rereadAt) {
+            copyRead(s);                             // not all stored yet: read again
+        }
+    }
+}
+
+void Controller::copyAbort(int slot, bool failed) {
+    VarCopy& c = copy_[size_t(slot)];
+    if (!c.active) return;
+    c.active = false;
+    copyFailed_[size_t(slot)] = failed;
+    auto ofSlot = [&](int ref) { return refs_[size_t(ref)].kind == 'x' && lockSlot(fx_[size_t(refs_[size_t(ref)].field)]) == slot; };
+    for (auto it = pending_.begin(); it != pending_.end();) it = ofSlot(it->first) ? pending_.erase(it) : std::next(it);
+    if (slot == 0) modPending_ = modReady_ = false;
+    if (dragRef_ >= 0 && ofSlot(dragRef_)) dragRef_ = -1;
+    if (failed) setNotice(kCopyFailed);
+    readDue_ = now_;                                 // show what the OS holds
+    render();
 }
 
 // The insert modulation block: one partial write of the edit buffer (offset 64, 10 bytes) per gesture, not during
 // the rebuild hold; it starts a new hold, and the read-back follows it.
 void Controller::pumpMod() {
-    if (!modPending_ || !modReady_ || now_ < fxHoldUntil_ || !open_ || !link_.running()) return;
+    if (!modPending_ || !modReady_ || now_ < fxHoldUntil_ || copying() || !open_ || !link_.running()) return;
     if (!link_.send(edproto::partialWrite({edproto::kPreset, 0, 0, 0, 64, 10}, std::vector<uint8_t>(modBlock_.begin(), modBlock_.end()))))
         return;
     modPending_ = modReady_ = false;
@@ -1875,10 +2031,12 @@ void Controller::tick(double nowMs) {
     if (displayChangedAt_ >= 0 && now_ - displayChangedAt_ >= kDisplayFallbackMs) { displayChangedAt_ = -1; readDue_ = now_; }
     if (readDue_ >= 0 && now_ >= readDue_) { readDue_ = -1; readPage(); }
 
-    // Edits: paced sends, the arp edit through the panel's buttons, and the read-back once everything is out.
+    // Edits: a variation being copied to PSEt, paced sends, the arp edit through the panel's buttons, and the read-back
+    // once everything is out.
+    copyPump();
     pump();
     arpPump();
-    const bool quiet = pending_.empty() && pendingArp_.empty() && !jobActive_ && rmw_.empty() && !modPending_;
+    const bool quiet = pending_.empty() && pendingArp_.empty() && !jobActive_ && rmw_.empty() && !modPending_ && !copying();
     if (readBackAt_ >= 0 && now_ >= readBackAt_ && quiet && dragRef_ < 0) { readBackAt_ = -1; readPage(); }
 
     // Names for the ARP area: the pattern shown, and the arp presets for the right-click list (a few per tick, only

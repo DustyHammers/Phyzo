@@ -30,8 +30,10 @@ Name-free design documents for the editor unit, from the project chat:
   32 = 0; the variations by LSB 32 / 33 (PSEt only where the panel offers it); the insert modulation as one 10-byte
   partial write of the edit buffer (offset 64) per gesture. After that write or NRPN LSB 30-33 the OS rebuilds its
   effects: every effect send waits 350 ms (the latest queued value goes then) and the read-back follows. Under a
-  variation the slot's values are the ones that play (read from the running performance), display only, not
-  underlined ("select PSEt to edit").
+  variation the slot's values are the ones that play (read from the running performance); the first edit of one of
+  them in the editor copies the variation to PSEt (write path 4b: what plays raw-written into the edit buffer, PSEt
+  only once the read-back equals the copy, one rewrite after 1 s, else a notice and the variation stays), then the
+  edit follows after the rebuild hold. The main panel keeps the OS's own behaviour.
   The insert modulation moved here from COMMON.
 - Editing (round 2): only fields with a write path verified live are editable (EDITOR_ROUND2.md section 1), every other
   field is display only. Drag a value (1 step per 4 dp, Shift fine), double-click for typed entry, right-click for the

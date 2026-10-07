@@ -7,11 +7,15 @@
 //  3. The effect parameter message (values 0, 127, 128, negative, the 14-bit extremes).
 //  4. Controller with a fake OS: the pages; an effect value is a raw-memory write of the word into the edit buffer,
 //     then the effect parameter message, clamped; the algorithm is NRPN LSB 30, 31, then 32 = 0; variations and their
-//     PSEt rules; under a variation the slot's values are those that play, display only (not underlined, a hint); the
+//     PSEt rules; under a variation the slot's values are those that play, editable through a copy to PSEt; the
 //     insert modulation is one 10-byte partial write per gesture (a new destination resets its range); nothing is
 //     sent while closed.
 //  5. The rebuild hold: after the modulation write or NRPN LSB 30-33 no effect message for 350 ms, then the latest
 //     queued value; modulation writes at least 350 ms apart.
+//  6. Copying a variation to PSEt (write path 4b): the first edit of a field a variation plays writes what plays into
+//     the edit buffer (the insert's and the reverb's ranges, in order), PSEt only once the read-back equals the copy,
+//     then the rebuild hold, then only the latest edit; a read-back that never matches: one rewrite, then a notice and
+//     no PSEt; fields editable under a variation start no copy.
 #include <cstdio>
 #include <cstring>
 #include <set>
@@ -265,11 +269,32 @@ struct FakeLink : editor::Link {
     std::vector<Bytes> sent, replies;
     std::vector<double> sentAt;                      // when each message was sent (with `clock`)
     const double* clock = nullptr;
+    bool storeRaw = false;                           // raw-memory writes into the edit buffer land in `preset`
+    bool deferPreset = false;                        // reads of the edit buffer wait for answerDeferred()
+    std::vector<Bytes> deferred;
     bool open = false;
     void setOpen(bool on) override { open = on; }
     bool send(const Bytes& m) override {
         sent.push_back(m);
         sentAt.push_back(clock ? *clock : 0);
+        edproto::Message w;
+        if (storeRaw && edproto::parse(m.data(), m.size(), w) && w.command == edproto::kPartialWrite &&
+            w.address.type == edproto::kRawMemory && w.address.offset >= edproto::kEditBufferRam &&
+            w.address.offset - edproto::kEditBufferRam + w.data.size() <= preset.size())
+            std::copy(w.data.begin(), w.data.end(), preset.begin() + long(w.address.offset - edproto::kEditBufferRam));
+        if (deferPreset && m.size() > 20 && m[5] == edproto::kPartialRead && m[6] == edproto::kPreset) {
+            deferred.push_back(m);
+            return true;
+        }
+        answer(m);
+        return true;
+    }
+    void answerDeferred() {
+        std::vector<Bytes> d;
+        d.swap(deferred);
+        for (const Bytes& m : d) answer(m);
+    }
+    void answer(const Bytes& m) {
         if (m.size() > 20 && m[5] == edproto::kPartialRead) {
             edproto::Address a;
             a.type = m[6]; a.number = uint16_t(edproto::get14(&m[7])); a.subtype = m[9];
@@ -282,7 +307,6 @@ struct FakeLink : editor::Link {
                 replies.push_back(r);
             }
         }
-        return true;
     }
     void setStandingRead(const std::vector<Bytes>&) override {}
     bool popReply(Bytes& m) override { if (replies.empty()) return false; m = replies.front(); replies.erase(replies.begin()); return true; }
@@ -387,7 +411,7 @@ void testController(const edtables::FxTables& fx) {
     for (auto& m : edproto::nrpn(0, 1, 31, 1)) wantMsgs.push_back(m);
     for (auto& m : edproto::nrpn(0, 1, 32, 0)) wantMsgs.push_back(m);
     CHECK(link.sent == wantMsgs);
-    // The OS now runs B with its first variation: its parameters, display only; B's pages.
+    // The OS now runs B with its first variation: its parameters (the values that play); B's pages.
     p[330] = 2; p[331] = 1; p[332] = 0;
     link.word(link.playing, 0x2CC + (194 - 60), 300);   // what plays: B slot 0 = 300ms
     tick(10);
@@ -402,18 +426,16 @@ void testController(const edtables::FxTables& fx) {
     tick();
     v = c.view();
     const int spread = refOfLabel(c, "SPREAD");
-    const auto* sp = spanOf(v, spread);
+    const edpages::Screen::Span* sp = spanOf(v, spread);
     CHECK(sp && v.screen.rowText(sp->row).find("300ms") != std::string::npos);   // the value that plays
-    CHECK(sp && !v.screen.underline[size_t(sp->row)][size_t(sp->col)]);          // display only: not underlined
-    const uint32_t notices = c.noticeSerial();
-    link.sent.clear();
-    c.command("drag_begin", std::to_string(spread));
-    c.command("drag", "5");
-    c.command("drag_end", "");
-    c.choose(spread, 10);
-    tick(5);
-    CHECK(link.writes() == 0 && !link.sentAny(0xB0));
-    CHECK(c.noticeSerial() > notices && c.notice() == "select PSEt to edit");
+    CHECK(sp && !v.screen.underline[size_t(sp->row)][size_t(sp->col)]);          // not yet: the rebuild is read first
+    tick(20);
+    c.command("page", "1");                          // (the page read after the rebuild hold)
+    c.command("page", "2");
+    tick(3);
+    v = c.view();
+    sp = spanOf(v, spread);
+    CHECK(sp && v.screen.underline[size_t(sp->row)][size_t(sp->col)]);           // editable: an edit copies it to PSEt
 
     // Back to A with PSEt (selected = stored): editable again; PSEt offered.
     p[330] = 2; p[331] = 0; p[332] = 0xFF;
@@ -476,17 +498,18 @@ void testController(const edtables::FxTables& fx) {
     CHECK(link.writes() == 1);                       // 200 ms: still waiting
     for (int i = 0; i < 8; ++i) c.tick(now += 20);
     CHECK(link.writes() == 2);                       // 360 ms
-    // Under an insert variation: display only.
+    // Under an insert variation the fields stay editable (an edit would copy the variation to PSEt first).
     p[332] = 0;
+    c.command("section", "SENDS");
+    c.command("section", "MOD");
     tick(20);
-    link.sent.clear();
-    c.choose(dest, 0);
-    tick(10);
-    CHECK(link.writes() == 0);
+    CHECK(!c.menu(dest).items.empty() || !c.menu(dest).groups.empty());
     p[332] = 0xFF;
+    c.command("section", "SENDS");
+    c.command("section", "MOD");
     tick(10);
 
-    // REVERB: the variation (r01) plays: its values, display only; PSEt offered (stored family 1 / sub 0).
+    // REVERB: the variation (r01) plays: its values (editable through a copy); PSEt offered (stored family 1 / sub 0).
     c.command("area", "REVERB");
     tick(3);
     v = c.view();
@@ -494,9 +517,10 @@ void testController(const edtables::FxTables& fx) {
     CHECK(v.screen.rowText(0).find("VARIATION") == 0 && v.screen.rowText(0).find("r01") != std::string::npos);
     CHECK(v.screen.rowText(1).find("SIZE") == 0 && v.screen.rowText(1).find("88") != std::string::npos);
     const int size = refOfLabel(c, "SIZE");
-    link.sent.clear();
-    c.choose(size, 10);
-    CHECK(link.writes() == 0);
+    {
+        const auto* ssp = spanOf(v, size);
+        CHECK(ssp && v.screen.underline[size_t(ssp->row)][size_t(ssp->col)]);
+    }
     vm = c.menu(refOfLabel(c, "VARIATION"));
     CHECK(!vm.items.empty() && vm.items[0].label == "PSEt" && vm.items[1].label == " r01 Hall" && vm.items.size() == 4);
     link.sent.clear();
@@ -617,6 +641,166 @@ void testRebuildHold(const edtables::FxTables& fx) {
     CHECK(modWrites(at) == 2 && at[1] >= at[0] + 350);
     std::printf("editor_fx_test: the rebuild hold (350 ms after the modulation write and NRPN LSB 30-33)\n");
 }
+// Copying a variation to PSEt (docs/editor/EFFECTS_EDITOR_SPEC.md write path 4b).
+void testVariationCopy(const edtables::FxTables& fx) {
+    FakeLink link;
+    editor::Controller c(link);
+    edtables::OsTables t;
+    t.ok = true;
+    t.fx = fx;
+    c.setTables(t);
+    Bytes& p = link.preset;
+    Bytes& run = link.playing;
+    p[330] = 2; p[331] = 0; p[332] = 1; p[333] = 1;  // A with u02, the reverb with r02
+    link.word(p, 174, 2); link.word(p, 176, 0); link.word(p, 294, 1); link.word(p, 296, 0);
+    link.word(p, 136, 50); link.word(p, 292, 33);
+    for (uint32_t o = 60; o < 330; ++o) run[0x2CC + o - 60] = uint8_t(o * 7 + 3);   // what plays differs everywhere
+    link.word(run, 0x2CC + 174 - 60, 2); link.word(run, 0x2CC + 176 - 60, 0);       // ... its areas' family / sub
+    link.word(run, 0x2CC + 294 - 60, 1); link.word(run, 0x2CC + 296 - 60, 0);
+    double now = 0;
+    link.clock = &now;
+    auto tick = [&](int n = 1) { for (int i = 0; i < n; ++i) c.tick(now += 10); };
+    c.setOpen(true);
+    c.command("area", "INSERT");
+    tick(3);
+    auto rawWrite = [](uint32_t off, const Bytes& data) {
+        return edproto::partialWrite({edproto::kRawMemory, 0, 0, 0, edproto::kEditBufferRam + off, uint32_t(data.size())}, data);
+    };
+    auto running = [&](uint32_t from, uint32_t to) { return Bytes(run.begin() + long(0x2CC + from - 60), run.begin() + long(0x2CC + to - 60)); };
+    auto count = [&](const Bytes& m) { int n = 0; for (const Bytes& x : link.sent) n += x == m; return n; };
+    auto anyRawAt = [&](uint32_t off) {
+        for (const Bytes& x : link.sent) {
+            edproto::Message w;
+            if (edproto::parse(x.data(), x.size(), w) && w.command == edproto::kPartialWrite && w.address.type == edproto::kRawMemory &&
+                w.address.offset == edproto::kEditBufferRam + off) return true;
+        }
+        return false;
+    };
+
+    // Fields editable under a variation keep their path and start no copy: the insert mix (word 292), a routing slot,
+    // the reverb mix.
+    link.sent.clear();
+    c.choose(refOfLabel(c, "ROUTE 13"), 20);
+    CHECK(link.sent.size() == 2 && link.sent[0] == rawWrite(292, {0, 20}) && link.sent[1] == edproto::fxParameter(0, 13, 20));
+    link.word(p, 292, 20);
+    tick(10);
+    c.command("section", "SENDS");
+    tick(3);
+    link.sent.clear();
+    c.choose(refOfLabel(c, "ROUTE 7"), 5);
+    CHECK(link.sent.size() == 2 && link.sent[1] == edproto::fxParameter(0, 7, 5));
+    tick(10);
+    c.command("area", "REVERB");
+    tick(3);
+    link.sent.clear();
+    c.choose(refOfLabel(c, "ROUTE 27"), 9);
+    CHECK(link.sent.size() == 2 && link.sent[1] == edproto::fxParameter(0, 27, 9));
+    tick(10);
+    CHECK(!anyRawAt(174) && !anyRawAt(294) && !link.sentAny(0xB0));
+
+    // A field the insert variation plays (A slot 1, GAIN): the first edit starts the copy, in order.
+    c.command("area", "INSERT");
+    c.command("page", "2");
+    tick(3);
+    const int gain = refOfLabel(c, "GAIN");
+    {
+        const editor::View v = c.view();
+        const auto* sp = spanOf(v, gain);
+        CHECK(sp && v.screen.underline[size_t(sp->row)][size_t(sp->col)]);      // editable (no hint needed)
+    }
+    link.sent.clear(); link.sentAt.clear();
+    link.storeRaw = true;                            // the OS stores the copy ...
+    link.deferPreset = true;                         // ... and the read-back waits until fed in
+    c.choose(gain, 15);
+    const std::vector<Bytes> writes = {rawWrite(174, running(174, 258)), rawWrite(64, running(64, 74)), rawWrite(118, running(118, 120)),
+                                       rawWrite(122, running(122, 124)), rawWrite(136, {0, 20})};
+    CHECK(link.sent.size() >= writes.size() && std::equal(writes.begin(), writes.end(), link.sent.begin()));
+    const std::vector<Bytes> reads = {edproto::partialRead({edproto::kPreset, 0, 0, 0, 174, 84}), edproto::partialRead({edproto::kPreset, 0, 0, 0, 64, 10}),
+                                      edproto::partialRead({edproto::kPreset, 0, 0, 0, 118, 2}), edproto::partialRead({edproto::kPreset, 0, 0, 0, 122, 2}),
+                                      edproto::partialRead({edproto::kPreset, 0, 0, 0, 136, 2})};
+    CHECK(link.sent.size() == writes.size() + reads.size() && std::equal(reads.begin(), reads.end(), link.sent.begin() + long(writes.size())));
+    // Edits during the copy are queued: nothing goes out, however long the read-back takes (within 1 s).
+    tick(10);
+    c.choose(gain, 16);
+    tick(10);
+    c.choose(gain, 17);
+    tick(10);
+    CHECK(!link.sentAny(0xB0) && !anyRawAt(196) && count(edproto::fxParameter(1, 1, 17)) == 0);
+    CHECK(count(writes[0]) == 1);                    // no rewrite yet
+    // The read-back equal to the copy: PSEt (NRPN LSB 32 = -1).
+    link.deferPreset = false;
+    link.answerDeferred();
+    tick();
+    const double tP = now;
+    std::vector<Bytes> pset = edproto::nrpn(0, 1, 32, -1);
+    CHECK(link.sent.size() >= pset.size() && std::equal(pset.begin(), pset.end(), link.sent.end() - long(pset.size())));
+    p[332] = 0xFF;                                   // the OS selected PSEt
+    // Then nothing for 350 ms, then only the latest edit, raw write first, then its effect message.
+    while (now < tP + 340) tick();
+    CHECK(!anyRawAt(196) && count(edproto::fxParameter(1, 1, 17)) == 0);
+    while (now < tP + 420) tick();
+    size_t raw = link.sent.size(), msg = link.sent.size();
+    for (size_t i = 0; i < link.sent.size(); ++i) {
+        if (link.sent[i] == rawWrite(196, {0, 17})) raw = i;
+        if (link.sent[i] == edproto::fxParameter(1, 1, 17)) msg = i;
+    }
+    CHECK(raw < msg && msg < link.sent.size() && link.sentAt[raw] >= tP + 350);
+    CHECK(count(edproto::fxParameter(1, 1, 15)) == 0 && count(edproto::fxParameter(1, 1, 16)) == 0);
+    for (size_t i = 0; i < link.sent.size(); ++i)    // no effect message at all during the hold
+        CHECK(!(link.sent[i].size() == 14 && link.sent[i][2] == 0x7F && link.sentAt[i] < tP + 350));
+    CHECK(count(writes[0]) == 1);
+    tick(30);
+    c.command("page", "1");
+    tick(3);
+    CHECK(c.view().screen.rowText(0).find("VARIATION PSEt") != std::string::npos);
+    // A modulation edit under the variation: the copy, PSEt, the hold, then the block built from what plays.
+    p[332] = 1;
+    c.command("section", "MOD");
+    tick(5);
+    link.sent.clear(); link.sentAt.clear();
+    link.deferPreset = true;
+    c.choose(refOfLabel(c, "MOD SOURCE"), 2);
+    CHECK(link.sent.size() == 10 && std::equal(writes.begin(), writes.begin() + 4, link.sent.begin()));
+    tick(5);
+    link.deferPreset = false;
+    link.answerDeferred();
+    tick();
+    const double tM = now;
+    pset = edproto::nrpn(0, 1, 32, -1);
+    CHECK(link.sent.size() >= pset.size() && std::equal(pset.begin(), pset.end(), link.sent.end() - long(pset.size())));
+    p[332] = 0xFF;
+    while (now < tM + 420) tick();
+    Bytes blk = running(64, 74);
+    blk[0] = 2;
+    const Bytes modWrite = edproto::partialWrite({edproto::kPreset, 0, 0, 0, 64, 10}, blk);
+    CHECK(count(modWrite) == 1);
+    for (size_t i = 0; i < link.sent.size(); ++i) if (link.sent[i] == modWrite) CHECK(link.sentAt[i] >= tM + 350);
+    tick(40);
+    link.storeRaw = false;
+
+    // The reverb: the OS never stores the copy: one rewrite after 1 s, then a notice and no PSEt; nothing more.
+    c.command("area", "REVERB");
+    tick(5);
+    const int size = refOfLabel(c, "SIZE");
+    link.sent.clear();
+    const uint32_t notices = c.noticeSerial();
+    c.choose(size, 10);
+    const Bytes rw = rawWrite(294, running(294, 330));
+    CHECK(link.sent.size() == 2 && link.sent[0] == rw && link.sent[1] == edproto::partialRead({edproto::kPreset, 0, 0, 0, 294, 36}));
+    for (int i = 0; i < 90; ++i) tick();             // 0.9 s: the read-back never matches, re-read, no rewrite yet
+    CHECK(count(rw) == 1 && count(edproto::partialRead({edproto::kPreset, 0, 0, 0, 294, 36})) > 1);
+    for (int i = 0; i < 30; ++i) tick();             // past 1 s
+    CHECK(count(rw) == 2);                           // one rewrite
+    for (int i = 0; i < 300; ++i) tick();            // 3 s more
+    CHECK(count(rw) == 2 && !link.sentAny(0xB0));    // no PSEt
+    CHECK(count(edproto::fxParameter(3, 0, 10)) == 0 && !anyRawAt(314));   // the queued edit was dropped
+    CHECK(c.noticeSerial() > notices && c.notice().find("could not be copied") != std::string::npos);
+    link.sent.clear();
+    c.choose(size, 11);                              // the slot stays locked: nothing is sent
+    tick(50);
+    CHECK(!anyRawAt(294) && !anyRawAt(314) && !link.sentAny(0xB0));
+    std::printf("editor_fx_test: a variation copied to PSEt (write path 4b): order, read-back, PSEt, hold, latest edit; a failed copy\n");
+}
 }  // namespace
 
 int main() {
@@ -626,6 +810,7 @@ int main() {
     testMessage();
     if (fx.ok) testController(fx);
     if (fx.ok) testRebuildHold(fx);
+    if (fx.ok) testVariationCopy(fx);
     std::printf("editor_fx_test: %s\n", failures ? "FAILED" : "passed");
     return failures ? 1 : 0;
 }
