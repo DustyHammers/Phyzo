@@ -57,6 +57,9 @@ public:
     explicit PhyzoEditor(PhyzoProcessor&);
     ~PhyzoEditor() override;
     void resized() override;
+    // Tests: the usable screen area the window must fit (F-32); empty: the display the window is on.
+    static juce::Rectangle<int> screenAreaForTest;
+    float maxScale() const;                          // the largest scale that fits the screen (50-200 %)
 
 private:
     juce::StringArray skinNames() const;             // discovered file skins
@@ -69,6 +72,8 @@ private:
     juce::Point<int> baseSize() const;               // 1795 x 848 for file skins (+ 394 with the editor unit), Built-in's own size
     void updateEditorUnit();                         // shows the editor unit if the project wants it and the skin has one
     void showMenu(const juce::MouseEvent&);
+    bool showValueMenu(int ref);                     // an editor value's list and revert; false if it has none
+    bool editorKey(const juce::KeyPress& k);         // the editor unit's focused value and typed entry
     void timerCallback() override;                   // missing-ROM message on file skins; saves the size
 
     PhyzoProcessor& proc;
@@ -82,4 +87,7 @@ private:
     juce::ComponentBoundsConstrainer constrainer_;
     juce::Rectangle<int> dragStartBounds_;
     bool debugger_ = false;
+    uint32_t editorNotice_ = 0;                      // the editor's last message shown (its serial)
+    juce::String editorNoticeText_;                  // its text while the banner may still show it
+    static constexpr int kEditorNoticeSeconds = 5;
 };

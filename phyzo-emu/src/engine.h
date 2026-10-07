@@ -17,6 +17,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include "editor/editor_proto.h"
 #include "midi_stream.h"
 #include "resampler.h"
 
@@ -48,6 +49,8 @@ public:
     int controlPosition(int cc) const { return cc >= 0 && cc < 26 ? positions_[size_t(cc)].load() : 0; }
     // A front-panel button by its panel id (raw): sends 81 raw (down) or 80 raw (up). Lock-free for the audio thread.
     void pressRaw(int raw, bool down);
+    // A panel button is down now (pressed and not yet released, or latched by the skin), by either call above.
+    bool anyButtonHeld() const;
 
     // LEDs as the OS last set them (panel messages 90 off, 91 on, 92 flash, 9D beat flash).
     enum LedMode : uint8_t { LedOff = 0, LedOn = 1, LedFlash = 2, LedBeat = 3 };
@@ -112,7 +115,7 @@ public:
 
     // ---- editor (docs/editor/EDITOR_SPEC.md, "MIDI coexistence"). Nothing here runs while the editor is closed.
     // Message thread. Closing drops what the editor still had queued; replies already requested are still kept out
-    // of the MIDI output when they arrive (or until kEditorReplyTimeoutSamples).
+    // of the MIDI output when they arrive (each request until kEditorReplyTimeoutSamples).
     void setEditorOpen(bool on);
     bool editorOpen() const { return editorOpen_.load(); }
     // A whole message for the OS's MIDI input (message thread). The audio thread queues it at a block's start, after
@@ -123,13 +126,16 @@ public:
     // behind every program change, bank select or SysEx (a dump) going into the OS from the host or the virtual port,
     // so the read sees the new preset. Empty: none.
     void setEditorStandingRead(const std::vector<std::vector<uint8_t>>& msgs);
-    // The OS's replies to the editor's requests (partial read 0x44, whole object 0x41 while a request is pending),
-    // taken out of the MIDI output and passed here instead (audio thread -> message thread). All other output passes.
+    // The OS's replies to the editor's requests (partial read 0x44 by the address it echoes, whole object 0x41 and the
+    // OS's error message 0x7F in order), taken out of the MIDI output and passed here instead (audio thread -> message thread). All other output passes.
     MessageRing& editorReplies() { return edReplies_; }
     // Counters for the editor's re-read triggers (any thread):
     uint64_t ledStateMessages() const { return ledStateMessages_.load(); }   // LED on/off/flash (never beat flash 9D)
     uint64_t presetTriggers() const { return presetTriggers_.load(); }       // program change, bank select, SysEx into the OS
     uint64_t panelGestures() const { return panelGestures_.load(); }         // panel knob moves and button presses
+    int lastPanelControl() const { return lastPanelControl_.load(); }        // the last panel control moved (0-25), -1: none
+    uint64_t panelControlMoves() const { return panelControlMoves_.load(); } // panel knob moves only (Follow on knobs)
+    uint64_t externalMidi() const { return externalMidi_.load(); }           // messages from the host and the virtual port
     uint64_t editorRequestsForTest() const { return editorRequests_; }
     static constexpr uint64_t kEditorReplyTimeoutSamples = 5 * 44100;
     static constexpr size_t kStandingReadBytes = 4096;
@@ -225,14 +231,26 @@ private:
     std::atomic<uint32_t> standingSeq_{0};
     std::array<std::atomic<uint8_t>, kStandingReadBytes> standing_{};   // [len hi, len lo, bytes]... then a 0 length
     std::array<uint8_t, kStandingReadBytes> standingCopy_{};            // audio thread
-    // Audio thread: who sent each request the OS has not answered yet (1 = the editor, 0 = the host or the virtual
-    // port), oldest first; the OS answers in order, so each reply goes to the sender of the oldest request.
-    std::array<uint8_t, 256> replyOwners_{};
-    size_t ownersHead_ = 0, ownersCount_ = 0;
-    void noteRequest(bool editor, uint64_t sample);
-    uint64_t lastRequestSample_ = 0;
+    // Audio thread: the requests the OS has not answered yet, oldest first, each with its sender (the editor, or the
+    // host or the virtual port). A partial-read reply (0x44) goes to the oldest request with the address it echoes;
+    // a whole-object reply (0x41) to the oldest whole read; the OS's error message (0x7F) answers the oldest request
+    // of any kind. Each request expires on its own after kEditorReplyTimeoutSamples (some are never answered).
+    struct PendingRequest {
+        uint64_t sample = 0;
+        bool editor = false;
+        uint8_t command = 0;                         // kPartialRead or kWholeRead
+        edproto::Address address;                    // partial read: the whole address; whole read: type and number
+    };
+    std::array<PendingRequest, 256> pending_{};
+    size_t pendingCount_ = 0;
+    void noteRequest(bool editor, const uint8_t* d, size_t n, uint64_t sample);
+    // The sender of the request this OS output answers (consumed), or -1 if it answers none: 1 the editor, 0 another.
+    int replyOwner(const uint8_t* d, size_t n);
     uint64_t editorRequests_ = 0;
     std::atomic<uint64_t> ledStateMessages_{0}, presetTriggers_{0}, panelGestures_{0};
+    std::atomic<int> lastPanelControl_{-1};
+    std::atomic<uint64_t> panelControlMoves_{0};
+    std::atomic<uint64_t> externalMidi_{0};          // counted only (the editor stops an arp edit when MIDI arrives)
 
     // status
     std::atomic<State> state_{State::NoRoms};
@@ -263,7 +281,9 @@ private:
 
     // panel buttons: ring (UI threads) -> audio thread, never merged
     static constexpr int kButtonRing = 1024;
-    std::array<std::atomic<uint32_t>, kButtonRing> buttons_{};   // (kind << 24) | payload
+    std::array<std::atomic<uint32_t>, kButtonRing> buttons_{};
+    std::array<std::atomic<uint32_t>, 4> heldRaw_{};  // the raw buttons down now (one bit each)
+    std::atomic<uint32_t> heldOs_{0};                 // pressButton's -/No and +/Yes down now   // (kind << 24) | payload
     std::mutex pushMtx_;                                         // producers: message thread and skin render thread
     std::array<std::atomic<uint16_t>, 26> positions_{};          // current control positions (for the UI)
     std::mutex controlsMtx_;

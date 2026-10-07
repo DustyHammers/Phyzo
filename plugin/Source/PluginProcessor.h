@@ -67,6 +67,8 @@ public:
     void setEditorWanted(bool on) { editorWanted_ = on; }
     void setEditorActive(bool on);
     uint32_t editorSerial() const { return editor_.serial(); }
+    // The editor unit's value lists and keys (message thread; the plugin window's right-click and keyboard).
+    editor::Controller& editorController() { return editor_; }
     void loadWaveNames(const juce::File& skinFolder);    // the optional wave-name file of the skin
     static constexpr const char* kWaveNamesFile = "waves.txt";
     struct Meter {                                   // CPU per block, written by the audio thread
@@ -129,9 +131,15 @@ private:
         uint64_t ledStateMessages() const override { return engine.ledStateMessages(); }
         uint64_t presetTriggers() const override { return engine.presetTriggers(); }
         uint64_t panelGestures() const override { return engine.panelGestures(); }
+        uint64_t panelControlMoves() const override { return engine.panelControlMoves(); }
+        int lastPanelControl() const override { return engine.lastPanelControl(); }
         int ledMode(int code) const override { return int(engine.led(code).mode); }
         std::array<char, 4> display() const override { return engine.display(); }
         bool running() const override { return engine.state() == Engine::State::Running; }
+        // The editor's arp edits: the panel's own buttons, as the skin presses them (81 / 80 raw).
+        void pressButton(int raw, bool down) override { engine.pressRaw(raw, down); }
+        uint64_t externalMidi() const override { return engine.externalMidi(); }
+        bool panelButtonHeld() const override { return engine.anyButtonHeld(); }
         Engine& engine;
     };
     class EditorPort : public skin::EditorPort {
@@ -142,6 +150,12 @@ private:
         void editorState(skin::EditorState& out) override;
         void editorCommand(const std::string& action, const std::string& text) override {
             proc.postToEditor([action, text](editor::Controller& c) { c.command(action, text); });
+        }
+        void editorFollowExtraLeds(int noise, int lfo, int filterKbd) override {
+            proc.postToEditor([noise, lfo, filterKbd](editor::Controller& c) { c.setFollowExtraLeds(noise, lfo, filterKbd); });
+        }
+        void editorKnobLabels(const std::array<std::string, 5>& labels) override {
+            proc.postToEditor([labels](editor::Controller& c) { c.setKnobLabels(labels); });
         }
         void editorFollowLeds(const std::array<int, 4>& s, const std::array<int, 2>& o, const std::array<int, 3>& e) override {
             proc.postToEditor([s, o, e](editor::Controller& c) { c.setFollowLeds(s, o, e); });

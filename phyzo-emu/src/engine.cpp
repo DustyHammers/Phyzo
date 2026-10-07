@@ -124,14 +124,23 @@ void Engine::push(uint32_t entry) {
 }
 
 void Engine::pressButton(int osButton, bool down) {
+    const uint32_t bit = 1u << (osButton & 31);
+    if (down) heldOs_.fetch_or(bit); else heldOs_.fetch_and(~bit);
     ++panelGestures_;
     push(uint32_t((osButton << 1) | (down ? 1 : 0)));
 }
 
 void Engine::pressRaw(int raw, bool down) {
     if (raw < 0 || raw > 0x7F) return;
+    const uint32_t bit = 1u << (raw & 31);
+    if (down) heldRaw_[size_t(raw >> 5)].fetch_or(bit); else heldRaw_[size_t(raw >> 5)].fetch_and(~bit);
     ++panelGestures_;
     push((2u << 24) | (down ? 0x100u : 0u) | uint32_t(raw));
+}
+
+bool Engine::anyButtonHeld() const {
+    for (const auto& w : heldRaw_) if (w.load()) return true;
+    return heldOs_.load() != 0;
 }
 
 Engine::LedInfo Engine::led(int code) const {
@@ -185,6 +194,8 @@ void Engine::setControl(int cc, int raw) {
     { std::lock_guard<std::mutex> lk(controlsMtx_); controls_[size_t(cc)] = uint16_t(raw); }
     positions_[size_t(cc)] = uint16_t(raw);
     pendingControl_[size_t(cc)].store(uint16_t(0x8000 | raw), std::memory_order_release);   // latest value wins
+    lastPanelControl_ = cc;                          // before the counters: a reader that sees the move sees the control
+    ++panelControlMoves_;
     ++panelGestures_;
 }
 
@@ -416,7 +427,8 @@ void Engine::process(float* left, float* right, int n, const MidiEvent* events, 
             size_t k = 0;
             vin_.pop([&](uint8_t b) { if (k < scratch_.size()) scratch_[k++] = b; });
             m.serial.queueRx(1, scratch_.data(), k, at);
-            if ((editor || ownersCount_) && edproto::isRequest(scratch_.data(), k)) noteRequest(false, m.samplesProduced());
+            externalMidi_.fetch_add(1, std::memory_order_relaxed);
+            if ((editor || pendingCount_) && edproto::isRequest(scratch_.data(), k)) noteRequest(false, scratch_.data(), k, m.samplesProduced());
             if (edproto::isPresetTrigger(scratch_.data(), k)) {
                 ++presetTriggers_;
                 if (editor) queueStandingRead(m, at);    // directly behind it: the read sees the new preset
@@ -438,14 +450,22 @@ void Engine::process(float* left, float* right, int n, const MidiEvent* events, 
             }
         }
     }
-    if (ownersCount_ && m.samplesProduced() - lastRequestSample_ > kEditorReplyTimeoutSamples) ownersCount_ = 0;   // unanswered
+    // Requests the OS never answered expire one by one (they are in the order they were sent).
+    size_t expired = 0;
+    while (expired < pendingCount_ && m.samplesProduced() - pending_[expired].sample > kEditorReplyTimeoutSamples) ++expired;
+    if (expired) {
+        std::copy(pending_.begin() + long(expired), pending_.begin() + long(pendingCount_), pending_.begin());
+        pendingCount_ -= expired;
+    }
     for (int i = 0; i < numEvents; ++i) {
         const double s = double(anchorSample_) + double(hostPos_ + events[i].offset) * r + resampler_.lookahead() + marginIn_;
         uint64_t at = uint64_t(s * cyclesPerSample);
         if (at < m.cycles()) { at = m.cycles(); ++lateMidi_; }
         midiTimes_[midiCount_++ % midiTimes_.size()] = at;
         m.serial.queueRx(1, events[i].data, size_t(events[i].size), at);
-        if ((editor || ownersCount_) && edproto::isRequest(events[i].data, size_t(events[i].size))) noteRequest(false, m.samplesProduced());
+        externalMidi_.fetch_add(1, std::memory_order_relaxed);
+        if ((editor || pendingCount_) && edproto::isRequest(events[i].data, size_t(events[i].size)))
+            noteRequest(false, events[i].data, size_t(events[i].size), m.samplesProduced());
         if (edproto::isPresetTrigger(events[i].data, size_t(events[i].size))) {
             ++presetTriggers_;
             if (editor) queueStandingRead(m, at);
@@ -536,11 +556,10 @@ void Engine::midiOut(Machine& m, int n) {
         if (!outParser_.feed(e.second)) continue;
         // A reply to the editor's request: to the editor, not to the host or the virtual port. Replies to other
         // senders' requests pass unchanged.
-        if (ownersCount_ && edproto::isReply(outParser_.data(), outParser_.size())) {
-            const bool mine = replyOwners_[ownersHead_] != 0;
-            ownersHead_ = (ownersHead_ + 1) % replyOwners_.size();
-            --ownersCount_;
-            if (mine) { edReplies_.push(outParser_.data(), outParser_.size()); continue; }
+        if (pendingCount_ && edproto::isReply(outParser_.data(), outParser_.size()) &&
+            replyOwner(outParser_.data(), outParser_.size()) == 1) {
+            edReplies_.push(outParser_.data(), outParser_.size());
+            continue;
         }
         const double h = (double(e.first) / cyclesPerSample - double(anchorSample_) + resampler_.lookahead()) / r - double(hostPos_);
         emitMidiOut(outParser_.data(), outParser_.size(), std::clamp(int(h), 0, n - 1));
@@ -615,16 +634,38 @@ void Engine::queueStandingRead(Machine& m, uint64_t at) {
 void Engine::queueEditor(Machine& m, const uint8_t* d, size_t n, uint64_t at) {
     m.serial.queueRx(1, d, n, at);
     if (edproto::isRequest(d, n)) {
-        noteRequest(true, m.samplesProduced());
+        noteRequest(true, d, n, m.samplesProduced());
         ++editorRequests_;
     }
 }
 
-void Engine::noteRequest(bool editor, uint64_t sample) {
-    lastRequestSample_ = sample;
-    if (ownersCount_ == replyOwners_.size()) { ownersHead_ = (ownersHead_ + 1) % replyOwners_.size(); --ownersCount_; }
-    replyOwners_[(ownersHead_ + ownersCount_) % replyOwners_.size()] = editor ? 1 : 0;
-    ++ownersCount_;
+void Engine::noteRequest(bool editor, const uint8_t* d, size_t n, uint64_t sample) {
+    if (pendingCount_ == pending_.size()) {          // full: the oldest gives way
+        std::copy(pending_.begin() + 1, pending_.end(), pending_.begin());
+        --pendingCount_;
+    }
+    PendingRequest& p = pending_[pendingCount_++];
+    p.sample = sample;
+    p.editor = editor;
+    p.command = d[5];
+    edproto::addressOf(d, n, p.address);
+}
+
+int Engine::replyOwner(const uint8_t* d, size_t n) {
+    size_t i = 0;
+    if (d[5] == edproto::kError) {                   // the oldest request of any kind
+    } else if (d[5] == edproto::kWholeReply) {       // in order: the oldest whole read
+        while (i < pendingCount_ && pending_[i].command != edproto::kWholeRead) ++i;
+    } else {                                         // the oldest partial read with the address the reply echoes
+        edproto::Address a;
+        if (!edproto::addressOf(d, n, a)) return -1;
+        while (i < pendingCount_ && !(pending_[i].command == edproto::kPartialRead && pending_[i].address == a)) ++i;
+    }
+    if (i >= pendingCount_) return -1;
+    const int owner = pending_[i].editor ? 1 : 0;
+    std::copy(pending_.begin() + long(i) + 1, pending_.begin() + long(pendingCount_), pending_.begin() + long(i));
+    --pendingCount_;
+    return owner;
 }
 
 // ------------------------------------------------------------------ tests

@@ -6,7 +6,10 @@
 //    row;
 //  - stage table: envelope fields named "... Time (n)" / "... Level (n)": stages across, time and level down;
 //  - code grid: the OS's 4-character codes with their values, four per row;
-//  - name list: names (e.g. presets), two per row, 8 per view.
+//  - name list: names (e.g. presets), two per row, 8 per view;
+//  - fixed columns: each item at its own column, the value after its name (the sound-slot table).
+// Every value's cells are a span carrying the item's reference (for clicks and focus); names in a name list are
+// spans to pick from (not underlined).
 // Value cells are underlined from their first to their last character; names never are.
 #pragma once
 #include <algorithm>
@@ -24,7 +27,7 @@ struct Screen {
     std::array<std::array<char, kCols>, kRows> chars;
     std::array<std::array<bool, kCols>, kRows> underline{};
     std::array<std::array<bool, kCols>, kRows> dot{};
-    struct Span { int row, col, len, ref; };         // a value's cells, and the item's reference
+    struct Span { int row, col, len, ref; bool pick = false; };   // a value's (or a name to pick's) cells and reference
     std::vector<Span> values;
     Screen() { for (auto& r : chars) r.fill(' '); }
     std::string rowText(int r) const { return std::string(chars[size_t(r)].begin(), chars[size_t(r)].end()); }
@@ -35,14 +38,15 @@ struct Item {
     int ref = -1;                                    // the caller's reference (e.g. field index); -1: name only
     int width = 0;                                   // cells reserved for the value (its widest form), so the layout
                                                      // does not move when the value changes; 0: the value's length
+    int col = -1;                                    // fixed-column rows: the item's column
     size_t room() const { return std::max(value.size(), size_t(width < 0 ? 0 : width)); }
 };
 
-enum class RowKind { Pair, Full, Stage, Grid, Names };
+enum class RowKind { Pair, Full, Stage, Grid, Names, Fixed };
 struct Row {
     RowKind kind = RowKind::Pair;
     std::vector<Item> items;                         // Pair: 1-2, Full: 1, Stage: label item (value empty) + stages,
-    std::string label;                               // Grid: up to 4, Names: up to 2
+    std::string label;                               // Grid: up to 4, Names: up to 2, Fixed: any (each at its col)
 };
 using Page = std::vector<Row>;                       // at most kRows rows
 

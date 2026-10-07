@@ -200,6 +200,13 @@ void VfdRowElement::ensureCells() {
     }
 }
 
+int VfdRowElement::cellAt(Rml::Element* e) const {
+    for (; e && e != this; e = e->GetParentNode())
+        if (e->GetParentNode() == this)
+            for (size_t c = 0; c < cells_.size(); ++c) if (cells_[c] == e) return int(c);
+    return -1;
+}
+
 void VfdRowElement::setRow(const std::string& text, const std::array<bool, 50>& underline, const std::array<bool, 50>& dot,
                            int focusCol, int focusLen, bool blinkOff) {
     ensureCells();

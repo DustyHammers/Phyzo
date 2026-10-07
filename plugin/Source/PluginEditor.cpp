@@ -290,6 +290,16 @@ static juce::String romMessage(const PhyzoProcessor& proc) {
 
 void PhyzoEditor::timerCallback() {
     if (rml_) rml_->setPersistentMessage(romMessage(proc));
+    // The editor unit's messages (e.g. why an arp setting was not changed), in the skin's message banner for a few
+    // seconds; the next edit clears it (only if the banner still shows it, never another message).
+    const editor::Controller& ec = proc.editorController();
+    if (ec.noticeSerial() != editorNotice_) {
+        editorNotice_ = ec.noticeSerial();
+        const juce::String text = juce::String::fromUTF8(ec.notice().c_str());
+        if (rml_ && text.isNotEmpty() && editorShown_) { rml_->showMessage(text, kEditorNoticeSeconds); editorNoticeText_ = text; }
+        else if (rml_ && text.isEmpty() && editorNoticeText_.isNotEmpty() && rml_->message() == editorNoticeText_) rml_->showMessage({});
+        if (text.isEmpty()) editorNoticeText_.clear();
+    }
     if (scaleDirty_) { scaleDirty_ = false; SkinSettings::setScale(scale_); }   // not on every drag step
 }
 
@@ -320,6 +330,8 @@ void PhyzoEditor::showSkin(const juce::String& name, const juce::String& notice)
         rml_ = std::make_unique<RmlSkinComponent>(proc);
         rml_->onRightClick = [this](const juce::MouseEvent& e) { showMenu(e); };
         rml_->onCornerResize = [this](int phase, juce::Point<int> d) { cornerResize(phase, d); };
+        rml_->onEditorValueMenu = [this](int ref) { return showValueMenu(ref); };
+        rml_->onEditorKey = [this](const juce::KeyPress& k) { return editorKey(k); };
         addAndMakeVisible(*rml_);
     }
     current_ = name;
@@ -392,16 +404,36 @@ void PhyzoEditor::updateEditorUnit() {
     }
 }
 
-// Resizable by the corner (or the host), locked to the skin's aspect ratio, 50-200 % of its 100 % size (winscale).
+juce::Rectangle<int> PhyzoEditor::screenAreaForTest;
+
+// The usable area of the display the window is on (F-32), less room for the host's window frame.
+float PhyzoEditor::maxScale() const {
+    juce::Rectangle<int> area = screenAreaForTest;
+    if (area.isEmpty()) {
+        const juce::Displays& displays = juce::Desktop::getInstance().getDisplays();
+        const juce::Displays::Display* d = getPeer() != nullptr || getParentComponent() != nullptr
+                                           ? displays.getDisplayForRect(getScreenBounds()) : nullptr;
+        if (d == nullptr) d = displays.getPrimaryDisplay();
+        if (d == nullptr) return winscale::kMax;
+        area = d->userArea;
+    }
+    const auto base = baseSize();
+    return winscale::fitScale(area.getWidth(), area.getHeight(), base.x, base.y, rml_ != nullptr);
+}
+
+// Resizable by the corner (or the host), locked to the skin's aspect ratio, 50-200 % of its 100 % size (winscale), and
+// never larger than the screen (F-32): a size that does not fit steps down to the largest Zoom step that does.
 void PhyzoEditor::applyScale(float scale) {
-    scale_ = winscale::clamp(scale);
+    const float limit = maxScale();
+    scale_ = winscale::fitted(scale, limit);
     const auto base = baseSize();
     const bool file = rml_ != nullptr;
     const int w = winscale::windowLength(base.x, scale_, file), h = winscale::windowLength(base.y, scale_, file);
     // The ratio of the rounded size itself, so a window system that applies the constrainer (macOS) keeps it exactly.
     constrainer_.setFixedAspectRatio(double(w) / double(h));
+    const float most = std::max(scale_, std::min(winscale::kMax, limit));
     constrainer_.setSizeLimits(winscale::windowLength(base.x, winscale::kMin, file), winscale::windowLength(base.y, winscale::kMin, file),
-                               winscale::windowLength(base.x, winscale::kMax, file), winscale::windowLength(base.y, winscale::kMax, file));
+                               winscale::windowLength(base.x, most, file), winscale::windowLength(base.y, most, file));
     applying_ = true;
     setSize(w, h);
     applying_ = false;
@@ -429,6 +461,57 @@ void PhyzoEditor::resized() {
     }
 }
 
+// Right-click on an editor value: the OS's value or name list (long lists in groups) and revert.
+bool PhyzoEditor::showValueMenu(int ref) {
+    editor::Controller& c = proc.editorController();
+    const editor::Menu m = c.menu(ref);
+    if (m.items.empty() && m.groups.empty() && !m.revert) return false;
+    c.command("focus", std::to_string(ref));
+    juce::PopupMenu menu;
+    auto add = [this, ref](juce::PopupMenu& to, const editor::Choice& ch) {
+        to.addItem(juce::String::fromUTF8(ch.label.c_str()), true, ch.current,
+                   [this, ref, v = ch.value] { proc.editorController().choose(ref, v); });
+    };
+    for (const editor::Choice& ch : m.items) add(menu, ch);
+    for (const auto& g : m.groups) {
+        juce::PopupMenu sub;
+        bool current = false;
+        for (const editor::Choice& ch : g.second) { add(sub, ch); current = current || ch.current; }
+        menu.addSubMenu(juce::String::fromUTF8(g.first.c_str()), sub, true, nullptr, current);
+    }
+    if (m.revert) {
+        if (menu.getNumItems() > 0) menu.addSeparator();
+        menu.addItem("Revert to " + juce::String::fromUTF8(m.revertLabel.c_str()), [this, ref] { proc.editorController().revert(ref); });
+    }
+    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition());
+    return true;
+}
+
+// Keys for the editor unit: arrows move the focus, +/- step the focused value, Enter starts typed entry; while typing,
+// characters, Backspace, Enter (send) and Esc (cancel).
+bool PhyzoEditor::editorKey(const juce::KeyPress& k) {
+    if (!editorShown_) return false;
+    editor::Controller& c = proc.editorController();
+    const int code = k.getKeyCode();
+    std::string name;
+    if (code == juce::KeyPress::leftKey) name = "left";
+    else if (code == juce::KeyPress::rightKey) name = "right";
+    else if (code == juce::KeyPress::upKey) name = "up";
+    else if (code == juce::KeyPress::downKey) name = "down";
+    else if (code == juce::KeyPress::returnKey) name = "enter";
+    else if (code == juce::KeyPress::escapeKey) name = "escape";
+    else if (code == juce::KeyPress::backspaceKey) name = "backspace";
+    else {
+        const juce::juce_wchar ch = k.getTextCharacter();
+        if (ch < 0x20 || ch >= 0x7F) return false;
+        if (c.view().typing) name = std::string(1, char(ch));
+        else if (ch == '+' || ch == '=') name = "plus";
+        else if (ch == '-') name = "minus";
+        else return false;
+    }
+    return c.key(name);
+}
+
 void PhyzoEditor::showMenu(const juce::MouseEvent&) {
     const juce::StringArray names = skinNames();
     const bool fileSkin = rml_ != nullptr;
@@ -439,8 +522,9 @@ void PhyzoEditor::showMenu(const juce::MouseEvent&) {
     });
     for (const juce::String& n : names)
         skins.addItem(n, true, current_ == n, [this, n] { SkinSettings::setSkin(n); showSkin(n); });
+    const float limit = maxScale();                  // sizes that would not fit the screen are greyed out (F-32)
     for (int z : winscale::kSteps)
-        zoom.addItem(juce::String(winscale::stepLabel(z, fileSkin)), true, winscale::isStep(scale_, z), [this, z] {
+        zoom.addItem(juce::String(winscale::stepLabel(z, fileSkin)), winscale::stepFits(z, limit), winscale::isStep(scale_, z), [this, z] {
             applyScale(winscale::stepScale(z));
             scaleDirty_ = false;
             SkinSettings::setScale(scale_);

@@ -282,7 +282,20 @@ void RmlSkinComponent::mouseDrag(const juce::MouseEvent& e) {
 void RmlSkinComponent::mouseDown(const juce::MouseEvent& e) {
     const int bannerBottom = (persistent_.isNotEmpty() ? 64 : 0) + (message_.isNotEmpty() ? 64 : 0);
     if (message_.isNotEmpty() && e.position.y < bannerBottom && e.position.y >= bannerBottom - 64) { showMessage({}); return; }   // click hides it
-    if (e.mods.isPopupMenu()) { if (onRightClick) onRightClick(e); return; }      // right-click never presses
+    if (e.mods.isPopupMenu()) {                                                   // right-click never presses
+        if (!editorVisible_.load() || !onEditorValueMenu) { if (onRightClick) onRightClick(e); return; }
+        // On the editor unit: ask the view (GL thread) which value is under the mouse, then show its list or the menu.
+        const int x = toPx(e.position.x), y = toPx(e.position.y);
+        post([this, x, y, sp = juce::Component::SafePointer<RmlSkinComponent>(this), ev = e] {
+            const int ref = view_->editorValueAt(x, y);
+            juce::MessageManager::callAsync([sp, ref, ev] {
+                if (!sp) return;
+                if (ref >= 0 && sp->onEditorValueMenu && sp->onEditorValueMenu(ref)) return;
+                if (sp->onRightClick) sp->onRightClick(ev);
+            });
+        });
+        return;
+    }
     if (onCornerResize && e.x >= getWidth() - kCornerSize && e.y >= getHeight() - kCornerSize) {
         cornerDrag_ = true;
         cornerStart_ = e.getScreenPosition();
@@ -292,7 +305,8 @@ void RmlSkinComponent::mouseDown(const juce::MouseEvent& e) {
     grabKeyboardFocus();
     const int x = toPx(e.position.x), y = toPx(e.position.y), m = mods(e.mods);
     const int button = e.mods.isMiddleButtonDown() ? 2 : 0;
-    post([this, x, y, m, button] { view_->mouseMove(x, y, m); view_->mouseDown(button, m); });
+    const int clicks = e.getNumberOfClicks();       // 2: the second press of a double-click (typed entry on a value)
+    post([this, x, y, m, button, clicks] { view_->mouseMove(x, y, m); view_->mouseDown(button, m, clicks); });
 }
 
 void RmlSkinComponent::mouseUp(const juce::MouseEvent& e) {
@@ -313,6 +327,7 @@ void RmlSkinComponent::mouseWheelMove(const juce::MouseEvent& e, const juce::Mou
 
 bool RmlSkinComponent::keyPressed(const juce::KeyPress& k) {
     if (k.getKeyCode() == juce::KeyPress::F5Key) { reload(); return true; }
+    if (editorVisible_.load() && onEditorKey && onEditorKey(k)) return true;
     if (k == juce::KeyPress::escapeKey) { post([this] { view_->releaseHeldButtons(); }); return true; }
     return false;
 }

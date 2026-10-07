@@ -41,7 +41,7 @@ padding: skip them. Each record:
 |---|---|
 | 0 | record length in bytes, including everything below |
 | 1 | header flags: 0x01 or 0x03 seen everywhere; 0x80 additionally on a few fields (meaning not decoded, see §1.3) |
-| 2–3 | **value type**: 0 unsigned byte; 1 signed byte; 2 offset byte (stored = shown + 64; added after the PR #17 review); 3 bit field (min = width << 8 \| bit number, max = 1 for flags: **Verified**); 4 multi-byte value (the 4-byte wave ID; min 0, max −1); 5 small unsigned (one oscillator field, 0–15); 6 signed byte with a built-in formatter; 7 signed byte where −1 is the list's first entry ("use the program's value") — **Derived** |
+| 2–3 | **value type**: 0 unsigned byte; 1 signed byte (two's complement); **2 offset byte: stored value = shown value + 64 (64 = 0); used by the sound-settings table, Verified 2026-10-06 (every type-2 field holds 0x40 on the Template)**; 3 bit field (min = width << 8 \| bit number, max = 1 for flags: **Verified**); 4 multi-byte value (the 4-byte wave ID; min 0, max −1); 5 small unsigned (one oscillator field, 0–15); 6 signed byte with a built-in formatter; 7 signed byte where −1 is the list's first entry ("use the program's value") — **Derived** |
 | 4–5 | minimum, signed 16-bit |
 | 6–7 | maximum, signed 16-bit |
 | 8 … end | sub-records, each starting with its own length byte, then a kind byte |

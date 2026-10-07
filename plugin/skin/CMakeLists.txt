@@ -78,4 +78,14 @@ if(PROJECT_IS_TOP_LEVEL)
   target_link_libraries(skin_test PRIVATE phyzo_skin)
   target_compile_definitions(skin_test PRIVATE PHYZO_TEST_SKINS="${CMAKE_CURRENT_SOURCE_DIR}/tests/skins")
   add_test(NAME skin COMMAND skin_test)
+  # The editor unit end to end: the skin runtime with the editor controller behind it (no ROMs, no JUCE).
+  set(PHYZO_EDITOR_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../../phyzo-emu/src")
+  add_executable(skin_editor_test tests/skin_editor_test.cpp
+    ${PHYZO_EDITOR_SRC}/editor/editor_proto.cpp ${PHYZO_EDITOR_SRC}/editor/editor_tables.cpp
+    ${PHYZO_EDITOR_SRC}/editor/editor_pages.cpp ${PHYZO_EDITOR_SRC}/editor/editor_fields.cpp
+    ${PHYZO_EDITOR_SRC}/editor/editor_controller.cpp)
+  target_include_directories(skin_editor_test PRIVATE ${PHYZO_EDITOR_SRC})
+  target_link_libraries(skin_editor_test PRIVATE phyzo_skin)
+  target_compile_definitions(skin_editor_test PRIVATE PHYZO_TEST_SKINS="${CMAKE_CURRENT_SOURCE_DIR}/tests/skins")
+  add_test(NAME skin_editor COMMAND skin_editor_test)
 endif()

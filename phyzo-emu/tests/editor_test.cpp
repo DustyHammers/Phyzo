@@ -149,6 +149,14 @@ void testTables() {
     // 0x11 copies one character from the same position of the previous entry: "Center" -> "C" + "1", then "C" + "2".
     CHECK((t.lists[1].entries == std::vector<std::string>{"L2", "L1", "Center", "C1", "C2"}) && t.lists[1].hasFirst && t.lists[1].first == -2);
     CHECK((t.lists[2].entries == std::vector<std::string>{"One more", "One more", "X"}));
+    {   // a list with no terminator, followed directly by the next list's 0x80 start marker: it ends there
+        ImageBuilder lb;
+        const uint32_t a = lb.bytes({0x80, 'O', 'f', 'f', 0x0D, 'd', 'P', 'r', 'S', 0x80, 0x05, 0x00, 0x00, ' ', ' ', 'O', 'n', 0x00});
+        CHECK((decodeList(lb.img, a).entries == std::vector<std::string>{"Off", "dPrS"}));
+        CHECK((decodeList(lb.img, a + 9).entries == std::vector<std::string>{"  On"}) && decodeList(lb.img, a + 9).hasFirst);
+        const uint32_t e = lb.bytes({0x80, 'A', 0x0D, 'B', 0x0D, 0x80, 'C', 0x00});   // after a separator: no empty entry
+        CHECK((decodeList(lb.img, e).entries == std::vector<std::string>{"A", "B"}));
+    }
 
     // Hidden names
     CHECK(isHiddenName("SPARE 3") && isHiddenName("Wave Class") && isHiddenName("WaveChecksum") && isHiddenName("Use Layer") &&
@@ -200,6 +208,30 @@ void testTables() {
         f.display = Display::List; f.listIndex = 0;
         CHECK(rawValue(f, b, 3, 0, v) && formatValue(f, lt, v) == "Center");
         CHECK(rawValue(f, b + 2, 1, 0, v) && formatValue(f, lt, v) == "L64");
+    }
+    {   // value type 3: the record's min is mask << 8 | bit; a flag (mask 1) and one field with mask 0x0F and a list at 8
+        edtables::Field f;
+        f.type = kBitField;
+        Table lt;
+        const uint8_t b[] = {144, 0x08};
+        int64_t v;
+        f.min = int16_t(1 << 8 | 3); f.max = 1;
+        CHECK(rawValue(f, b + 1, 1, 0, v) && v == 1);
+        CHECK(rawValue(f, b, 1, 0, v) && v == 0);
+        f.min = int16_t(0x0F04); f.max = int16_t(0x0809);
+        CHECK(rawValue(f, b, 1, 0, v) && v == 9);                               // (144 >> 4) & 0x0F
+        lt.lists.push_back({true, 8, {"NoteOff", "NoteOn"}});
+        f.display = Display::List; f.listIndex = 0;
+        CHECK_EQ(formatValue(f, lt, v), std::string("NoteOn"));
+    }
+    {   // number formats: 0x0001 shown 1-based; 0xC000 three digits, zero-padded, as stored (0-based)
+        edtables::Field f;
+        f.type = kUnsignedByte; f.min = 0; f.max = 127;
+        Table lt;
+        f.format = kFmtOneBased;
+        CHECK(formatValue(f, lt, 0) == "1" && formatValue(f, lt, 15) == "16");
+        f.format = kFmtThreeDigits;
+        CHECK(formatValue(f, lt, 0) == "000" && formatValue(f, lt, 7) == "007" && formatValue(f, lt, 127) == "127");
     }
     CHECK_EQ(noteName(60), std::string("C4"));
     CHECK_EQ(noteName(0), std::string("C-1"));
@@ -345,6 +377,7 @@ struct FakeLink : editor::Link {
     uint64_t ledStateMessages() const override { return leds; }
     uint64_t presetTriggers() const override { return triggers; }
     uint64_t panelGestures() const override { return gestures; }
+    bool panelButtonHeld() const override { return false; }
     int ledMode(int code) const override { auto it = ledModes.find(code); return it == ledModes.end() ? 0 : it->second; }
     std::array<char, 4> display() const override { return disp; }
     bool running() const override { return run; }
@@ -401,7 +434,7 @@ void testController() {
     CHECK(link.sent.empty() && !link.open);                                   // closed: nothing
     editor::View v = c.view();
     CHECK(v.area == "SYSTEM" && v.pages == 2 && v.page == 1 && !v.prev && v.next);
-    CHECK((v.areas == std::set<std::string>{"SYSTEM", "PRESETS", "SOUND", "OSC"}));
+    CHECK((v.areas == std::set<std::string>{"SYSTEM", "PRESETS", "COMMON", "SOUND", "OSC"}));   // no ARP: these tables have no arp texts
 
     // Open: the visible page is read once, and set as the standing read.
     c.setOpen(true);
@@ -526,10 +559,10 @@ void testController() {
     // The standing read is always the visible page's read.
     CHECK(link.standing == c.pageReadsForTest());
 
-    // Presets: names, 8 per view; a reply per name.
+    // Presets: names, 8 per view; a reply per name; and the current preset's name (the edit buffer's).
     link.sent.clear();
     c.command("area", "PRESETS");
-    CHECK(link.sent.size() == 8);
+    CHECK(link.sent.size() == 9 && link.sent[8] == edproto::partialRead({edproto::kPreset, 0, 0, 0, 8, 16}));
     CHECK(link.sent[3] == edproto::partialRead({edproto::kPreset, 0x103, 0, 0, 8, 16}));
     Bytes preset(24, ' ');
     const char* nm = "Big Pad 4       ";

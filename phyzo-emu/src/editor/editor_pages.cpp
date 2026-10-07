@@ -319,6 +319,16 @@ Screen render(const Page& page) {
                 const int col = int(k) * kHalf;
                 put(s, row, col, x.name, 3, false, false, -1);   // the number
                 put(s, row, col + 4, x.value, 16, false, false, -1);   // names are never underlined
+                if (x.ref >= 0) s.values.push_back({row, col, 4 + 16, x.ref, true});   // the number and name pick it
+            }
+            break;
+        case RowKind::Fixed:
+            for (const Item& x : r.items) {
+                if (x.col < 0 || x.col >= kCols) continue;
+                const std::string name = upper(trim(x.name));
+                put(s, row, x.col, name, int(name.size()), false, false, -1);
+                const int at = x.col + (name.empty() ? 0 : int(name.size()) + 1);
+                if (x.ref >= 0 && at < kCols) put(s, row, at, x.value, std::min(int(x.room()), kCols - at), false, true, x.ref);
             }
             break;
         }
@@ -338,10 +348,9 @@ bool rawValue(const edtables::Field& f, const uint8_t* obj, size_t objSize, uint
     case kSignedByte: case kSignedFormatted: case kSignedListMinusOne: v = int8_t(b); return true;
     case kOffsetByte: v = int64_t(b) - 64; return true;   // stored = shown + 64
     case kLong: v = int64_t(uint32_t(obj[at]) << 24 | uint32_t(obj[at + 1]) << 16 | uint32_t(obj[at + 2]) << 8 | obj[at + 3]); return true;
-    case kBitField: {
-        const int width = (uint16_t(f.min) >> 8) & 0xFF, bit = uint16_t(f.min) & 0xFF;
-        if (width >= 1 && width <= 8 && bit + width <= 8) { v = (b >> bit) & ((1 << width) - 1); return true; }
-        v = b;                                       // not a bit position (one oscillator field): the byte
+    case kBitField: {                                // the record's min: mask << 8 | bit (the mask is 1 for flags)
+        const int mask = (uint16_t(f.min) >> 8) & 0xFF, bit = uint16_t(f.min) & 0xFF;
+        v = bit <= 7 ? (b >> bit) & mask : b;
         return true;
     }
     default: v = f.min < 0 ? int64_t(int8_t(b)) : int64_t(b); return true;
@@ -379,7 +388,12 @@ std::string formatValue(const edtables::Field& f, const edtables::Table& t, int6
     if (f.display == Display::Number) {
         if (f.format == kFmtOffOn) return v ? "On" : "Off";
         if (f.format == kFmtNote) return noteName(int(v));
-        if (f.format == kFmtOneBased || f.format == kFmtOneBasedB) return std::to_string(v + 1);
+        if (f.format == kFmtOneBased) return std::to_string(v + 1);
+        if (f.format == kFmtThreeDigits) {
+            char b[24];
+            std::snprintf(b, sizeof b, "%03lld", static_cast<long long>(v));
+            return b;
+        }
     }
     if (sign && v > 0) return "+" + std::to_string(v);
     return std::to_string(v);

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <set>
 #include <string>
+#include <vector>
 
 namespace skin {
 
@@ -18,11 +19,17 @@ struct LedReport {
 
 // The editor unit (F-30; docs/editor/EDITOR_SPEC.md): what the skin's editor document shows and the legends it can
 // click. The plugin implements it over the editor controller.
+struct EditorSpan {                                  // a value's cells on the glass and its reference
+    int row = 0, col = 0, len = 0, ref = -1;
+    bool pick = false;                               // a name to pick (a preset), not a value
+};
 struct EditorState {
     static constexpr int kRows = 4, kCols = 50;
     std::array<std::string, kRows> rows;             // kCols characters each
     std::array<std::array<bool, kCols>, kRows> underline{}, dot{};
     int focusRow = -1, focusCol = 0, focusLen = 0;   // the focused value (blinks); row -1: none
+    bool typing = false;                             // typed entry in the focused value
+    std::vector<EditorSpan> spans;                   // where the values are (clicks, drags, right-click)
     std::string area, section;                       // legends of the current area and section
     int sound = 0, osc = 0;                          // 0-3, 0-1
     bool oscBoth = false;                            // both oscillators edited: O1 and O2 both lit
@@ -39,10 +46,15 @@ public:
     virtual bool editorOpen() = 0;
     virtual uint32_t editorSerial() = 0;
     virtual void editorState(EditorState& out) = 0;
-    // A legend was clicked (action and text as in docs/editor/EDITOR_PANEL_LAYOUT.json).
+    // A legend was clicked (action and text as in docs/editor/EDITOR_PANEL_LAYOUT.json), or a gesture on a value
+    // (text = the span's reference): "focus", "pick", "drag_begin", "drag" (text = steps), "drag_end", "type".
     virtual void editorCommand(const std::string& action, const std::string& text) = 0;
     // The LEDs Follow watches: Sound 1-4, OSC 1/2, envelope Pitch / Filter / Amp (-1: none).
     virtual void editorFollowLeds(const std::array<int, 4>& sound, const std::array<int, 2>& osc, const std::array<int, 3>& env) = 0;
+    // More LEDs for Follow on panel knobs: Noise, LFO, Filter Keyboard (-1: none).
+    virtual void editorFollowExtraLeds(int /*noise*/, int /*lfo*/, int /*filterKbd*/) {}
+    // The performance knobs' labels on the COMMON page (perf1-perf5, at most 4 characters each).
+    virtual void editorKnobLabels(const std::array<std::string, 5>& /*labels*/) {}
 };
 
 class PanelPort {

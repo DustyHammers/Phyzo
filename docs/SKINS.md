@@ -47,8 +47,17 @@ the geometry of the glass and every legend is in `docs/editor/EDITOR_PANEL_LAYOU
   when clicking it leads somewhere; style hover with `:hover`. A click goes to the editor.
 - Lua: `editor.isOpen()`, `editor.state()` (area, section, sound, osc, oscBoth (both oscillators edited), page, pages, follow, data, rows), `editor.click(action,
   value)`, `editor.onChange(fn)` (called when the glass or the legends change), and
-  `editor.followLeds{sound = {…4 codes}, osc = {…2}, env = {pitch, filter, amp}}`: the panel LEDs Follow watches (the rack
-  skin's: sound 0x0B, 0x13, 0x03, 0x07; osc 0x06, 0x15; env 0x11, 0x0C, 0x0E).
+  `editor.followLeds{sound = {…4 codes}, osc = {…2}, env = {pitch, filter, amp}, noise = c, lfo = c, filterKbd = c}`: the
+  panel LEDs Follow watches (the rack skin's: sound 0x0B, 0x13, 0x03, 0x07; osc 0x06, 0x15; env 0x11, 0x0C, 0x0E; noise
+  0x02, lfo 0x0F, filterKbd 0x08; the last three are optional and pick the page when Mod Speed or Filter Amount moves).
+- `editor.knobLabels{"P", "H", "Y", "Z", "O"}`: the five performance knobs' labels on the COMMON page's KNOBS section:
+  exactly 5 strings in perf1-perf5 order (perf1 = control 9, perf2 = 13, perf3 = 6, perf4 = 5, perf5 = 3), at most 4
+  characters each (anything else is a Lua error and changes nothing). Call it from the editor unit's `onload`, like
+  `editor.followLeds`. Without it the labels are PERF1-PERF5.
+- `editor.state()` also has `edited` (an edit since the preset loaded) and `typing` (typed entry in the focused value).
+- Editing needs nothing from the skin: the values on the `<vfdrow>` glass take the mouse (drag up/down, Shift fine;
+  double-click for typed entry; right-click for the value's list and revert; a click on a preset name loads it). The
+  mouse wheel never changes a value.
 - Wave names (optional): `waves.txt` in the skin folder, one line per wave: number, a tab, the name. The wave value then
   shows "number name"; without the file, the number only.
 

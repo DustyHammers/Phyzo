@@ -6,7 +6,9 @@
 //   panel.display() -> b0, b1, b2, b3              panel.onDisplay(fn(b0, b1, b2, b3))
 //   plugin.name, plugin.vendor, plugin.version
 //   editor.isOpen()   editor.state() -> table   editor.click(action, value)   editor.onChange(fn())
-//   editor.followLeds{sound = {c1, c2, c3, c4}, osc = {c1, c2}, env = {pitch, filter, amp}}
+//   editor.followLeds{sound = {c1, c2, c3, c4}, osc = {c1, c2}, env = {pitch, filter, amp}, noise = c, lfo = c,
+//                     filterKbd = c}
+//   editor.knobLabels{"P", "H", "Y", "Z", "O"}
 #include "skin_lua.h"
 #include <RmlUi/Core/Log.h>
 #include <RmlUi/Lua/IncludeLua.h>
@@ -72,6 +74,8 @@ int editorState(lua_State* L) {
     lua_pushinteger(L, s.pages); lua_setfield(L, -2, "pages");
     lua_pushboolean(L, s.follow); lua_setfield(L, -2, "follow");
     lua_pushboolean(L, s.data); lua_setfield(L, -2, "data");
+    lua_pushboolean(L, s.edited); lua_setfield(L, -2, "edited");
+    lua_pushboolean(L, s.typing); lua_setfield(L, -2, "typing");
     lua_newtable(L);
     for (int r = 0; r < EditorState::kRows; ++r) { lua_pushstring(L, s.rows[size_t(r)].c_str()); lua_rawseti(L, -2, r + 1); }
     lua_setfield(L, -2, "rows");
@@ -108,7 +112,37 @@ int editorFollowLeds(lua_State* L) {
     const auto sound = ledList<4>(L, "sound");
     const auto osc = ledList<2>(L, "osc");
     const auto env = ledList<3>(L, "env");
-    if (EditorPort* e = editorOf(L)) e->editorFollowLeds(sound, osc, env);
+    auto one = [&](const char* field) {              // noise / lfo / filterKbd: one code each (optional)
+        lua_getfield(L, 1, field);
+        int v = -1;
+        if (lua_isinteger(L, -1)) v = int(lua_tointeger(L, -1));
+        else if (!lua_isnil(L, -1)) luaL_error(L, "editor.followLeds: %s must be an LED code", field);
+        if (v < -1 || v > 255) luaL_error(L, "editor.followLeds: LED codes must be 0 to 255");
+        lua_pop(L, 1);
+        return v;
+    };
+    const int noise = one("noise"), lfo = one("lfo"), filterKbd = one("filterKbd");
+    if (EditorPort* e = editorOf(L)) {
+        e->editorFollowLeds(sound, osc, env);
+        e->editorFollowExtraLeds(noise, lfo, filterKbd);
+    }
+    return 0;
+}
+// editor.knobLabels{"P", "H", "Y", "Z", "O"}: exactly 5 strings (perf1-perf5), at most 4 characters each.
+int editorKnobLabels(lua_State* L) {
+    luaL_checktype(L, 1, LUA_TTABLE);
+    if (lua_rawlen(L, 1) != 5) return luaL_error(L, "editor.knobLabels: give exactly 5 labels (perf1 to perf5)");
+    std::array<std::string, 5> labels;
+    for (int i = 0; i < 5; ++i) {
+        lua_rawgeti(L, 1, i + 1);
+        if (lua_type(L, -1) != LUA_TSTRING) return luaL_error(L, "editor.knobLabels: label %d is not a string", i + 1);
+        size_t n = 0;
+        const char* s = lua_tolstring(L, -1, &n);
+        if (n > 4) return luaL_error(L, "editor.knobLabels: label %d is longer than 4 characters", i + 1);
+        labels[size_t(i)].assign(s, n);
+        lua_pop(L, 1);
+    }
+    if (EditorPort* e = editorOf(L)) e->editorKnobLabels(labels);
     return 0;
 }
 
@@ -138,7 +172,8 @@ void installLuaApi(SkinView& v) {
     lua_setglobal(L, "plugin");
 
     const luaL_Reg efns[] = {{"isOpen", editorIsOpen}, {"state", editorState}, {"click", editorClick},
-                             {"onChange", editorOnChange}, {"followLeds", editorFollowLeds}, {nullptr, nullptr}};
+                             {"onChange", editorOnChange}, {"followLeds", editorFollowLeds},
+                             {"knobLabels", editorKnobLabels}, {nullptr, nullptr}};
     lua_newtable(L);
     lua_pushlightuserdata(L, &v);
     luaL_setfuncs(L, efns, 1);

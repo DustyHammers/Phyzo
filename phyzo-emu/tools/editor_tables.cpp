@@ -48,7 +48,7 @@ void print(const edtables::Table& t, const char* which) {
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: editor_tables <OS image or update file> [oscillator|sound|common|system]\n");
+        std::fprintf(stderr, "usage: editor_tables <OS image or update file> [oscillator|sound|common|system|arp]\n");
         return 2;
     }
     OsImage os;
@@ -68,6 +68,23 @@ int main(int argc, char** argv) {
         const bool ok = edtables::readTable(os.bytes, t.desc, t.id, table, err);
         print(table, t.key);
         if (!ok) { std::printf("!! %s\n", err.c_str()); ++failed; }
+    }
+    if (only.empty() || only == "arp") {             // the arp page's texts (labels and value strings)
+        const edtables::ArpText a = edtables::readArpText(os.bytes);
+        std::printf("== arp texts%s\n", a.ok ? "" : " (!! not all readable)");
+        auto q = [](const std::string& s) { return "[" + s + "]"; };
+        std::printf("  on %s off %s hold %s centre %s low %s high %s duration %s limit %s feel %s touch %s\n", q(a.on).c_str(),
+                    q(a.off).c_str(), q(a.hold).c_str(), q(a.centre).c_str(), q(a.low).c_str(), q(a.high).c_str(),
+                    q(a.duration).c_str(), q(a.limit).c_str(), q(a.feel).c_str(), q(a.touch).c_str());
+        std::printf("  resolution code %s tempo format %s range format %s arp preset %s own settings %s preset format %s\n",
+                    q(a.resolutionCode).c_str(), q(a.tempoFmt).c_str(), q(a.rangeFmt).c_str(), q(a.presetCode).c_str(),
+                    q(a.ownSettings).c_str(), q(a.arpPresetFmt).c_str());
+        std::printf("  intervals");
+        for (const auto& s : a.intervals) std::printf(" %s", q(s).c_str());
+        std::printf("\n  resolutions");
+        for (const auto& s : a.resolution) std::printf(" %s", q(s).c_str());
+        std::printf("\n");
+        if (!a.ok) ++failed;
     }
     return failed ? 1 : 0;
 }

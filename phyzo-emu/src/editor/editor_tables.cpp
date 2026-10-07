@@ -74,8 +74,9 @@ ValueList decodeList(const std::vector<uint8_t>& image, uint32_t address) {
             prev = cur;
             cur.clear();
             if (c == 0x00) break;
-        } else if (c == 0x80) {
-            continue;
+        } else if (c == 0x80) {                      // the next list's start marker: this list ends (one OS list has
+            if (!cur.empty()) list.entries.push_back(cur);   // no terminator before it)
+            break;
         } else if (c == 0x10) {                      // the rest of the previous entry, then the entry ends
             if (cur.size() < prev.size()) cur += prev.substr(cur.size());
             list.entries.push_back(cur);
@@ -151,6 +152,42 @@ bool readTable(const std::vector<uint8_t>& image, uint32_t descriptor, const std
     return true;
 }
 
+ArpText readArpText(const std::vector<uint8_t>& image) {
+    Reader r{image};
+    ArpText t;
+    auto s = [&](uint32_t a) { return r.str(a, 16); };
+    namespace A = arpaddr;
+    t.tempoFmt = s(A::kTempoFmt); t.rangeFmt = s(A::kRangeFmt); t.resolutionCode = s(A::kResolutionCode);
+    t.on = s(A::kOn); t.off = s(A::kOff); t.hold = s(A::kHold); t.centre = s(A::kCentre); t.low = s(A::kLow);
+    t.high = s(A::kHigh); t.duration = s(A::kDuration); t.limit = s(A::kLimit); t.feel = s(A::kFeel); t.touch = s(A::kTouch);
+    t.presetCode = s(A::kPresetCode); t.ownSettings = s(A::kOwnSettings); t.arpPresetFmt = s(A::kArpPresetFmt);
+    for (size_t i = 0; i < 5; ++i) t.intervals[i] = s(A::kIntervals[i]);
+    for (size_t i = 0; i < 12; ++i) t.resolution[i] = s(r.u32(A::kResolutionNames + 4 * uint32_t(i)));
+    t.ok = r.ok;
+    return t;
+}
+
+std::string formatNumber(const std::string& fmt, int v) {
+    std::string out;
+    for (size_t i = 0; i < fmt.size(); ++i) {
+        if (fmt[i] != '%' || i + 1 >= fmt.size()) { out.push_back(fmt[i]); continue; }
+        size_t j = i + 1;
+        if (fmt[j] == '%') { out.push_back('%'); i = j; continue; }
+        const bool zero = j < fmt.size() && fmt[j] == '0';
+        int width = 0;
+        while (j < fmt.size() && std::isdigit(static_cast<unsigned char>(fmt[j])) && width < 16) width = width * 10 + (fmt[j++] - '0');
+        if (j < fmt.size() && fmt[j] == 'd') {
+            std::string n = std::to_string(v);
+            if (int(n.size()) < width) n.insert(0, size_t(width) - n.size(), zero ? '0' : ' ');
+            out += n;
+            i = j;
+        } else {
+            out.push_back(fmt[i]);
+        }
+    }
+    return out;
+}
+
 OsTables readAll(const std::vector<uint8_t>& image) {
     OsTables t;
     std::string err;
@@ -159,6 +196,7 @@ OsTables readAll(const std::vector<uint8_t>& image) {
            readTable(image, kSoundCommonTable, "sound common", t.soundCommon, err) &&
            readTable(image, kSystemTable, "system", t.system, err);
     t.error = err;
+    if (t.ok) t.arp = readArpText(image);
     return t;
 }
 

@@ -110,6 +110,7 @@ public:
     void setRow(const std::string& text, const std::array<bool, 50>& underline, const std::array<bool, 50>& dot,
                 int focusCol, int focusLen, bool blinkOff);
     char shownChar(int col) const { return col >= 0 && col < 50 ? shown_[size_t(col)] : 0; }
+    int cellAt(Rml::Element* e) const;               // the cell (0-49) holding `e`, -1 if none
 protected:
     void OnAttributeChange(const Rml::ElementAttributes& changed) override;
 private:

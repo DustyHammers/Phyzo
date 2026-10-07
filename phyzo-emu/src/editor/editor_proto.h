@@ -15,8 +15,10 @@ namespace edproto {
 constexpr uint8_t kManufacturer = 0x0F, kModel = 0x11, kVersion = 0x01;
 constexpr uint8_t kAnyDevice = 0x7F;
 // Commands
-constexpr uint8_t kWholeRead = 0x01, kPartialRead = 0x04, kPartialWrite = 0x05;
+constexpr uint8_t kWholeRead = 0x01, kWholeDump = 0x02, kPartialRead = 0x04, kPartialWrite = 0x05;
 constexpr uint8_t kWholeReply = 0x41, kPartialReply = 0x44;
+// The OS's error message (F0 0F 11 01 <device> 7F ... F7): its answer to a request it cannot serve.
+constexpr uint8_t kError = 0x7F;
 // Object types
 constexpr uint8_t kSystem = 0, kSound = 1, kPerformance = 2, kPreset = 7, kArpPreset = 8, kArpPattern = 9, kRawMemory = 0x7F;
 constexpr uint16_t kEditBuffer = 0x3FFF;             // performance edit buffer number
@@ -44,8 +46,17 @@ uint32_t get32(const uint8_t* p);
 std::vector<uint8_t> partialRead(const Address& a, uint8_t device = kAnyDevice);
 std::vector<uint8_t> partialWrite(const Address& a, const std::vector<uint8_t>& data, uint8_t device = kAnyDevice);
 std::vector<uint8_t> wholeRead(uint8_t type, uint16_t number, uint8_t device = kAnyDevice);
+// A whole object into the OS (command 02; the layout of the OS's own 0x41 reply, docs/editor/EDITOR_ROUND2.md):
+// F0 0F 11 01 <device> 02 <type> <number:14> <length:32> <data words> <checksum:14> F7. The data is the object as
+// big-endian 32-bit words, each encoded as a 32-bit number (the last word padded with zeros); the checksum is the sum
+// of the encoded data bytes & 0x3FFF.
+std::vector<uint8_t> wholeDump(uint8_t type, uint16_t number, const std::vector<uint8_t>& object, uint8_t device = kAnyDevice);
+// The checksum of a whole-object message's encoded data bytes (`n` bytes from `p`).
+uint32_t dumpChecksum(const uint8_t* p, size_t n);
+// A program change on `channel` (presets 0-63).
+std::vector<uint8_t> programChange(int channel, int program);
 // NRPN: Bn 63 msb, Bn 62 lsb, Bn 06 (value >> 7), Bn 26 (value & 7F), then the null Bn 63 7F, Bn 62 7F. The OS
-// applies the value when CC 38 arrives; the value is 14 bits, sign-extended from bit 13.
+// applies the value when CC 38 arrives; the value is 14 bits, two's complement (sign-extended from bit 13).
 std::vector<std::vector<uint8_t>> nrpn(int channel, int msb, int lsb, int value);
 // NRPN numbers: MSB 1 = preset-common parameter `param`; oscillator parameters MSB 2 + sound*4 + osc*2 + (param>>7).
 void oscillatorNrpn(int sound, int osc, int param, int& msb, int& lsb);
@@ -58,12 +69,18 @@ struct Message {
     std::vector<uint8_t> data;
 };
 bool parse(const uint8_t* m, size_t n, Message& out);
+// A whole-object reply (command 0x41; also parses a dump, 02, for tests): type, number and the object's bytes. False if
+// the layout or the checksum does not match.
+bool parseWhole(const uint8_t* m, size_t n, uint8_t& type, uint16_t& number, std::vector<uint8_t>& object);
 
 // ---- classification (allocation-free; used by the audio thread)
 // F0 0F 11 01 <any device> <command>, F7-terminated.
 bool isOsSysex(const uint8_t* m, size_t n, uint8_t command);
-// A reply to an editor request: partial-read (0x44) or whole-object (0x41) reply.
+// An answer to a request: partial-read (0x44) or whole-object (0x41) reply, or the OS's error message (0x7F).
 bool isReply(const uint8_t* m, size_t n);
+// The address in a partial read (0x04) or its reply (0x44): type, number, sub-type, sub-number, offset, length; in a
+// whole read (0x01) or its reply (0x41): type and number (the rest 0). False if the message is too short.
+bool addressOf(const uint8_t* m, size_t n, Address& a);
 // A request that the OS answers (partial read 0x04, whole read 0x01).
 bool isRequest(const uint8_t* m, size_t n);
 // A message into the OS after which the preset may have changed: program change, bank select (CC 0 / CC 32), or any

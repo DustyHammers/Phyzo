@@ -67,7 +67,9 @@ owner step by step through anything they must do by hand on github.com or on the
   `PluginEditor.*` has the Built-in skin, the right-click menu, zoom and the fallback (rack, then Built-in).
   Skin authoring guide: `docs/SKINS.md`. The skin is a global setting; the window scale (`WindowScale.h`: 50-200 %; a file
   skin's 100 % is 3/4 of its 1795 x 848 dp body in points, 133 % is full size; Built-in's 100 % is its own size;
-  aspect locked, resized by our own corner drag) is saved globally and per project; neither is a parameter.
+  aspect locked, resized by our own corner drag, never larger than the screen's usable area (F-32): Zoom steps that
+  don't fit are greyed out and a saved size that doesn't fit steps down) is saved globally and per project; neither is
+  a parameter.
   Per-element knob positions and the window scale are project state (processor state version 5; version 3 sizes are
   on the old scale and are converted x 4/3 for file skins when an editor opens; version 5 adds the editor unit's
   open state).
@@ -76,7 +78,21 @@ owner step by step through anything they must do by hand on github.com or on the
   partial reads; `Engine` queues its messages whole at cable speed, puts the page read directly behind program changes,
   bank selects and dumps, and takes only the replies to its own requests out of the MIDI output. The main panel is
   never affected: no panel messages, no change to its selection; with the editor closed nothing is sent.
-  The skin side: `<name>-editor.rml`, `<vfdrow>`, `<legend>`, the Lua `editor` API (docs/SKINS.md).
+  Editing (docs/editor/EDITOR_ROUND2.md): a field is editable only if its write path was verified live (oscillator
+  NRPN, the wave ID by SysEx, sound settings / system partial writes with read-modify-write for bit fields, COMMON NRPN
+  MSB 1); everything else is display only. ARP settings change only through the panel's own buttons, as hands do
+  (docs/editor/ROUND2_REVIEW.md): the control's button steered by the OS's arp-control variable, then -/No / +/Yes,
+  each press only right after the OS's panel mode (0x0BE01A8B) read 0x0C (the arp menu) AND the arp-control variable
+  read the wanted control, else the edit stops without pressing (the variable keeps its value outside the arp menu;
+  there -/No / +/Yes step the main preset); any panel input or other MIDI during an edit stops it at once (nothing more
+  is pressed). Arp edits start only in panel mode 0x01 (normal) or 0x0C (arp menu); in any other mode nothing is pressed
+  and the user is told. A run begun in normal mode ends with the preset bank button (0x19) pressed once, only while the
+  mode reads 0x0C, back to 0x01 (in normal mode that button switches the bank); begun in the arp menu, it stays there.
+  Never a knob, never a write into the arp state, never a whole-preset dump (it stops a running arp). COMMON
+  and ARP fields (no OS table) are in `editor_fields.*`; ARP values come from the live arp state and the OS's arp
+  variables in RAM. Follow also jumps to the page of the panel knob last moved (`Engine::lastPanelControl`).
+  The skin side: `<name>-editor.rml`, `<vfdrow>` (values take drags, double-click, right-click), `<legend>`, the Lua
+  `editor` API with `editor.knobLabels` (docs/SKINS.md).
 - Real-time rules for `engine.*`: the audio thread never waits on other threads. `getState` asks the audio thread
   for a snapshot at a block boundary (`Machine::saveStateInto`, preallocated); panel controls go through a
   lock-free latest-value slot per cc, sent at most once per 10 ms each and only while the panel link keeps up;
