@@ -306,6 +306,8 @@ OsTables tables() {
     t.oscillator.fields[14] = mkField("Fine Tune", 0x20, kSignedByte, -64, 63);
     t.oscillator.fields[15] = mkField("PitchBend Enable", 0x22, kBitField, (1 << 8) | 0, 1);
     t.oscillator.fields[16] = mkField("Trigger Key", 0x23, kSmallUnsigned, 0, 15);   // value type 5: display only
+    t.oscillator.fields[17] = mkField("TriggerKey", 0x0E, kBitField, 0x0F04, 0x0809, 0, 0);   // mask 0x0F at bit 4
+    t.oscillator.lists.push_back({true, 8, {"NoteOff", "NoteOn"}});
     t.oscillator.fields[111] = mkField("Env3 Level (1)", 0x75, kSignedByte, -99, 99);
     for (size_t i = 0; i < t.oscillator.fields.size(); ++i) t.oscillator.fields[i].index = int(i);
     t.soundSettings.fields = {mkField("Volume", 4, kUnsignedByte, 0, 127), mkField("Semitone Shift", 8, kOffsetByte, -64, 63),
@@ -343,7 +345,7 @@ void testEditing() {
     c.command("area", "OSC");
     c.command("section", "FILTER");
     Bytes osc(0x100, 0);
-    osc[0x39] = 64; osc[0x3A] = 1; osc[0x3B] = 10; osc[0x20] = 0; osc[0x22] = 0xFF; osc[0x23] = 3;
+    osc[0x39] = 64; osc[0x3A] = 1; osc[0x3B] = 10; osc[0x20] = 0; osc[0x22] = 0xFF; osc[0x23] = 3; osc[0x0E] = 144;
     Bytes ram(232, 0);
     ram[4 * 6] = 0xAB; ram[4 * 6 + 1] = 0xCD; ram[4 * 6 + 3] = 0x07;          // wave 7
     ram[4 * 12] = 0x12; ram[4 * 12 + 3] = 0x34;                                 // wave 13
@@ -401,6 +403,16 @@ void testEditing() {
     tick(200);
     CHECK(!link.any(0xB0) && link.find(edproto::partialWrite({edproto::kSound, 0, 2, 0, 0x23, 1}, {6})) < 0);
     CHECK(c.menu(trig).items.empty() && c.menu(trig).groups.empty());
+    // A bit field with a mask other than 1: shown through its value list, display only.
+    const int trigMode = c.refForTest('o', 17);
+    CHECK(spanOf(c.view(), trigMode) && c.view().screen.rowText(spanOf(c.view(), trigMode)->row).find("NoteOn") != std::string::npos);
+    link.sent.clear();
+    c.command("drag_begin", std::to_string(trigMode));
+    c.command("drag", "-3");
+    c.command("drag_end", "");
+    c.choose(trigMode, 8);
+    tick(200);
+    CHECK(!link.any(0xB0) && !link.any(0xF0) && c.menu(trigMode).items.empty() && c.menu(trigMode).groups.empty());
     // Typed entry: Esc cancels (nothing sent).
     link.sent.clear();
     c.command("type", std::to_string(fine));

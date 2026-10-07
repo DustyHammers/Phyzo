@@ -92,7 +92,9 @@ bool parseNote(const std::string& s, int64_t& v) {
     return true;
 }
 
-uint8_t bitWidth(const edtables::Field& f) { return uint8_t((uint16_t(f.min) >> 8) & 0xFF); }
+// A bit field's record min: mask << 8 | bit. Only one-bit flags (mask 1) are edited; any other mask is display only.
+uint8_t bitMask(const edtables::Field& f) { return uint8_t((uint16_t(f.min) >> 8) & 0xFF); }
+uint8_t bitWidth(const edtables::Field& f) { return bitMask(f) == 1 ? 1 : 0; }
 uint8_t bitPos(const edtables::Field& f) { return uint8_t(uint16_t(f.min) & 0xFF); }
 bool bitFieldOk(const edtables::Field& f) {
     const int w = bitWidth(f), b = bitPos(f);

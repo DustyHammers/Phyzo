@@ -201,6 +201,21 @@ void testTables() {
         CHECK(rawValue(f, b, 3, 0, v) && formatValue(f, lt, v) == "Center");
         CHECK(rawValue(f, b + 2, 1, 0, v) && formatValue(f, lt, v) == "L64");
     }
+    {   // value type 3: the record's min is mask << 8 | bit; a flag (mask 1) and one field with mask 0x0F and a list at 8
+        edtables::Field f;
+        f.type = kBitField;
+        Table lt;
+        const uint8_t b[] = {144, 0x08};
+        int64_t v;
+        f.min = int16_t(1 << 8 | 3); f.max = 1;
+        CHECK(rawValue(f, b + 1, 1, 0, v) && v == 1);
+        CHECK(rawValue(f, b, 1, 0, v) && v == 0);
+        f.min = int16_t(0x0F04); f.max = int16_t(0x0809);
+        CHECK(rawValue(f, b, 1, 0, v) && v == 9);                               // (144 >> 4) & 0x0F
+        lt.lists.push_back({true, 8, {"NoteOff", "NoteOn"}});
+        f.display = Display::List; f.listIndex = 0;
+        CHECK_EQ(formatValue(f, lt, v), std::string("NoteOn"));
+    }
     {   // number formats: 0x0001 shown 1-based; 0xC000 three digits, zero-padded, as stored (0-based)
         edtables::Field f;
         f.type = kUnsignedByte; f.min = 0; f.max = 127;

@@ -348,10 +348,9 @@ bool rawValue(const edtables::Field& f, const uint8_t* obj, size_t objSize, uint
     case kSignedByte: case kSignedFormatted: case kSignedListMinusOne: v = int8_t(b); return true;
     case kOffsetByte: v = int64_t(b) - 64; return true;   // stored = shown + 64
     case kLong: v = int64_t(uint32_t(obj[at]) << 24 | uint32_t(obj[at + 1]) << 16 | uint32_t(obj[at + 2]) << 8 | obj[at + 3]); return true;
-    case kBitField: {
-        const int width = (uint16_t(f.min) >> 8) & 0xFF, bit = uint16_t(f.min) & 0xFF;
-        if (width >= 1 && width <= 8 && bit + width <= 8) { v = (b >> bit) & ((1 << width) - 1); return true; }
-        v = b;                                       // not a bit position (one oscillator field): the byte
+    case kBitField: {                                // the record's min: mask << 8 | bit (the mask is 1 for flags)
+        const int mask = (uint16_t(f.min) >> 8) & 0xFF, bit = uint16_t(f.min) & 0xFF;
+        v = bit <= 7 ? (b >> bit) & mask : b;
         return true;
     }
     default: v = f.min < 0 ? int64_t(int8_t(b)) : int64_t(b); return true;
