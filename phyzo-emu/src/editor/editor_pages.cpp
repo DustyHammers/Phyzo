@@ -389,7 +389,12 @@ std::string formatValue(const edtables::Field& f, const edtables::Table& t, int6
     if (f.display == Display::Number) {
         if (f.format == kFmtOffOn) return v ? "On" : "Off";
         if (f.format == kFmtNote) return noteName(int(v));
-        if (f.format == kFmtOneBased || f.format == kFmtOneBasedB) return std::to_string(v + 1);
+        if (f.format == kFmtOneBased) return std::to_string(v + 1);
+        if (f.format == kFmtThreeDigits) {
+            char b[24];
+            std::snprintf(b, sizeof b, "%03lld", static_cast<long long>(v));
+            return b;
+        }
     }
     if (sign && v > 0) return "+" + std::to_string(v);
     return std::to_string(v);

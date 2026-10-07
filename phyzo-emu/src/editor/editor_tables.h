@@ -27,8 +27,9 @@ enum ValueType : uint16_t {
 };
 // How a value is shown (the field record's sub-records)
 enum class Display { Number, List, Formatter };
-// Number format flags (kind 1 / kind 9 sub-records)
-constexpr uint16_t kFmtSigned = 0x2000, kFmtOffOn = 0x0002, kFmtNote = 0x0003, kFmtOneBased = 0x0001, kFmtOneBasedB = 0xC000;
+// Number format flags (kind 1 / kind 9 sub-records). 0x0001: shown 1-based. 0xC000: three digits, zero-padded, as
+// stored (0-based; the OS shows its system field id, stored 0, as "000").
+constexpr uint16_t kFmtSigned = 0x2000, kFmtOffOn = 0x0002, kFmtNote = 0x0003, kFmtOneBased = 0x0001, kFmtThreeDigits = 0xC000;
 
 struct ValueList {
     bool hasFirst = false;                           // the list carries the value of its first entry (header 05 hi lo)

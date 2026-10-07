@@ -296,6 +296,7 @@ OsTables tables() {
     t.ok = true;
     t.arp = arpText();
     for (int i = 0; i < 8; ++i) t.system.fields.push_back(mkField("S" + std::to_string(i), uint32_t(i), kUnsignedByte, 0, 127));
+    t.system.fields[6].format = kFmtThreeDigits;                                  // shown as stored, "000"
     t.system.fields.push_back(mkField("NRPN", 25, kBitField, (1 << 8) | 5, 1));   // a flag: bit 5 of byte 25
     for (int i = 0; i < edpages::kOscillatorFields; ++i) t.oscillator.fields.push_back(mkField("SPARE " + std::to_string(i), 0xF0, kUnsignedByte, 0, 1));
     t.oscillator.fields[51] = mkField("Wave ID", 0x4C, kLong, 0, -1);
@@ -471,6 +472,19 @@ void testEditing() {
     tick(10);
     CHECK(link.sent.back() == edproto::partialWrite({edproto::kSystem, 0, 0, 0, 25, 1}, {0x7F}));
     tick(200);
+    // Format 0xC000: stored 0 shows "000"; typed numbers are the shown numbers.
+    {
+        const int id = c.refForTest('s', 6);
+        const auto* sp = spanOf(c.view(), id);
+        CHECK(sp && c.view().screen.rowText(sp->row).substr(size_t(sp->col), 3) == "000");
+        link.sent.clear();
+        c.command("type", std::to_string(id));
+        for (char ch : std::string("005")) c.key(std::string(1, ch));
+        c.key("enter");
+        CHECK(!link.sent.empty() && link.sent.back() == edproto::partialWrite({edproto::kSystem, 0, 0, 0, 6, 1}, {5}));
+        CHECK(c.view().screen.rowText(sp->row).substr(size_t(sp->col), 3) == "005");
+        tick(200);
+    }
     // Keys: arrows move the focus between values, +/- step it.
     c.command("focus", std::to_string(c.refForTest('s', 0)));
     CHECK(c.key("right") && c.focusForTest() == c.refForTest('s', 1));

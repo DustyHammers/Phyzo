@@ -201,6 +201,15 @@ void testTables() {
         CHECK(rawValue(f, b, 3, 0, v) && formatValue(f, lt, v) == "Center");
         CHECK(rawValue(f, b + 2, 1, 0, v) && formatValue(f, lt, v) == "L64");
     }
+    {   // number formats: 0x0001 shown 1-based; 0xC000 three digits, zero-padded, as stored (0-based)
+        edtables::Field f;
+        f.type = kUnsignedByte; f.min = 0; f.max = 127;
+        Table lt;
+        f.format = kFmtOneBased;
+        CHECK(formatValue(f, lt, 0) == "1" && formatValue(f, lt, 15) == "16");
+        f.format = kFmtThreeDigits;
+        CHECK(formatValue(f, lt, 0) == "000" && formatValue(f, lt, 7) == "007" && formatValue(f, lt, 127) == "127");
+    }
     CHECK_EQ(noteName(60), std::string("C4"));
     CHECK_EQ(noteName(0), std::string("C-1"));
     CHECK_EQ(noteName(127), std::string("G9"));

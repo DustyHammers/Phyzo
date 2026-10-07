@@ -29,6 +29,8 @@ int valueWidth(const edtables::Field& f, const edtables::Table& t, size_t waveNa
     }
     if (f.format == kFmtOffOn) return 3;
     if (f.format == kFmtNote) return 4;
+    if (f.format == kFmtThreeDigits && f.display == Display::Number && f.type != kBitField)
+        return int(std::max<size_t>(3, std::to_string(std::max<int>(f.max, 0)).size()));
     const bool sign = f.display == Display::Formatter || (f.format & kFmtSigned) || f.min < 0 || f.type == kOffsetByte;
     const int lo = f.type == kBitField ? 0 : f.min, hi = f.type == kBitField ? 255 : std::max<int>(f.max, 0);
     return int(std::max(std::to_string(lo).size(), std::to_string(hi + 1).size()) + (sign ? 1 : 0));
