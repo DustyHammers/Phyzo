@@ -17,8 +17,9 @@
 //    the word into the edit buffer, then the OS's effect parameter message; the algorithm by NRPN MSB 1 LSB 30, 31,
 //    then 32 = 0; variations by NRPN LSB 32 / 33; the insert modulation as one 10-byte partial write of the edit
 //    buffer (offset 64) per gesture. After the modulation write or LSB 30-33 every effect send waits kFxHoldMs (the
-//    OS rebuilds its effects). Under a variation the slot's values are those that play (the running performance),
-//    display only.
+//    OS rebuilds its effects). Under a variation the slot's values are those that play (the running performance); the
+//    first edit of one of them in the editor copies the variation to PSEt (write path 4b, see VarCopy), then the edit
+//    follows by its normal path.
 // Every edit is clamped to the field's range, shown at once, sent (NRPN and partial writes paced like panel knob moves,
 // the latest value winning; arp edits one at a time, the latest target winning) and read back after the last write.
 //
@@ -136,6 +137,8 @@ public:
     // rebuilds the running effects and loses effect edits from the sound for about 280 ms; every effect send waits this
     // long after one of them (the latest queued value is sent then), and the read-back follows the hold.
     static constexpr double kFxHoldMs = 350;
+    // Copying a variation to PSEt: the read-back must equal the copy within this long, else one rewrite, then give up.
+    static constexpr double kCopyVerifyMs = 1000, kCopyRereadMs = 100;
 
     // Tests
     std::vector<std::vector<uint8_t>> pageReadsForTest() const { return pageReads(); }
@@ -220,6 +223,15 @@ private:
 
     // effects
     int fxRefOf(FxRef::K k, int n) const;
+    int lockSlot(const FxRef& e) const;              // the slot a variation locks this field in: 0 insert, 1 reverb, -1 none
+    bool variationPlays(int slot) const;             // a variation (or an unknown selection) plays this slot
+    bool copyPossible(int slot) const;               // the variation can be copied to PSEt now
+    bool startCopy(int slot);                        // write path 4b: the running values into the edit buffer
+    void copyWrite(int slot);                        // the copy's raw writes, then its read-back
+    void copyRead(int slot);
+    void copyPump();                                 // PSEt once the read-back equals the copy; one rewrite; give up
+    void copyAbort(int slot, bool failed);           // stop: nothing more is sent; the slot's queued edits dropped
+    bool copying() const { return copy_[0].active || copy_[1].active; }
     std::vector<edpages::Page> insertAlgoPages();     // INSERT ALGO: page 1, then the running algorithm's parameters
     void checkFxAlgo();                              // the running insert algorithm changed: its parameter pages
     int runningAlgo() const;                         // the running insert algorithm's index (bytes 330/331), -1: unknown
@@ -234,6 +246,22 @@ private:
     int fxWidth(const FxRef& e) const;
     bool lockedHint(int ref);                        // a locked effect field: tell the user, true
     void pumpMod();                                  // the insert modulation block write, when due
+
+    // Copying a variation to PSEt (docs/editor/EFFECTS_EDITOR_SPEC.md write path 4b), per slot (0 insert, 1 reverb):
+    // the running bytes written into the edit buffer with raw writes, read back until they equal the copy (one
+    // rewrite after kCopyVerifyMs), then NRPN LSB 32 / 33 = -1 (PSEt). Meanwhile the slot behaves as under PSEt in the
+    // editor and every effect send waits; after PSEt the rebuild hold, then the queued edits (latest value wins).
+    struct VarCopy {
+        bool active = false;
+        std::vector<std::pair<uint32_t, std::vector<uint8_t>>> ranges;   // preset offset, the bytes written there
+        int attempt = 0;                             // 1 the first write, 2 the rewrite
+        double writtenAt = 0, rereadAt = -1;
+        int readsOut = 0;                            // read-back replies still to come
+        bool mismatch = false, matched = false;
+    };
+    std::array<VarCopy, 2> copy_;
+    std::array<bool, 2> copyFailed_{};               // a copy gave up: the slot stays locked until the variation changes
+    double runningAt_ = -2e9;                        // when the running performance's effect block was last read
 
     // modulation block write (one per gesture)
     std::array<uint8_t, 10> modBlock_{};
