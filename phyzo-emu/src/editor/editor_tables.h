@@ -92,13 +92,72 @@ struct ArpText {
     std::array<std::string, 12> resolution;          // in the OS's pointer-table order
 };
 ArpText readArpText(const std::vector<uint8_t>& image);
-// A number through one of the OS's print formats: %d, %<width>d, %0<width>d and %% only (anything else is copied as
-// text).
+// A number through one of the OS's print formats: %d, %<width>d, %0<width>d (also with the l length modifier) and %%
+// only (anything else is copied as text).
 std::string formatNumber(const std::string& fmt, int v);
+
+// ---- effects (docs/editor/EFFECTS_EDITOR_SPEC.md, docs/editor/ROUND3_ANSWERS.md)
+namespace fxaddr {
+constexpr uint32_t kInsertAlgos = 0xBE080;          // 41 pointers to the insert algorithms' headers
+constexpr uint32_t kRoutingAlgo = 0xBE078;          // pointer to the routing shell's header
+constexpr uint32_t kReverbAlgo = 0xBE128;           // pointer to the reverb's header
+constexpr uint32_t kFamilies = 0xAC868;             // 32 pointers to family descriptors (0: none), by PID >> 8
+constexpr uint32_t kRecordSizes = 0x71418;          // record walker sizes: header, sections 0-7 (0xFF: length byte)
+constexpr uint32_t kDisplaySizes = 0x71424;         // display section walker sizes: header, sub-blocks 0-4
+constexpr uint32_t kEditOrder = 0xBF040;            // pointers to edit-order maps, 0-terminated
+constexpr uint32_t kCodes = 0x89390;                // the algorithms' panel codes, 5 bytes each
+constexpr uint32_t kPreset = 0x8945E, kInsertVariationFmt = 0x89464, kReverbVariationFmt = 0x8946C;
+constexpr uint32_t kPrefixList = 0xBEA58, kSuffixList = 0xBEA5C;   // pointers to value lists
+constexpr uint32_t kSyncNames = 0xBE288;            // 11 pointers to the tempo-sync value names
+constexpr uint32_t kMsFormat = 0x124A0;             // formatters 80 / 81: the milliseconds format
+constexpr uint32_t kModDescriptor = 0x720B8;        // the insert modulation's descriptor (records etc. in RAM)
+constexpr uint32_t kDataImage = 0xBD4A8, kDataRam = 0x0BE00000;   // the initialised data: image copy of RAM
+constexpr int kInsertCount = 41, kFamilyCount = 32, kSyncCount = 11;
+}  // namespace fxaddr
+
+// An effect parameter's definition (a sectioned field record of its family). All effect values are 16-bit signed.
+struct FxParam {
+    bool found = false;                              // a record with this PID exists
+    uint16_t pid = 0;
+    std::string name;
+    int16_t min = 0, max = 0;
+    bool hasList = false;
+    std::vector<std::string> list;                   // list: entry = the raw value's index
+    int formatter = -1;                              // 80 tempo sync / ms, 81 ms, 82 insert slot name
+    uint8_t prefix = 0, suffix = 0;                  // indexes + 1 into FxTables::prefixes / suffixes (0: none)
+    int decimals = 0;
+    bool hidden() const { return pid == 0x0007; }    // a placeholder slot
+    bool tempoSync = false;                          // formatter 80, or a list starting with the 11 tempo-sync names
+};
+struct FxAlgo {
+    bool ok = false;
+    std::string name;                                // empty: none stored (use the panel code)
+    uint16_t family = 0, sub = 0;
+    std::vector<FxParam> params;                     // by slot k
+    std::vector<int> order;                          // the visible slots in the OS's edit order
+    std::vector<std::string> variations;             // variation names (16 characters, '~' shown as a space)
+};
+struct FxTables {
+    bool ok = false;
+    std::string error;
+    std::vector<FxAlgo> inserts;                     // by algorithm index
+    FxAlgo routing, reverb;
+    std::vector<std::string> codes;                  // the insert algorithms' panel codes, by index
+    std::string preset, insertVariationFmt, reverbVariationFmt, msFormat;
+    std::vector<std::string> syncNames, prefixes, suffixes;
+    // The insert modulation's fields in record order, with their offsets from preset byte 64.
+    std::vector<FxParam> mod;
+    std::vector<uint32_t> modOffsets;
+};
+FxTables readEffects(const std::vector<uint8_t>& image);
+// A value as the OS shows it: list entry, tempo-sync name or milliseconds, the insert slot's name (formatter 82, from
+// `insert`), or the number with its decimals, prefix and suffix.
+std::string formatEffect(const FxParam& p, int v, const FxTables& t, const FxAlgo* insert);
 
 struct OsTables {
     Table oscillator, soundSettings, soundCommon, system;
     ArpText arp;                                     // the arp page is left out when !arp.ok
+    FxTables fx;                                     // the INSERT and REVERB pages are left out when !fx.ok
     bool ok = false;
     std::string error;
 };

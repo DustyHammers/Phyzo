@@ -14,8 +14,17 @@ using edfields::Kind;
 namespace {
 const char* const kOscSections[] = {"WAVE", "PITCH", "FILTER", "AMP", "NOISE", "LFO", "ENV1", "ENV2", "ENV3", "GEN"};
 const char* const kSoundSections[] = {"TRACK", "RANGE", "RECEIVE"};
-const char* const kCommonSections[] = {"SLOTS", "KNOBS", "MOD"};
+const char* const kCommonSections[] = {"SLOTS", "KNOBS"};
 constexpr int kWaveField = 51;                       // the oscillator's wave (4-byte wave ID)
+// Effects (docs/editor/EFFECTS_EDITOR_SPEC.md)
+constexpr uint32_t kFxFrom = 60, kFxTo = 334;        // the preset's effect bytes read with the page
+constexpr uint32_t kRunningFrom = 0x2CC, kRunningLength = 0x10E;   // the running performance's effect block (preset 60-329)
+constexpr int kInsertMixSlot = 13, kReverbMixSlot = 27;
+constexpr uint32_t kInsertMixPreset = 136, kInsertMixVariation = 292;
+const int kInsertSends[] = {6, 7, 8, 9, 10, 0, 17, 3};           // routing-shell slots (docs/editor/ROUND3_ANSWERS.md 1)
+const int kInsertAlgoRouting[] = {14, 11, 12, 15, 16};
+const int kReverbSends[] = {25, 26, 28, 29, 30, 31, 2};
+const uint32_t kModOrder[] = {0, 1, 2, 4, 6, 8};      // source, destination, source min / max, destination min / max
 
 // The widest text a field's value can take (cells reserved for it on the page).
 int valueWidth(const edtables::Field& f, const edtables::Table& t, size_t waveNameMax) {
@@ -172,6 +181,7 @@ void Controller::setOpen(bool open) {
         outstanding_ = 0;
         readDue_ = displayChangedAt_ = readBackAt_ = -1;
         pending_.clear(); rmw_.clear(); pendingArp_.clear();   // the engine drops its queue too
+        modPending_ = modReady_ = false;
         if (jobActive_) arpFinish(false, true);      // lets go of a button the editor holds; presses nothing more
         dragRef_ = -1;
         typing_ = false;
@@ -192,6 +202,8 @@ void Controller::build() {
     typing_ = false;
     dragRef_ = -1;
     pending_.clear(); rmw_.clear(); pendingArp_.clear(); before_.clear();
+    modPending_ = modReady_ = false;
+    fx_.clear();
     if (jobActive_) arpFinish(false, true);
     size_t waveNameMax = 0;
     for (const auto& n : waveNames_) waveNameMax = std::max(waveNameMax, n.size());
@@ -227,7 +239,7 @@ void Controller::build() {
         }
         areas_.push_back({"PRESETS", {{"", edpages::paginate(edpages::nameRows(items))}}});
     }
-    {   // COMMON: the sound slots (a table, one row per sound), the performance knobs, the insert modulation
+    {   // COMMON: the sound slots (a table, one row per sound), the performance knobs
         Area a{"COMMON", {}};
         for (const char* sec : kCommonSections) {
             std::vector<Row> rows;
@@ -309,6 +321,44 @@ void Controller::build() {
         pages.push_back(p2);
         areas_.push_back({"ARP", {{"", pages}}});
     }
+    if (tables_.fx.ok) {   // INSERT (ALGO, MOD, SENDS) and REVERB (ALGO, SENDS): docs/editor/EFFECTS_EDITOR_SPEC.md
+        const edtables::FxTables& t = tables_.fx;
+        auto add = [&](FxRef::K k, int n) {
+            fx_.push_back({k, n});
+            refs_.push_back({nullptr, int(fx_.size()) - 1, 'x'});
+        };
+        add(FxRef::K::Algo, 0); add(FxRef::K::InsertVar, 0); add(FxRef::K::ReverbVar, 0); add(FxRef::K::InsertMix, 0);
+        for (int k = 0; k < int(t.routing.params.size()); ++k) add(FxRef::K::Routing, k);
+        for (int k = 0; k < 32; ++k) add(FxRef::K::Insert, k);
+        for (int k = 0; k < int(t.reverb.params.size()); ++k) add(FxRef::K::Reverb, k);
+        for (int i = 0; i < int(t.mod.size()); ++i) add(FxRef::K::Mod, i);
+        auto item = [&](FxRef::K k, int n, const std::string& label) {
+            const int ref = fxRefOf(k, n);
+            return Item{label, "", ref, ref >= 0 ? fxWidth(fx_[size_t(refs_[size_t(ref)].field)]) : 0};
+        };
+        auto routing = [&](int k) { return item(FxRef::K::Routing, k, edpages::displayName(t.routing.params[size_t(k)].name)); };
+        auto pages = [](const std::vector<Item>& items) { return edpages::paginate(edpages::twoColumnRows(items)); };
+        fxAlgo_ = runningAlgo();
+        Area ins{"INSERT", {}};
+        ins.sections.push_back({"ALGO", insertAlgoPages()});
+        std::vector<Item> mod;
+        for (uint32_t off : kModOrder)
+            for (size_t i = 0; i < t.modOffsets.size(); ++i)
+                if (t.modOffsets[i] == off) mod.push_back(item(FxRef::K::Mod, int(i), edpages::displayName(t.mod[i].name)));
+        ins.sections.push_back({"MOD", pages(mod)});
+        std::vector<Item> sends;
+        for (int k : kInsertSends) sends.push_back(routing(k));
+        ins.sections.push_back({"SENDS", pages(sends)});
+        areas_.push_back(ins);
+        Area rev{"REVERB", {}};
+        std::vector<Item> algo = {item(FxRef::K::ReverbVar, 0, "VARIATION"), routing(kReverbMixSlot)};
+        for (int k : t.reverb.order) algo.push_back(item(FxRef::K::Reverb, k, edpages::displayName(t.reverb.params[size_t(k)].name)));
+        rev.sections.push_back({"ALGO", pages(algo)});
+        std::vector<Item> rsends;
+        for (int k : kReverbSends) rsends.push_back(routing(k));
+        rev.sections.push_back({"SENDS", pages(rsends)});
+        areas_.push_back(rev);
+    }
     // Keep the position if the same area, section and page still exist.
     area_ = section_ = page_ = 0;
     for (size_t i = 0; i < areas_.size(); ++i)
@@ -332,6 +382,7 @@ Controller::ObjKey Controller::keyFor(char kind) const {
     case 'c': return {edproto::kSound, uint16_t(sound_), 0, 0};
     case 'o': return {edproto::kSound, uint16_t(sound_), 2, uint16_t(osc_)};
     case 'P': return {edproto::kPreset, 0, 0, 0};   // the preset edit buffer
+    case 'R': return {edproto::kPerformance, edproto::kEditBuffer, 0, 0};   // the running performance (effects that play)
     default: return {0xFF, 0, 0, 0};
     }
 }
@@ -350,7 +401,7 @@ std::vector<std::vector<uint8_t>> Controller::pageReads() const {
     const Section& s = a->sections[size_t(section_)];
     if (s.pages.empty()) return reads;
     std::map<char, std::pair<uint32_t, uint32_t>> ranges;   // kind -> [from, to)
-    bool live = false, arpPreset = false, flags = false, names = false;
+    bool live = false, arpPreset = false, flags = false, names = false, effects = false;
     auto range = [&](char kind, uint32_t from, uint32_t to) {
         auto it = ranges.find(kind);
         if (it == ranges.end()) ranges[kind] = {from, to};
@@ -360,6 +411,7 @@ std::vector<std::vector<uint8_t>> Controller::pageReads() const {
         for (const Item& x : r.items) {
             if (x.ref < 0) continue;
             const Ref& ref = refs_[size_t(x.ref)];
+            if (ref.kind == 'x') { effects = true; continue; }
             if (ref.kind == 'n') {                   // a preset name: 16 characters at offset 8 of the stored preset
                 reads.push_back(edproto::partialRead({edproto::kPreset, uint16_t(edproto::kStoredPreset + ref.field), 0, 0, 8, 16}));
                 names = true;
@@ -375,6 +427,11 @@ std::vector<std::vector<uint8_t>> Controller::pageReads() const {
             const edtables::Field& f = ref.table->fields[size_t(ref.field)];
             range(ref.kind, f.offset, f.offset + uint32_t(f.size()));
         }
+    if (effects) {                                   // the preset's effect bytes and what plays (variations)
+        range('P', kFxFrom, kFxTo);
+        const ObjKey k = keyFor('R');
+        reads.push_back(edproto::partialRead({k.type, k.number, k.subtype, k.subnumber, kRunningFrom, kRunningLength}));
+    }
     for (const auto& kv : ranges) {
         const ObjKey k = keyFor(kv.first);
         reads.push_back(edproto::partialRead({k.type, k.number, k.subtype, k.subnumber, kv.second.first, kv.second.second - kv.second.first}));
@@ -481,6 +538,9 @@ void Controller::handleReply(const std::vector<uint8_t>& m) {
     // Writes not sent yet (and the value being dragged) stay shown.
     for (const auto& kv : pending_) apply(kv.first, kv.second);
     if (dragRef_ >= 0) apply(dragRef_, dragValue_);
+    if (modPending_ && key == keyFor('P') && o.bytes.size() >= 74)   // the modulation block not written yet
+        for (size_t i = 0; i < modBlock_.size(); ++i) { o.bytes[64 + i] = modBlock_[i]; o.valid[64 + i] = true; }
+    if (key == keyFor('P')) checkFxAlgo();
     if (key == keyFor('P') && a.offset <= 8 && end >= 24) updateCurrentPreset();   // the edit buffer's name
 }
 
@@ -523,6 +583,16 @@ bool Controller::valueOf(int ref, int64_t& d) const {
     if (ref < 0 || size_t(ref) >= refs_.size()) return false;
     const Ref& r = refs_[size_t(ref)];
     if (r.kind == 'n') return false;
+    if (r.kind == 'x') {
+        const FxRef& e = fx_[size_t(r.field)];
+        int v;
+        switch (e.k) {
+        case FxRef::K::Algo: d = runningAlgo(); return d >= 0;
+        case FxRef::K::InsertVar: if (!insertVariation(v)) return false; d = v; return true;
+        case FxRef::K::ReverbVar: if (!reverbVariation(v)) return false; d = v; return true;
+        default: return fxRaw(fxOffset(e), fxSize(e), fxLocked(e), d);
+        }
+    }
     if (const edfields::Field* f = presetField(r)) {
         if (f->kind == Kind::PresetAction) { if (!arpPresetValid_) return false; d = currentArpPreset_; return true; }
         if (f->kind == Kind::RuntimeFlag) {
@@ -560,6 +630,45 @@ bool Controller::rangeOf(int ref, int64_t& lo, int64_t& hi) const {
     if (ref < 0 || size_t(ref) >= refs_.size()) return false;
     const Ref& r = refs_[size_t(ref)];
     if (const edfields::Field* f = presetField(r)) { lo = f->lo; hi = f->hi; return true; }
+    if (r.kind == 'x') {
+        const FxRef& e = fx_[size_t(r.field)];
+        const edtables::FxTables& t = tables_.fx;
+        const int a = runningAlgo();
+        int64_t w1, w2;
+        int b1, b2;
+        switch (e.k) {
+        case FxRef::K::Algo: lo = 0; hi = int64_t(t.inserts.size()) - 1; return true;
+        case FxRef::K::InsertVar:                    // PSEt only while the selected algorithm is the stored one
+            if (a < 0 || !fxByte(330, b1) || !fxByte(331, b2) || !fxRaw(174, 2, false, w1) || !fxRaw(176, 2, false, w2)) return false;
+            lo = b1 == w1 && b2 == w2 ? -1 : 0;
+            hi = int64_t(t.inserts[size_t(a)].variations.size()) - 1;
+            return lo <= hi;
+        case FxRef::K::ReverbVar:                    // PSEt only while the stored reverb area is family 1 / sub 0
+            if (!fxRaw(294, 2, false, w1) || !fxRaw(296, 2, false, w2)) return false;
+            lo = w1 == 1 && w2 == 0 ? -1 : 0;
+            hi = int64_t(t.reverb.variations.size()) - 1;
+            return lo <= hi;
+        case FxRef::K::Mod:
+            if (fxOffset(e) == 65) {                 // the destination: a slot of the running algorithm
+                if (a < 0) return false;
+                lo = 0; hi = int64_t(t.inserts[size_t(a)].params.size()) - 1;
+                return lo <= hi;
+            }
+            if (fxOffset(e) >= 70) {                 // destination min / max: the destination's range (11 if tempo-syncable)
+                const edtables::FxParam* p = fxParam(e);
+                if (!p) return false;
+                lo = p->tempoSync ? 11 : p->min; hi = p->max;
+                return lo <= hi;
+            }
+            [[fallthrough]];
+        default: {
+            const edtables::FxParam* p = fxParam(e);
+            if (!p || !p->found || p->hidden() || p->max < p->min) return false;
+            lo = p->min; hi = p->max;
+            return true;
+        }
+        }
+    }
     if (!r.table) return false;
     using namespace edtables;
     const Field& f = r.table->fields[size_t(r.field)];
@@ -597,6 +706,14 @@ bool Controller::editable(int ref) const {
         if (f->kind == Kind::PresetAction && !arpPresetValid_) return false;   // clickable once the OS's value is read
         return f->editable && (r.kind == 'm' || f->arpControl >= 0 || f->button >= 0);   // ARP: through the panel's buttons
     }
+    if (r.kind == 'x') {                             // not while a variation plays it; once its bytes are read
+        const FxRef& e = fx_[size_t(r.field)];
+        int64_t lo, hi, d;
+        if (fxLocked(e) || !rangeOf(ref, lo, hi) || !valueOf(ref, d)) return false;
+        if (e.k == FxRef::K::Mod)                    // the whole block is written
+            for (uint32_t i = 64; i < 74; ++i) { int b; if (!fxByte(i, b)) return false; }
+        return true;
+    }
     if (!r.table) return false;
     using namespace edtables;
     const Field& f = r.table->fields[size_t(r.field)];
@@ -616,6 +733,25 @@ bool Controller::editable(int ref) const {
 std::string Controller::textOf(int ref, int64_t d) const {
     const Ref& r = refs_[size_t(ref)];
     if (const edfields::Field* f = presetField(r)) return edfields::format(*f, d, tables_.arp);
+    if (r.kind == 'x') {
+        const FxRef& e = fx_[size_t(r.field)];
+        const edtables::FxTables& t = tables_.fx;
+        const int a = runningAlgo();
+        switch (e.k) {
+        case FxRef::K::Algo:
+            if (d < 0 || size_t(d) >= t.inserts.size()) return std::to_string(d);
+            if (!edpages::trimmed(t.inserts[size_t(d)].name).empty()) return edpages::trimmed(t.inserts[size_t(d)].name);
+            return size_t(d) < t.codes.size() ? edpages::trimmed(t.codes[size_t(d)]) : std::to_string(d);
+        case FxRef::K::InsertVar: case FxRef::K::ReverbVar:
+            if (d < 0) return t.preset;
+            return edtables::formatNumber(e.k == FxRef::K::InsertVar ? t.insertVariationFmt : t.reverbVariationFmt, int(d) + 1);
+        default: {
+            const edtables::FxParam* p = fxParam(e);
+            if (!p) return std::to_string(d);
+            return edtables::formatEffect(*p, int(d), t, a >= 0 ? &t.inserts[size_t(a)] : nullptr);
+        }
+        }
+    }
     const edtables::Field& f = r.table->fields[size_t(r.field)];
     if (f.type == edtables::kLong) {
         if (d < 1 || size_t(d) > waves_.ids.size()) return std::to_string(d);
@@ -648,6 +784,27 @@ std::vector<Choice> Controller::listOf(int ref) const {
             return out;
         default: return out;
         }
+    }
+    if (r.kind == 'x') {
+        if (!editable(ref)) return out;
+        const FxRef& e = fx_[size_t(r.field)];
+        const edtables::FxTables& t = tables_.fx;
+        int64_t lo, hi;
+        if (!rangeOf(ref, lo, hi) || hi - lo > 255) return out;
+        const edtables::FxParam* p = fxParam(e);
+        const bool named = e.k == FxRef::K::Algo || e.k == FxRef::K::InsertVar || e.k == FxRef::K::ReverbVar ||
+                           (e.k == FxRef::K::Mod && fxOffset(e) == 65) || (p && (p->hasList || p->formatter == 80 || p->formatter == 82));
+        if (!named) return out;
+        const int a = runningAlgo();
+        for (int64_t d = lo; d <= hi; ++d) {
+            std::string label = textOf(ref, d);
+            if (d >= 0 && e.k == FxRef::K::InsertVar && a >= 0 && size_t(d) < t.inserts[size_t(a)].variations.size())
+                label += " " + edpages::trimmed(t.inserts[size_t(a)].variations[size_t(d)]);
+            if (d >= 0 && e.k == FxRef::K::ReverbVar && size_t(d) < t.reverb.variations.size())
+                label += " " + edpages::trimmed(t.reverb.variations[size_t(d)]);
+            out.push_back({label, d, known && cur == d});
+        }
+        return out;
     }
     if (!r.table || !editable(ref)) return out;
     using namespace edtables;
@@ -700,6 +857,28 @@ bool Controller::parseTyped(int ref, const std::string& s, int64_t& d) const {
     for (const Choice& c : list) if (lowerStr(edpages::trimmed(c.label)) == want) { d = c.value; return true; }
     for (const Choice& c : list)
         if (!want.empty() && lowerStr(edpages::trimmed(c.label)).rfind(want, 0) == 0) { d = c.value; return true; }
+    if (r.kind == 'x') {                             // effect numbers: decimals and milliseconds as shown
+        const edtables::FxParam* p = fxParam(fx_[size_t(r.field)]);
+        if (p && !p->hasList && p->formatter != 82) {
+            const std::string t = edpages::trimmed(s);
+            size_t i = 0;
+            const bool neg = i < t.size() && t[i] == '-';
+            if (i < t.size() && (t[i] == '-' || t[i] == '+')) ++i;
+            int64_t whole = 0, frac = 0;
+            int digits = 0, fracDigits = 0;
+            for (; i < t.size() && std::isdigit(static_cast<unsigned char>(t[i])); ++i, ++digits) whole = whole * 10 + (t[i] - '0');
+            if (i < t.size() && t[i] == '.')
+                for (++i; i < t.size() && std::isdigit(static_cast<unsigned char>(t[i])); ++i)
+                    if (fracDigits < p->decimals) { frac = frac * 10 + (t[i] - '0'); ++fracDigits; }
+            if (digits == 0 && fracDigits == 0) return false;
+            for (; fracDigits < p->decimals; ++fracDigits) frac *= 10;
+            int64_t scale = 1;
+            for (int k = 0; k < p->decimals; ++k) scale *= 10;
+            d = (whole * scale + frac) * (neg ? -1 : 1);
+            if (p->formatter == 80) d += int64_t(tables_.fx.syncNames.size());   // milliseconds after the sync values
+            return true;
+        }
+    }
     if (pf && pf->kind == Kind::Tempo) {             // the tempo may be typed with the format's letters
         std::string digits;
         for (char c : s) if (std::isdigit(static_cast<unsigned char>(c))) digits.push_back(c);
@@ -718,6 +897,34 @@ void Controller::write(int ref, int64_t d, bool exact) {
     if (!exact) d = std::clamp(d, lo, hi);          // a revert restores the stored value, even outside the table's range
     int64_t cur;
     if (!before_.count(ref) && valueOf(ref, cur)) before_[ref] = cur;
+    if (refs_[size_t(ref)].kind == 'x' && fx_[size_t(refs_[size_t(ref)].field)].k == FxRef::K::Mod) {
+        // The insert modulation: the whole block from the last read-back with this field changed (a new destination
+        // also resets dest min / max to its range, as the OS does), written once per gesture.
+        const FxRef& e = fx_[size_t(refs_[size_t(ref)].field)];
+        std::array<uint8_t, 10> blk{};
+        for (uint32_t i = 0; i < 10; ++i) { int b; if (!fxByte(64 + i, b)) return; blk[i] = uint8_t(b); }
+        auto put = [&](uint32_t off, int size, int64_t v) {
+            if (size == 1) blk[off - 64] = uint8_t(v);
+            else { blk[off - 64] = uint8_t(uint16_t(v) >> 8); blk[off - 63] = uint8_t(v); }
+        };
+        put(fxOffset(e), fxSize(e), d);
+        if (fxOffset(e) == 65) {
+            const int a = runningAlgo();
+            const edtables::FxParam& p = tables_.fx.inserts[size_t(a)].params[size_t(d)];
+            put(70, 2, p.tempoSync ? 11 : p.min);
+            put(72, 2, p.max);
+        }
+        modBlock_ = blk;
+        modPending_ = true;
+        modReady_ = dragRef_ != ref;                 // a drag writes on release
+        Obj& o = objs_[keyFor('P')];
+        for (size_t i = 0; i < blk.size(); ++i) o.bytes[64 + i] = blk[i];
+        edited_ = true;
+        lastWriteAt_ = now_;
+        pump();
+        render();
+        return;
+    }
     apply(ref, d);
     if (refs_[size_t(ref)].kind == 'a') {            // through the panel's buttons, one edit at a time
         if (jobActive_ && job_.ref == ref && job_.stage < ArpJob::Stage::Leave) job_.target = d;
@@ -733,6 +940,25 @@ void Controller::write(int ref, int64_t d, bool exact) {
 
 void Controller::apply(int ref, int64_t d) {
     const Ref& r = refs_[size_t(ref)];
+    if (r.kind == 'x') {                             // into the edit buffer's bytes as the editor holds them
+        const FxRef& e = fx_[size_t(r.field)];
+        if (e.k == FxRef::K::Mod) return;            // the block (write)
+        Obj& o = objs_[keyFor('P')];
+        auto put = [&](uint32_t off, uint8_t b) { if (off < o.bytes.size() && o.valid[off]) o.bytes[off] = b; };
+        if (e.k == FxRef::K::Algo) {                 // the selected algorithm, its first variation
+            if (d < 0 || size_t(d) >= tables_.fx.inserts.size()) return;
+            put(330, uint8_t(tables_.fx.inserts[size_t(d)].family));
+            put(331, uint8_t(tables_.fx.inserts[size_t(d)].sub));
+            put(332, 0);
+            checkFxAlgo();
+            return;
+        }
+        const uint32_t off = fxOffset(e);
+        if (fxSize(e) == 1) put(off, uint8_t(d < 0 ? 0xFF : d));
+        else { put(off, uint8_t(uint16_t(d) >> 8)); put(off + 1, uint8_t(d)); }
+        if (e.k == FxRef::K::InsertVar || e.k == FxRef::K::ReverbVar) checkFxAlgo();
+        return;
+    }
     if (const edfields::Field* f = presetField(r)) {
         const int64_t raw = edfields::toRaw(*f, d);
         if (r.kind == 'a') {
@@ -770,22 +996,51 @@ void Controller::apply(int ref, int64_t d) {
 // The next write, paced: at most one per kPaceMs, or the time the last one takes on the cable if longer.
 void Controller::pump() {
     if (!open_ || !link_.running()) return;
+    // Effect sends wait while the OS rebuilds its effects (the rebuild hold); other writes go on.
+    auto held = [&](int ref) { return refs_[size_t(ref)].kind == 'x' && now_ < fxHoldUntil_; };
     while (now_ >= nextSendAt_ && !pending_.empty()) {
         auto it = pending_.find(dragRef_);           // the value being dragged first
-        if (it == pending_.end()) it = pending_.begin();
+        if (it == pending_.end() || held(it->first))
+            for (it = pending_.begin(); it != pending_.end() && held(it->first); ++it) {}
+        if (it == pending_.end()) break;
         const int ref = it->first;
         const int64_t d = it->second;
         pending_.erase(it);
         sendWrite(ref, d);
     }
+    pumpMod();
 }
 
 void Controller::sendWrite(int ref, int64_t d) {
     const Ref& r = refs_[size_t(ref)];
     std::vector<std::vector<uint8_t>> msgs;
-    bool isRead = false;
+    bool isRead = false, rebuild = false;            // rebuild: NRPN LSB 30-33, the OS rebuilds its effects
     if (const edfields::Field* f = presetField(r)) {
         if (r.kind == 'm' && f->nrpnLsb >= 0) msgs = edproto::nrpn(channel_, 1, f->nrpnLsb, int(d));
+    } else if (r.kind == 'x') {
+        const FxRef& e = fx_[size_t(r.field)];
+        auto nrpn = [&](int lsb, int v) { for (auto& m : edproto::nrpn(channel_, 1, lsb, v)) msgs.push_back(m); };
+        switch (e.k) {
+        case FxRef::K::Algo:                         // family, sub, then variation 1: the OS rebuilds the insert
+            if (d < 0 || size_t(d) >= tables_.fx.inserts.size()) return;
+            nrpn(30, tables_.fx.inserts[size_t(d)].family);
+            nrpn(31, tables_.fx.inserts[size_t(d)].sub);
+            nrpn(32, 0);
+            rebuild = true;
+            break;
+        case FxRef::K::InsertVar: nrpn(32, int(d)); rebuild = true; break;
+        case FxRef::K::ReverbVar: nrpn(33, int(d)); rebuild = true; break;
+        case FxRef::K::Mod: return;                  // the block (pumpMod)
+        default: {                                   // the word into the edit buffer, then applied live
+            const uint32_t off = fxOffset(e);
+            msgs.push_back(edproto::partialWrite({edproto::kRawMemory, 0, 0, 0, edproto::kEditBufferRam + off, 2},
+                                                 {uint8_t(uint16_t(d) >> 8), uint8_t(d)}));
+            const int slot = e.k == FxRef::K::Insert ? 1 : e.k == FxRef::K::Reverb ? 3 : 0;
+            const int param = e.k == FxRef::K::InsertMix ? kInsertMixSlot : e.n;
+            msgs.push_back(edproto::fxParameter(slot, param, int(d)));
+            break;
+        }
+        }
     } else if (r.table) {
         using namespace edtables;
         const Field& f = r.table->fields[size_t(r.field)];
@@ -816,13 +1071,14 @@ void Controller::sendWrite(int ref, int64_t d) {
     if (isRead) ++outstanding_;
     lastSendAt_ = now_;
     nextSendAt_ = now_ + std::max(kPaceMs, double(bytes) * kCableMsPerByte);
+    if (rebuild) fxHoldUntil_ = now_ + kFxHoldMs;
     afterWrite();
 }
 
 void Controller::afterWrite() {
     edited_ = true;
     lastWriteAt_ = now_;
-    readBackAt_ = now_ + kReadBackMs;
+    readBackAt_ = std::max(now_ + kReadBackMs, fxHoldUntil_);   // after the rebuild hold, if one runs
 }
 
 void Controller::presetChanged() {
@@ -864,7 +1120,10 @@ void Controller::render() {
                         const Ref& ref = refs_[size_t(x.ref)];
                         x.value.clear();             // not read yet
                         if (ref.kind == 'n') { x.value = presetNames_[size_t(ref.field)]; continue; }
-                        if (const edfields::Field* f = presetField(ref)) {
+                        if (ref.kind == 'x') {
+                            int64_t d;
+                            if (valueOf(x.ref, d)) x.value = textOf(x.ref, d);
+                        } else if (const edfields::Field* f = presetField(ref)) {
                             int64_t raw;
                             if (f->kind == Kind::Text) {
                                 const Obj* o;
@@ -901,6 +1160,10 @@ void Controller::render() {
                         if (typing_ && x.ref == focus_) x.value = typed_ + "_";
                     }
                 v.screen = edpages::render(page);
+                // Effect values a variation plays: display only, not underlined.
+                for (const auto& sp : v.screen.values)
+                    if (sp.ref >= 0 && refs_[size_t(sp.ref)].kind == 'x' && fxLocked(fx_[size_t(refs_[size_t(sp.ref)].field)]))
+                        for (int c = sp.col; c < sp.col + sp.len && c < edpages::kCols; ++c) v.screen.underline[size_t(sp.row)][size_t(c)] = false;
                 // PRESETS: the current preset is the focused item (its name blinks, never underlined).
                 const int focus = a->name == "PRESETS" ? (currentPreset_ >= 0 ? refOf('n', currentPreset_) : -1) : focus_;
                 for (const auto& sp : v.screen.values)
@@ -1030,6 +1293,7 @@ void Controller::command(const std::string& action, const std::string& text) {
     } else if (action == "drag_begin" && validRef) {
         focus_ = ref;
         typing_ = false;
+        lockedHint(ref);
         int64_t d;
         if (editable(ref) && valueOf(ref, d)) { dragRef_ = ref; dragStart_ = dragValue_ = d; }
         render();
@@ -1040,7 +1304,9 @@ void Controller::command(const std::string& action, const std::string& text) {
         if (v != dragValue_) { dragValue_ = v; write(dragRef_, v); }
     } else if (action == "drag_end") {
         dragRef_ = -1;
+        if (modPending_) { modReady_ = true; pump(); }   // the modulation block: written on release
     } else if (action == "type" && validRef) {
+        lockedHint(ref);
         focus_ = ref;
         typing_ = editable(ref);
         typed_.clear();
@@ -1067,6 +1333,7 @@ bool Controller::key(const std::string& k) {
     if (k == "up") { moveFocus(-1, 0); return true; }
     if (k == "down") { moveFocus(1, 0); return true; }
     if (k == "plus" || k == "minus") {
+        if (lockedHint(focus_)) return true;
         int64_t d;
         if (editable(focus_) && valueOf(focus_, d)) write(focus_, d + (k == "plus" ? 1 : -1));
         return true;
@@ -1079,6 +1346,7 @@ bool Controller::key(const std::string& k) {
 void Controller::choose(int ref, int64_t value) {
     if (ref < 0 || size_t(ref) >= refs_.size() || !open_ || !link_.running()) return;
     focus_ = ref;
+    if (lockedHint(ref)) return;
     write(ref, value);
 }
 
@@ -1370,6 +1638,209 @@ void Controller::arpPump() {
     }
 }
 
+// ------------------------------------------------------------------ effects (docs/editor/EFFECTS_EDITOR_SPEC.md)
+
+int Controller::fxRefOf(FxRef::K k, int n) const {
+    for (size_t i = 0; i < refs_.size(); ++i)
+        if (refs_[i].kind == 'x' && fx_[size_t(refs_[i].field)].k == k && fx_[size_t(refs_[i].field)].n == n) return int(i);
+    return -1;
+}
+
+bool Controller::fxByte(uint32_t off, int& b) const {
+    const Obj* o;
+    if (!bytesOf('P', o) || off >= o->bytes.size() || !o->valid[off]) return false;
+    b = o->bytes[off];
+    return true;
+}
+
+bool Controller::fxRaw(uint32_t off, int size, bool running, int64_t& v) const {
+    const Obj* o;
+    if (running && off < kFxFrom) return false;
+    const uint32_t at = running ? kRunningFrom + (off - kFxFrom) : off;
+    if (!bytesOf(running ? 'R' : 'P', o) || at + uint32_t(size) > o->bytes.size()) return false;
+    for (int i = 0; i < size; ++i) if (!o->valid[at + uint32_t(i)]) return false;
+    v = size == 1 ? int64_t(o->bytes[at]) : int64_t(int16_t(uint16_t(o->bytes[at] << 8 | o->bytes[at + 1])));
+    return true;
+}
+
+int Controller::runningAlgo() const {
+    int fam, sub;
+    if (!tables_.fx.ok || !fxByte(330, fam) || !fxByte(331, sub)) return -1;
+    for (size_t i = 0; i < tables_.fx.inserts.size(); ++i)
+        if ((tables_.fx.inserts[i].family & 0xFF) == fam && (tables_.fx.inserts[i].sub & 0xFF) == sub) return int(i);
+    return -1;
+}
+
+bool Controller::insertVariation(int& v) const {
+    int b;
+    if (!fxByte(332, b)) return false;
+    v = b == 0xFF ? -1 : b;
+    return true;
+}
+
+bool Controller::reverbVariation(int& v) const {
+    int b;
+    if (!fxByte(333, b)) return false;
+    v = b == 0xFF ? -1 : b;
+    return true;
+}
+
+bool Controller::fxLocked(const FxRef& e) const {
+    int v = 0;
+    switch (e.k) {
+    case FxRef::K::Insert: case FxRef::K::Mod: return !insertVariation(v) || v >= 0;
+    case FxRef::K::Routing:                          // the FX-bus 1 reverb send plays the insert variation's value
+        if (e.n == 4 || e.n == 6) return !insertVariation(v) || v >= 0;
+        return false;
+    case FxRef::K::Reverb: return !reverbVariation(v) || v >= 0;
+    default: return false;
+    }
+}
+
+uint32_t Controller::fxOffset(const FxRef& e) const {
+    int v = -1;
+    switch (e.k) {
+    case FxRef::K::Algo: return 330;
+    case FxRef::K::InsertVar: return 332;
+    case FxRef::K::ReverbVar: return 333;
+    case FxRef::K::InsertMix: return insertVariation(v) && v >= 0 ? kInsertMixVariation : kInsertMixPreset;
+    case FxRef::K::Routing: return 110 + 2 * uint32_t(e.n);
+    case FxRef::K::Insert: return 194 + 2 * uint32_t(e.n);
+    case FxRef::K::Reverb: return 314 + 2 * uint32_t(e.n);
+    case FxRef::K::Mod: return 64 + (size_t(e.n) < tables_.fx.modOffsets.size() ? tables_.fx.modOffsets[size_t(e.n)] : 0);
+    }
+    return 0;
+}
+
+int Controller::fxSize(const FxRef& e) const {
+    switch (e.k) {
+    case FxRef::K::Algo: case FxRef::K::InsertVar: case FxRef::K::ReverbVar: return 1;
+    case FxRef::K::Mod: return fxOffset(e) <= 65 ? 1 : 2;   // source and destination are bytes
+    default: return 2;
+    }
+}
+
+const edtables::FxParam* Controller::fxParam(const FxRef& e) const {
+    const edtables::FxTables& t = tables_.fx;
+    const int a = runningAlgo();
+    switch (e.k) {
+    case FxRef::K::InsertMix: return t.routing.params.size() > kInsertMixSlot ? &t.routing.params[kInsertMixSlot] : nullptr;
+    case FxRef::K::Routing: return size_t(e.n) < t.routing.params.size() ? &t.routing.params[size_t(e.n)] : nullptr;
+    case FxRef::K::Reverb: return size_t(e.n) < t.reverb.params.size() ? &t.reverb.params[size_t(e.n)] : nullptr;
+    case FxRef::K::Insert:
+        if (a < 0 || size_t(e.n) >= t.inserts[size_t(a)].params.size()) return nullptr;
+        return &t.inserts[size_t(a)].params[size_t(e.n)];
+    case FxRef::K::Mod: {
+        if (size_t(e.n) >= t.mod.size()) return nullptr;
+        const uint32_t off = fxOffset(e);
+        if (off == 70 || off == 72) {                // destination min / max: in the destination parameter's terms
+            int64_t dest;
+            if (a < 0 || !fxRaw(65, 1, fxLocked(e), dest) || dest < 0 || size_t(dest) >= t.inserts[size_t(a)].params.size()) return nullptr;
+            return &t.inserts[size_t(a)].params[size_t(dest)];
+        }
+        return &t.mod[size_t(e.n)];
+    }
+    default: return nullptr;
+    }
+}
+
+int Controller::fxWidth(const FxRef& e) const {
+    const edtables::FxTables& t = tables_.fx;
+    if (e.k == FxRef::K::Algo) return 16;
+    if (e.k == FxRef::K::InsertVar || e.k == FxRef::K::ReverbVar) {
+        const std::string& fmt = e.k == FxRef::K::InsertVar ? t.insertVariationFmt : t.reverbVariationFmt;
+        return int(std::max(t.preset.size(), edtables::formatNumber(fmt, 99).size()));
+    }
+    const edtables::FxAlgo* a = runningAlgo() >= 0 ? &t.inserts[size_t(runningAlgo())] : nullptr;
+    if (e.k == FxRef::K::Mod && fxOffset(e) == 65) { // the destination: the running algorithm's parameter names
+        size_t w = 4;
+        if (a) for (const edtables::FxParam& q : a->params) w = std::max(w, edpages::trimmed(q.name).size());
+        return int(std::min<size_t>(w, 16));
+    }
+    if (e.k == FxRef::K::Mod && fxOffset(e) >= 70) { // destination min / max: the widest of the destination's values
+        size_t w = 4;
+        if (a) for (int k = 0; k < int(a->params.size()); ++k) w = std::max(w, size_t(fxWidth({FxRef::K::Insert, k})));
+        return int(std::min<size_t>(w, 16));
+    }
+    const edtables::FxParam* p = fxParam(e);
+    if (!p) return 4;
+    size_t w = std::max(edtables::formatEffect(*p, p->min, t, a).size(), edtables::formatEffect(*p, p->max, t, a).size());
+    if (p->hasList) for (const std::string& x : p->list) w = std::max(w, edpages::trimmed(x).size());
+    if (p->formatter == 80) for (const std::string& x : t.syncNames) w = std::max(w, edpages::trimmed(x).size());
+    if (p->formatter == 82) w = 16;
+    return int(std::min<size_t>(w, 16));
+}
+
+std::vector<Page> Controller::insertAlgoPages() {
+    const edtables::FxTables& t = tables_.fx;
+    auto item = [&](FxRef::K k, int n, const std::string& label) {
+        const int ref = fxRefOf(k, n);
+        return Item{label, "", ref, ref >= 0 ? fxWidth(fx_[size_t(refs_[size_t(ref)].field)]) : 0};
+    };
+    auto routingName = [&](int k) { return edpages::displayName(t.routing.params[size_t(k)].name); };
+    std::vector<Row> rows;
+    Row top;                                         // ALGO and VARIATION side by side
+    top.kind = edpages::RowKind::Fixed;
+    Item algo = item(FxRef::K::Algo, 0, "ALGO"), var = item(FxRef::K::InsertVar, 0, "VARIATION");
+    algo.col = 0; var.col = 25;
+    top.items = {algo, var};
+    rows.push_back(top);
+    std::vector<Item> first = {item(FxRef::K::InsertMix, 0, routingName(kInsertMixSlot))};
+    for (int k : kInsertAlgoRouting) first.push_back(item(FxRef::K::Routing, k, routingName(k)));
+    for (const Row& r : edpages::twoColumnRows(first)) rows.push_back(r);
+    std::vector<Page> pages = edpages::paginate(rows);
+    if (fxAlgo_ >= 0) {                              // the running algorithm's parameters in the OS's edit order
+        const edtables::FxAlgo& a = t.inserts[size_t(fxAlgo_)];
+        std::vector<Item> items;
+        for (int k : a.order) items.push_back(item(FxRef::K::Insert, k, edpages::displayName(a.params[size_t(k)].name)));
+        if (!items.empty()) for (const Page& pg : edpages::paginate(edpages::twoColumnRows(items))) pages.push_back(pg);
+    }
+    return pages;
+}
+
+void Controller::checkFxAlgo() {
+    const int a = runningAlgo();
+    if (a == fxAlgo_) return;
+    fxAlgo_ = a;
+    for (auto it = before_.begin(); it != before_.end();) {   // revert values of the previous algorithm's slots
+        const Ref& r = refs_[size_t(it->first)];
+        const bool slot = r.kind == 'x' && (fx_[size_t(r.field)].k == FxRef::K::Insert || fx_[size_t(r.field)].k == FxRef::K::Mod);
+        it = slot ? before_.erase(it) : std::next(it);
+    }
+    for (size_t i = 0; i < areas_.size(); ++i) {
+        if (areas_[i].name != "INSERT") continue;
+        for (size_t j = 0; j < areas_[i].sections.size(); ++j) {
+            Section& sec = areas_[i].sections[j];
+            if (sec.name == "ALGO") sec.pages = insertAlgoPages();
+            else if (sec.name == "MOD")                    // the destination's width follows the algorithm
+                for (auto& pg : sec.pages) for (Row& r : pg) for (Item& x : r.items)
+                    if (x.ref >= 0) x.width = fxWidth(fx_[size_t(refs_[size_t(x.ref)].field)]);
+            if (int(i) == area_ && int(j) == section_ && page_ >= int(sec.pages.size())) page_ = int(sec.pages.size()) - 1;
+        }
+    }
+    render();
+}
+
+bool Controller::lockedHint(int ref) {
+    if (ref < 0 || size_t(ref) >= refs_.size() || refs_[size_t(ref)].kind != 'x') return false;
+    if (!fxLocked(fx_[size_t(refs_[size_t(ref)].field)])) return false;
+    setNotice("select PSEt to edit");
+    render();
+    return true;
+}
+
+// The insert modulation block: one partial write of the edit buffer (offset 64, 10 bytes) per gesture, not during
+// the rebuild hold; it starts a new hold, and the read-back follows it.
+void Controller::pumpMod() {
+    if (!modPending_ || !modReady_ || now_ < fxHoldUntil_ || !open_ || !link_.running()) return;
+    if (!link_.send(edproto::partialWrite({edproto::kPreset, 0, 0, 0, 64, 10}, std::vector<uint8_t>(modBlock_.begin(), modBlock_.end()))))
+        return;
+    modPending_ = modReady_ = false;
+    lastSendAt_ = now_;
+    fxHoldUntil_ = now_ + kFxHoldMs;
+    afterWrite();
+}
+
 // ------------------------------------------------------------------ tick
 
 void Controller::tick(double nowMs) {
@@ -1407,7 +1878,7 @@ void Controller::tick(double nowMs) {
     // Edits: paced sends, the arp edit through the panel's buttons, and the read-back once everything is out.
     pump();
     arpPump();
-    const bool quiet = pending_.empty() && pendingArp_.empty() && !jobActive_ && rmw_.empty();
+    const bool quiet = pending_.empty() && pendingArp_.empty() && !jobActive_ && rmw_.empty() && !modPending_;
     if (readBackAt_ >= 0 && now_ >= readBackAt_ && quiet && dragRef_ < 0) { readBackAt_ = -1; readPage(); }
 
     // Names for the ARP area: the pattern shown, and the arp presets for the right-click list (a few per tick, only

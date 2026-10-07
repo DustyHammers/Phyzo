@@ -38,18 +38,7 @@ std::vector<Field> commonFields(const std::array<std::string, 5>& knobLabels) {
         f.section = "KNOBS"; f.offset = knobOffsets[k]; f.nrpnLsb = knobLsbs[k]; f.editable = true;
         out.push_back(f);
     }
-    auto mod = [&](const char* label, uint32_t off, int size, Kind kind) {
-        Field f;
-        f.label = label; f.section = "MOD"; f.offset = off; f.size = size; f.kind = kind;   // display only
-        out.push_back(f);
-    };
-    mod("MOD SOURCE", 64, 1, Kind::Number);
-    mod("MOD DEST", 65, 1, Kind::Number);
-    mod("SRC MIN", 66, 2, Kind::Signed16);
-    mod("SRC MAX", 68, 2, Kind::Signed16);
-    mod("DEST MIN", 70, 2, Kind::Signed16);
-    mod("DEST MAX", 72, 2, Kind::Signed16);
-    return out;
+    return out;                                      // (the insert modulation is on INSERT > MOD)
 }
 
 std::vector<Field> arpFields(const edtables::ArpText& t) {

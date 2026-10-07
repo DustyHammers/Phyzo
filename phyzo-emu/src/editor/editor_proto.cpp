@@ -90,6 +90,12 @@ std::vector<std::vector<uint8_t>> nrpn(int channel, int msb, int lsb, int value)
             {st, 0x26, uint8_t(v & 0x7F)},   {st, 0x63, 0x7F},              {st, 0x62, 0x7F}};
 }
 
+std::vector<uint8_t> fxParameter(int slot, int param, int value) {
+    const uint32_t v = uint32_t(value);
+    return {0xF0, 0x0F, 0x7F, 0x7F, 0x00, 0x00, 0x00, 0x00, uint8_t(slot & 0x7F), 0x00, uint8_t(param & 0x7F),
+            uint8_t(v & 0x7F), uint8_t((v >> 7) & 0x7F), 0xF7};
+}
+
 void oscillatorNrpn(int sound, int osc, int param, int& msb, int& lsb) {
     msb = 2 + sound * 4 + osc * 2 + (param >> 7);
     lsb = param & 0x7F;

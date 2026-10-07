@@ -88,7 +88,12 @@ owner step by step through anything they must do by hand on github.com or on the
   is pressed). Arp edits start only in panel mode 0x01 (normal) or 0x0C (arp menu); in any other mode nothing is pressed
   and the user is told. A run begun in normal mode ends with the preset bank button (0x19) pressed once, only while the
   mode reads 0x0C, back to 0x01 (in normal mode that button switches the bank); begun in the arp menu, it stays there.
-  Never a knob, never a write into the arp state, never a whole-preset dump (it stops a running arp). COMMON
+  Never a knob, never a write into the arp state, never a whole-preset dump (it stops a running arp). INSERT and
+  REVERB (docs/editor/EFFECTS_EDITOR_SPEC.md, ROUND3_ANSWERS.md): effect values by a raw-memory write of the word into
+  the edit buffer, then the OS's effect parameter message; never a partial write of the preset for them and never NRPN
+  LSB 34/35; the algorithm by NRPN LSB 30, 31, then 32 = 0; the insert modulation as one 10-byte partial write
+  (offset 64) per gesture; after that write or NRPN LSB 30-33 every effect send waits 350 ms (the OS rebuilds its
+  effects); under a variation the slot is display only (the values that play). COMMON
   and ARP fields (no OS table) are in `editor_fields.*`; ARP values come from the live arp state and the OS's arp
   variables in RAM. Follow also jumps to the page of the panel knob last moved (`Engine::lastPanelControl`).
   The skin side: `<name>-editor.rml`, `<vfdrow>` (values take drags, double-click, right-click), `<legend>`, the Lua

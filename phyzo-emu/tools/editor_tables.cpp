@@ -1,11 +1,13 @@
 // editor_tables: prints the editor's OS tables as decoded from the user's OS image (or the OS update file), to check
 // the table layouts against the hardware. Terminal output only; writes nothing.
 //
-//   editor_tables <OS image or update file> [oscillator|sound|common|system]
+//   editor_tables <OS image or update file> [oscillator|sound|common|system|arp|effects]
 //
 // Per table: index, name, offset, record flags, value type, min, max, display kind, format flags, list index or
 // formatter, hidden, the editor section, and the decoded list entries. The wave list exists only in RAM at run time
-// and is not printed.
+// and is not printed. effects: per algorithm (41 inserts, the routing shell, the reverb) its family / sub, name, panel
+// code, variations, edit order and every parameter slot's PID, name, range and display; the insert modulation's
+// fields; the variation codes and formats.
 #include <cstdio>
 #include <string>
 #include "editor/editor_pages.h"
@@ -44,11 +46,51 @@ void print(const edtables::Table& t, const char* which) {
         std::printf("\n");
     }
 }
+void printParam(const edtables::FxTables& t, const edtables::FxParam& p, const edtables::FxAlgo* insert, const char* label) {
+    std::printf("    %-4s PID 0x%04X %-6s %-24s %6d..%-6d", label, p.pid, p.found ? "" : "(none)", ("\"" + p.name + "\"").c_str(), p.min, p.max);
+    if (p.hasList) std::printf(" list %zu", p.list.size());
+    if (p.formatter >= 0) std::printf(" formatter %d", p.formatter);
+    if (p.prefix || p.suffix) std::printf(" prefix %u suffix %u", p.prefix, p.suffix);
+    if (p.decimals) std::printf(" decimals %d", p.decimals);
+    if (p.tempoSync) std::printf(" tempo-sync");
+    if (p.hidden()) std::printf(" hidden");
+    std::printf("  [%s .. %s]\n", edtables::formatEffect(p, p.min, t, insert).c_str(), edtables::formatEffect(p, p.max, t, insert).c_str());
+}
+
+void printAlgo(const edtables::FxTables& t, const edtables::FxAlgo& a, const std::string& what) {
+    std::printf("  %s: family %u sub %u name [%s]%s, %zu parameters, %zu variations\n", what.c_str(), a.family, a.sub, a.name.c_str(),
+                a.ok ? "" : " (!! not readable)", a.params.size(), a.variations.size());
+    std::printf("    edit order:");
+    for (int k : a.order) std::printf(" %d", k);
+    std::printf("\n    variations:");
+    for (const auto& v : a.variations) std::printf(" [%s]", v.c_str());
+    std::printf("\n");
+    for (size_t k = 0; k < a.params.size(); ++k) printParam(t, a.params[k], &a, ("k" + std::to_string(k)).c_str());
+}
+
+void printEffects(const edtables::FxTables& t, int& failed) {
+    std::printf("== effects%s\n", t.ok ? "" : (" (!! " + t.error + ")").c_str());
+    std::printf("  PSEt [%s] insert variations [%s] reverb variations [%s] ms format [%s]\n", t.preset.c_str(),
+                t.insertVariationFmt.c_str(), t.reverbVariationFmt.c_str(), t.msFormat.c_str());
+    std::printf("  tempo-sync names:");
+    for (const auto& s : t.syncNames) std::printf(" [%s]", s.c_str());
+    std::printf("\n  suffixes:");
+    for (const auto& s : t.suffixes) std::printf(" [%s]", s.c_str());
+    std::printf("\n");
+    for (size_t i = 0; i < t.inserts.size(); ++i)
+        printAlgo(t, t.inserts[i], "insert " + std::to_string(i) + " code [" + (i < t.codes.size() ? t.codes[i] : "") + "]");
+    printAlgo(t, t.routing, "routing shell");
+    printAlgo(t, t.reverb, "reverb");
+    std::printf("  insert modulation:\n");
+    for (size_t i = 0; i < t.mod.size(); ++i)
+        printParam(t, t.mod[i], nullptr, ("+" + std::to_string(i < t.modOffsets.size() ? t.modOffsets[i] : 0)).c_str());
+    if (!t.ok) ++failed;
+}
 }  // namespace
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        std::fprintf(stderr, "usage: editor_tables <OS image or update file> [oscillator|sound|common|system|arp]\n");
+        std::fprintf(stderr, "usage: editor_tables <OS image or update file> [oscillator|sound|common|system|arp|effects]\n");
         return 2;
     }
     OsImage os;
@@ -86,5 +128,6 @@ int main(int argc, char** argv) {
         std::printf("\n");
         if (!a.ok) ++failed;
     }
+    if (only.empty() || only == "effects") printEffects(edtables::readEffects(os.bytes), failed);
     return failed ? 1 : 0;
 }

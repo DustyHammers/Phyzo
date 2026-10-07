@@ -13,6 +13,12 @@
 //    step (40 ms apart), reading the value back until it lands. Safety: -/No and +/Yes are pressed only right after the
 //    arp-control variable was read as the wanted control. Arp on/off and keyboard: their own button, pressed once.
 //  - PRESETS: a click on a name sends its program change; the current preset is marked (focused).
+//  - INSERT and REVERB (docs/editor/EFFECTS_EDITOR_SPEC.md, round 3): effect parameter values by a raw-memory write of
+//    the word into the edit buffer, then the OS's effect parameter message; the algorithm by NRPN MSB 1 LSB 30, 31,
+//    then 32 = 0; variations by NRPN LSB 32 / 33; the insert modulation as one 10-byte partial write of the edit
+//    buffer (offset 64) per gesture. After the modulation write or LSB 30-33 every effect send waits kFxHoldMs (the
+//    OS rebuilds its effects). Under a variation the slot's values are those that play (the running performance),
+//    display only.
 // Every edit is clamped to the field's range, shown at once, sent (NRPN and partial writes paced like panel knob moves,
 // the latest value winning; arp edits one at a time, the latest target winning) and read back after the last write.
 //
@@ -126,6 +132,10 @@ public:
     static constexpr double kOwnLedsMs = 1000;       // LED messages this soon after a write are the edit's own
     static constexpr int kPresets = 64, kPresetsPerPage = 8;
     static constexpr int kDragDpPerStep = 4, kFineDragDpPerStep = 16;
+    // The rebuild hold (docs/editor/ROUND3_ANSWERS.md 4): after the modulation block write or NRPN LSB 30-33 the OS
+    // rebuilds the running effects and loses effect edits from the sound for about 280 ms; every effect send waits this
+    // long after one of them (the latest queued value is sent then), and the read-back follows the hold.
+    static constexpr double kFxHoldMs = 350;
 
     // Tests
     std::vector<std::vector<uint8_t>> pageReadsForTest() const { return pageReads(); }
@@ -152,9 +162,16 @@ private:
     };
     struct Obj { std::vector<uint8_t> bytes; std::vector<bool> valid; };
     // A page item's source. kind: 's' system, 'p' sound settings, 'c' sound common, 'o' oscillator (table fields),
-    // 'n' preset name (field = preset number), 'm' COMMON / 'a' ARP preset field (field = index in its list).
+    // 'n' preset name (field = preset number), 'm' COMMON / 'a' ARP preset field (field = index in its list), 'x' an
+    // effect field (field = index in fx_).
     struct Ref { const edtables::Table* table; int field; char kind; };
     struct Rmw { ObjKey key; uint32_t offset; int bit, width, value; };
+    // An effect field: the insert algorithm and variation, the reverb variation, the insert mix (word 136, or 292 with
+    // a variation), routing-shell slot n, insert or reverb parameter slot n, insert modulation field n (record order).
+    struct FxRef {
+        enum class K { Algo, InsertVar, ReverbVar, InsertMix, Routing, Insert, Reverb, Mod } k;
+        int n = 0;
+    };
 
     void build();
     void render();
@@ -201,9 +218,33 @@ private:
     void moveFocus(int dr, int dc);
     std::vector<edpages::Screen::Span> visibleSpans() const;
 
+    // effects
+    int fxRefOf(FxRef::K k, int n) const;
+    std::vector<edpages::Page> insertAlgoPages();     // INSERT ALGO: page 1, then the running algorithm's parameters
+    void checkFxAlgo();                              // the running insert algorithm changed: its parameter pages
+    int runningAlgo() const;                         // the running insert algorithm's index (bytes 330/331), -1: unknown
+    bool fxByte(uint32_t off, int& b) const;         // a preset byte (edit buffer)
+    bool fxRaw(uint32_t off, int size, bool running, int64_t& v) const;
+    bool insertVariation(int& v) const;              // -1: PSEt
+    bool reverbVariation(int& v) const;
+    bool fxLocked(const FxRef& e) const;             // a variation plays this field's value: display only
+    uint32_t fxOffset(const FxRef& e) const;         // preset offset
+    int fxSize(const FxRef& e) const;
+    const edtables::FxParam* fxParam(const FxRef& e) const;   // the definition its value is shown and ranged by
+    int fxWidth(const FxRef& e) const;
+    bool lockedHint(int ref);                        // a locked effect field: tell the user, true
+    void pumpMod();                                  // the insert modulation block write, when due
+
+    // modulation block write (one per gesture)
+    std::array<uint8_t, 10> modBlock_{};
+    bool modPending_ = false, modReady_ = false;
+    double fxHoldUntil_ = -1e9;                      // effect sends wait until then (the rebuild hold)
+
     Link& link_;
     edtables::OsTables tables_;
     std::vector<edfields::Field> common_, arp_;
+    std::vector<FxRef> fx_;
+    int fxAlgo_ = -1;                                // the running insert algorithm the INSERT ALGO pages show
     std::array<std::string, 5> knobLabels_;
     edpages::Waves waves_;
     std::vector<std::string> waveNames_;
