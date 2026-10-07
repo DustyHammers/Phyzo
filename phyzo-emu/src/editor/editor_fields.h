@@ -68,7 +68,7 @@ enum class Kind {
 struct Field {
     std::string label;
     char area = 'm';                                 // 'm' COMMON, 'a' ARP
-    std::string section;                             // COMMON: SLOTS, KNOBS or MOD
+    std::string section;                             // COMMON: SLOTS or KNOBS
     int page = 0;                                    // ARP: page 0 or 1
     int slot = -1;                                   // COMMON SLOTS: the sound slot 0-3
     uint32_t offset = 0;                             // preset offset
@@ -90,7 +90,7 @@ struct Field {
 };
 
 // COMMON: the four sound slots (mode, oscillators, key range), the five performance-knob values (labels from the
-// skin, perf1-perf5) and the insert modulation (display only).
+// skin, perf1-perf5). (The insert modulation is on INSERT > MOD, docs/editor/EFFECTS_EDITOR_SPEC.md.)
 std::vector<Field> commonFields(const std::array<std::string, 5>& knobLabels);
 // ARP: page 0 the switches, intervals, ranges, notes and numbers; page 1 resolution, tempo, feel, the arp preset
 // field, the pattern and the arp settings name.

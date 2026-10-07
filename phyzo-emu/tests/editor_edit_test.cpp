@@ -81,11 +81,10 @@ ArpText arpText() {
 void testFields() {
     using namespace edfields;
     const std::vector<edfields::Field> c = commonFields({"P", "H", "", "Z", "O"});
-    CHECK(c.size() == 16 + 5 + 6);
+    CHECK(c.size() == 16 + 5);                                                    // the insert modulation is on INSERT > MOD
     CHECK(c[4].label == "MODE" && c[4].slot == 1 && c[4].offset == 38 && c[4].nrpnLsb == 11);   // slot 2: B 36, L 9
     CHECK(c[7].label == "HIGH" && c[7].offset == 37 && c[7].nrpnLsb == 10);
     CHECK(c[16].label == "P" && c[16].offset == 34 && c[16].nrpnLsb == 7 && c[18].label == "PERF3" && c[20].offset == 50 && c[20].nrpnLsb == 21);
-    CHECK(c[21].label == "MOD SOURCE" && !c[21].editable && c[23].label == "SRC MIN" && c[24].label == "SRC MAX" && c[24].offset == 68 && c[26].label == "DEST MAX");
     const ArpText t = arpText();
     const std::vector<edfields::Field> a = arpFields(t);
     CHECK(a.size() == 22);
@@ -507,8 +506,9 @@ void testEditing() {
     // Format 0xC000: stored 0 shows "000"; typed numbers are the shown numbers.
     {
         const int id = c.refForTest('s', 6);
-        const auto* sp = spanOf(c.view(), id);
-        CHECK(sp && c.view().screen.rowText(sp->row).substr(size_t(sp->col), 3) == "000");
+        const editor::View sysView = c.view();
+        const auto* sp = spanOf(sysView, id);
+        CHECK(sp && sysView.screen.rowText(sp->row).substr(size_t(sp->col), 3) == "000");
         link.sent.clear();
         c.command("type", std::to_string(id));
         for (char ch : std::string("005")) c.key(std::string(1, ch));
@@ -556,16 +556,10 @@ void testEditing() {
     v = c.view();
     CHECK_EQ(v.screen.rowText(0), std::string("P                     64 H                      0 "));
     CHECK_EQ(v.screen.rowText(2), std::string("O                     32                          "));
+    // COMMON no longer shows the insert modulation (it is on INSERT > MOD).
+    CHECK((c.view().sections == std::set<std::string>{"SLOTS", "KNOBS"}));
     c.command("section", "MOD");
-    answerPreset();
-    tick(10);
-    v = c.view();
-    CHECK(v.screen.rowText(1).find("SRC MIN") == 0 && v.screen.rowText(1).find("-100") != std::string::npos);
-    link.sent.clear();
-    c.command("drag_begin", std::to_string(c.refForTest('m', 21)));             // insert modulation: display only
-    c.command("drag", "4");
-    tick(200);
-    CHECK(link.sent.empty() || !link.any(0xB0));
+    CHECK(c.view().section == "KNOBS");
 
     // ---- ARP: values from the OS (live arp state, runtime flags, current arp preset); every edit through the panel's
     // own buttons, on a simulated OS

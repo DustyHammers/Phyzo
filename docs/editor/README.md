@@ -13,6 +13,8 @@ Name-free design documents for the editor unit, from the project chat:
   on panel knobs, the window fitting the screen (F-32).
 - `ROUND2_REVIEW.md`: the review of round 2 with the real OS: every arp setting through the panel's own buttons, and
   the Presets page marking the current preset.
+- `EFFECTS_EDITOR_SPEC.md` and `ROUND3_ANSWERS.md` (round 3): the INSERT and REVERB pages, the effect tables' layouts
+  and the verified write paths.
 - `IMPLEMENTATION_STEPS.md`: the plan.
 
 ## What is implemented
@@ -20,7 +22,15 @@ Name-free design documents for the editor unit, from the project chat:
 - `phyzo-emu/src/editor/`: messages (`editor_proto`: partial reads and writes, whole reads and dumps, NRPN, program
   changes), the OS tables and arp texts read from the user's OS at run time (`editor_tables`), the preset object's
   COMMON and ARP fields (`editor_fields`), pages (`editor_pages`) and the controller (`editor_controller`): areas
-  SYSTEM, PRESETS, COMMON, SOUND, OSC and ARP. INSERT and REVERB wait for V-15.
+  SYSTEM, PRESETS, COMMON, SOUND, OSC, ARP, INSERT and REVERB.
+- INSERT (ALGO, MOD, SENDS) and REVERB (ALGO, SENDS), round 3 (EFFECTS_EDITOR_SPEC.md): names, ranges, lists, units,
+  the edit order, the variations and the panel's codes read from the user's OS image at run time. Effect values: a
+  raw-memory write of the word into the edit buffer, then the OS's effect parameter message (clamped to the record's
+  range; never a partial write of the preset, never NRPN LSB 34/35); the algorithm by NRPN MSB 1 LSB 30, 31, then
+  32 = 0; the variations by LSB 32 / 33 (PSEt only where the panel offers it); the insert modulation as one 10-byte
+  partial write of the edit buffer (offset 64) per gesture, at most one per 150 ms. Under a variation the slot's values
+  are the ones that play (read from the running performance), display only, not underlined ("select PSEt to edit").
+  The insert modulation moved here from COMMON.
 - Editing (round 2): only fields with a write path verified live are editable (EDITOR_ROUND2.md section 1), every other
   field is display only. Drag a value (1 step per 4 dp, Shift fine), double-click for typed entry, right-click for the
   OS's list and revert, arrows and +/-; every edit is clamped, shown at once, sent (paced like panel knob moves, the
@@ -40,8 +50,8 @@ Name-free design documents for the editor unit, from the project chat:
 - The plugin: right-click > Editor, the window growing by the unit's height and never beyond the screen, the open state
   saved with the project, the value lists as right-click menus, the keys.
 
-`editor_tables <OS image or update file> [oscillator|sound|common|system|arp]` (built with phyzo-emu) prints the tables
-and the arp texts as decoded, to check them against the hardware; it writes nothing.
+`editor_tables <OS image or update file> [oscillator|sound|common|system|arp|effects]` (built with phyzo-emu) prints the
+tables, the arp texts and the effect tables as decoded, to check them against the hardware; it writes nothing.
 
 To confirm with the real OS (project chat): the arp texts' addresses (on/off strings, codes, the formats and the
 resolution names); the arp preset numbers' format (`AP%02d`, shown here from AP01); the base channel used for NRPN and

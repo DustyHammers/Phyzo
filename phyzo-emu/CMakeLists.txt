@@ -161,6 +161,11 @@ add_executable(editor_edit_test tests/editor_edit_test.cpp src/editor/editor_pro
 target_include_directories(editor_edit_test PRIVATE src)
 target_compile_options(editor_edit_test PRIVATE -Wall -Wextra)
 add_test(NAME editor_edit COMMAND editor_edit_test)
+add_executable(editor_fx_test tests/editor_fx_test.cpp src/editor/editor_proto.cpp src/editor/editor_tables.cpp
+  src/editor/editor_pages.cpp src/editor/editor_fields.cpp src/editor/editor_controller.cpp)
+target_include_directories(editor_fx_test PRIVATE src)
+target_compile_options(editor_fx_test PRIVATE -Wall -Wextra)
+add_test(NAME editor_fx COMMAND editor_fx_test)
 add_executable(esp2_core_test tests/esp2_core_test.cpp src/esp2_core.cpp)
 target_include_directories(esp2_core_test PRIVATE src)
 target_compile_options(esp2_core_test PRIVATE -Wall -Wextra)
