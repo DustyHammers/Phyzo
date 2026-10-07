@@ -74,8 +74,9 @@ ValueList decodeList(const std::vector<uint8_t>& image, uint32_t address) {
             prev = cur;
             cur.clear();
             if (c == 0x00) break;
-        } else if (c == 0x80) {
-            continue;
+        } else if (c == 0x80) {                      // the next list's start marker: this list ends (one OS list has
+            if (!cur.empty()) list.entries.push_back(cur);   // no terminator before it)
+            break;
         } else if (c == 0x10) {                      // the rest of the previous entry, then the entry ends
             if (cur.size() < prev.size()) cur += prev.substr(cur.size());
             list.entries.push_back(cur);

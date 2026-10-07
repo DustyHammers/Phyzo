@@ -149,6 +149,14 @@ void testTables() {
     // 0x11 copies one character from the same position of the previous entry: "Center" -> "C" + "1", then "C" + "2".
     CHECK((t.lists[1].entries == std::vector<std::string>{"L2", "L1", "Center", "C1", "C2"}) && t.lists[1].hasFirst && t.lists[1].first == -2);
     CHECK((t.lists[2].entries == std::vector<std::string>{"One more", "One more", "X"}));
+    {   // a list with no terminator, followed directly by the next list's 0x80 start marker: it ends there
+        ImageBuilder lb;
+        const uint32_t a = lb.bytes({0x80, 'O', 'f', 'f', 0x0D, 'd', 'P', 'r', 'S', 0x80, 0x05, 0x00, 0x00, ' ', ' ', 'O', 'n', 0x00});
+        CHECK((decodeList(lb.img, a).entries == std::vector<std::string>{"Off", "dPrS"}));
+        CHECK((decodeList(lb.img, a + 9).entries == std::vector<std::string>{"  On"}) && decodeList(lb.img, a + 9).hasFirst);
+        const uint32_t e = lb.bytes({0x80, 'A', 0x0D, 'B', 0x0D, 0x80, 'C', 0x00});   // after a separator: no empty entry
+        CHECK((decodeList(lb.img, e).entries == std::vector<std::string>{"A", "B"}));
+    }
 
     // Hidden names
     CHECK(isHiddenName("SPARE 3") && isHiddenName("Wave Class") && isHiddenName("WaveChecksum") && isHiddenName("Use Layer") &&
