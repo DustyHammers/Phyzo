@@ -6,6 +6,8 @@
 //     editor's standing read.
 //  3. Reply filter: the OS's replies to the editor's requests are taken out of the MIDI output and handed to the
 //     editor; replies to other senders' requests, and replies when nothing is pending, pass unchanged.
+//  5. Reply routing with requests the OS answers with its error message (0x7F) or not at all: partial-read replies by
+//     the address they echo, the error message to the oldest request, each request expiring on its own.
 //  4. The editor's messages never split a host message: a 3000-byte SysEx stays whole with editor messages around it.
 #include <chrono>
 #include <cstdio>
@@ -53,11 +55,21 @@ struct Rig {
     }
 };
 
-Msg reply(uint32_t marker) {                         // a reply as the OS sends it (device 00, command 0x44)
-    edproto::Address a{edproto::kSound, 0, 2, 0, marker, 4};
-    Msg m = edproto::partialWrite(a, {1, 2, 3, 4});
+const edproto::Address kRead{edproto::kSound, 0, 2, 0, 0x30, 0x20};
+
+// A reply as the OS sends it (device 00, command 0x44), echoing the request's address; `marker` tells replies apart.
+Msg reply(uint8_t marker, const edproto::Address& a = kRead) {
+    std::vector<uint8_t> data(a.length, 0);
+    data[0] = marker;
+    Msg m = edproto::partialWrite(a, data);
     m[4] = 0x00; m[5] = edproto::kPartialReply;
     return m;
+}
+Msg error(uint8_t code) { return {0xF0, 0x0F, 0x11, 0x01, 0x00, edproto::kError, code, 0xF7}; }   // the OS's error message
+std::vector<Msg> answers(const std::vector<Msg>& v) {   // the OS's replies among the output (requests echo too)
+    std::vector<Msg> r;
+    for (const Msg& m : v) if (edproto::isReply(m.data(), m.size())) r.push_back(m);
+    return r;
 }
 }  // namespace
 
@@ -72,7 +84,7 @@ int main() {
         std::ofstream(dir / "wave", std::ios::binary).write(wave.data(), long(wave.size()));
     }
     const Msg pc = {0xC0, 0x05}, bank = {0xB0, 0x00, 0x01}, note = {0x90, 0x40, 0x40}, dump = {0xF0, 0x0F, 0x11, 0x01, 0x00, 0x02, 0x10, 0xF7};
-    const Msg read = edproto::partialRead({edproto::kSound, 0, 2, 0, 0x30, 0x20});
+    const Msg read = edproto::partialRead(kRead);
 
     // 1. Closed = untouched.
     {
@@ -165,6 +177,65 @@ int main() {
         }
         CHECK(whole && bigs == 1 && shorts == 20 && notes == 8);
         std::printf("editor_engine_test: a 3000-byte host SysEx stays whole among %zu editor messages\n", shorts);
+    }
+
+    // 5. The OS answers some requests with its error message and others not at all.
+    {
+        Rig r(dir);
+        r.e.setEditorOpen(true);
+        const edproto::Address aE{edproto::kSound, 0, 2, 0, 0x40, 0x10}, aH{edproto::kSound, 0, 2, 1, 0x40, 0x10};
+        const Msg readE = edproto::partialRead(aE), readH = edproto::partialRead(aH), bad = edproto::partialRead(kRead);
+        // A host request answered with the error message, then an editor request and a host request.
+        r.block({bad});
+        r.run(40);
+        r.block({error(1)});
+        r.run(40);
+        r.e.editorSend(readE.data(), readE.size());
+        r.run(40);
+        r.block({readH});
+        r.run(40);
+        r.block({reply(2, aE), reply(3, aH)});
+        r.run(40);
+        CHECK((answers(r.out) == std::vector<Msg>{error(1), reply(3, aH)}));
+        CHECK((r.replies() == std::vector<Msg>{reply(2, aE)}));
+        // The same with the replies the other way round: each still reaches its own sender.
+        r.out.clear();
+        r.e.editorSend(readE.data(), readE.size());
+        r.run(40);
+        r.block({readH});
+        r.run(40);
+        r.block({reply(4, aH), reply(5, aE)});
+        r.run(40);
+        CHECK((answers(r.out) == std::vector<Msg>{reply(4, aH)}));
+        CHECK((r.replies() == std::vector<Msg>{reply(5, aE)}));
+        // An editor request answered with the error message goes to the editor; a host request after it gets its reply.
+        r.out.clear();
+        r.e.editorSend(bad.data(), bad.size());
+        r.run(40);
+        r.block({readH});
+        r.run(40);
+        r.block({error(6), reply(7, aH)});
+        r.run(40);
+        CHECK((answers(r.out) == std::vector<Msg>{reply(7, aH)}));
+        CHECK((r.replies() == std::vector<Msg>{error(6)}));
+        // An editor request the OS never answers: later replies still find their senders, and it expires on its own
+        // (an error message after that passes).
+        r.out.clear();
+        r.e.editorSend(bad.data(), bad.size());
+        r.run(40);
+        r.block({readH});
+        r.e.editorSend(readE.data(), readE.size());
+        r.run(40);
+        r.block({reply(8, aE), reply(9, aH)});
+        r.run(40);
+        CHECK((answers(r.out) == std::vector<Msg>{reply(9, aH)}));
+        CHECK((r.replies() == std::vector<Msg>{reply(8, aE)}));
+        r.out.clear();
+        r.run(int(Engine::kEditorReplyTimeoutSamples * 48000 / 44100 / 256) + 20);
+        r.block({error(10)});
+        r.run(40);
+        CHECK((answers(r.out) == std::vector<Msg>{error(10)}) && r.replies().empty());
+        std::printf("editor_engine_test: error messages and unanswered requests: every reply reaches its own sender\n");
     }
 
     fs::remove_all(dir);

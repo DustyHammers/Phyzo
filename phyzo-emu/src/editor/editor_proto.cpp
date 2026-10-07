@@ -149,7 +149,23 @@ bool isOsSysex(const uint8_t* m, size_t n, uint8_t command) {
     return n >= 7 && m[0] == 0xF0 && m[1] == kManufacturer && m[2] == kModel && m[3] == kVersion && m[5] == command &&
            m[n - 1] == 0xF7;
 }
-bool isReply(const uint8_t* m, size_t n) { return isOsSysex(m, n, kPartialReply) || isOsSysex(m, n, kWholeReply); }
+bool isReply(const uint8_t* m, size_t n) {
+    return isOsSysex(m, n, kPartialReply) || isOsSysex(m, n, kWholeReply) || isOsSysex(m, n, kError);
+}
+bool addressOf(const uint8_t* m, size_t n, Address& a) {
+    a = Address();
+    if (n < 6 + 1 + 2 + 1) return false;
+    const uint8_t* p = m + 6;
+    a.type = p[0];
+    a.number = uint16_t(get14(p + 1));
+    if (m[5] == kWholeRead || m[5] == kWholeReply) return true;
+    if (n < 6 + kAddressBytes + 1) return false;
+    a.subtype = p[3];
+    a.subnumber = uint16_t(get14(p + 4));
+    a.offset = get32(p + 6);
+    a.length = get32(p + 11);
+    return true;
+}
 bool isRequest(const uint8_t* m, size_t n) { return isOsSysex(m, n, kPartialRead) || isOsSysex(m, n, kWholeRead); }
 
 bool isPresetTrigger(const uint8_t* m, size_t n) {

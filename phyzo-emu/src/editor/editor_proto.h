@@ -17,6 +17,8 @@ constexpr uint8_t kAnyDevice = 0x7F;
 // Commands
 constexpr uint8_t kWholeRead = 0x01, kWholeDump = 0x02, kPartialRead = 0x04, kPartialWrite = 0x05;
 constexpr uint8_t kWholeReply = 0x41, kPartialReply = 0x44;
+// The OS's error message (F0 0F 11 01 <device> 7F ... F7): its answer to a request it cannot serve.
+constexpr uint8_t kError = 0x7F;
 // Object types
 constexpr uint8_t kSystem = 0, kSound = 1, kPerformance = 2, kPreset = 7, kArpPreset = 8, kArpPattern = 9, kRawMemory = 0x7F;
 constexpr uint16_t kEditBuffer = 0x3FFF;             // performance edit buffer number
@@ -74,8 +76,11 @@ bool parseWhole(const uint8_t* m, size_t n, uint8_t& type, uint16_t& number, std
 // ---- classification (allocation-free; used by the audio thread)
 // F0 0F 11 01 <any device> <command>, F7-terminated.
 bool isOsSysex(const uint8_t* m, size_t n, uint8_t command);
-// A reply to an editor request: partial-read (0x44) or whole-object (0x41) reply.
+// An answer to a request: partial-read (0x44) or whole-object (0x41) reply, or the OS's error message (0x7F).
 bool isReply(const uint8_t* m, size_t n);
+// The address in a partial read (0x04) or its reply (0x44): type, number, sub-type, sub-number, offset, length; in a
+// whole read (0x01) or its reply (0x41): type and number (the rest 0). False if the message is too short.
+bool addressOf(const uint8_t* m, size_t n, Address& a);
 // A request that the OS answers (partial read 0x04, whole read 0x01).
 bool isRequest(const uint8_t* m, size_t n);
 // A message into the OS after which the preset may have changed: program change, bank select (CC 0 / CC 32), or any
