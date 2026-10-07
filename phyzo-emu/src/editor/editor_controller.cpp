@@ -996,9 +996,13 @@ void Controller::apply(int ref, int64_t d) {
 // The next write, paced: at most one per kPaceMs, or the time the last one takes on the cable if longer.
 void Controller::pump() {
     if (!open_ || !link_.running()) return;
+    // Effect sends wait while the OS rebuilds its effects (the rebuild hold); other writes go on.
+    auto held = [&](int ref) { return refs_[size_t(ref)].kind == 'x' && now_ < fxHoldUntil_; };
     while (now_ >= nextSendAt_ && !pending_.empty()) {
         auto it = pending_.find(dragRef_);           // the value being dragged first
-        if (it == pending_.end()) it = pending_.begin();
+        if (it == pending_.end() || held(it->first))
+            for (it = pending_.begin(); it != pending_.end() && held(it->first); ++it) {}
+        if (it == pending_.end()) break;
         const int ref = it->first;
         const int64_t d = it->second;
         pending_.erase(it);
@@ -1010,7 +1014,7 @@ void Controller::pump() {
 void Controller::sendWrite(int ref, int64_t d) {
     const Ref& r = refs_[size_t(ref)];
     std::vector<std::vector<uint8_t>> msgs;
-    bool isRead = false;
+    bool isRead = false, rebuild = false;            // rebuild: NRPN LSB 30-33, the OS rebuilds its effects
     if (const edfields::Field* f = presetField(r)) {
         if (r.kind == 'm' && f->nrpnLsb >= 0) msgs = edproto::nrpn(channel_, 1, f->nrpnLsb, int(d));
     } else if (r.kind == 'x') {
@@ -1022,9 +1026,10 @@ void Controller::sendWrite(int ref, int64_t d) {
             nrpn(30, tables_.fx.inserts[size_t(d)].family);
             nrpn(31, tables_.fx.inserts[size_t(d)].sub);
             nrpn(32, 0);
+            rebuild = true;
             break;
-        case FxRef::K::InsertVar: nrpn(32, int(d)); break;
-        case FxRef::K::ReverbVar: nrpn(33, int(d)); break;
+        case FxRef::K::InsertVar: nrpn(32, int(d)); rebuild = true; break;
+        case FxRef::K::ReverbVar: nrpn(33, int(d)); rebuild = true; break;
         case FxRef::K::Mod: return;                  // the block (pumpMod)
         default: {                                   // the word into the edit buffer, then applied live
             const uint32_t off = fxOffset(e);
@@ -1066,13 +1071,14 @@ void Controller::sendWrite(int ref, int64_t d) {
     if (isRead) ++outstanding_;
     lastSendAt_ = now_;
     nextSendAt_ = now_ + std::max(kPaceMs, double(bytes) * kCableMsPerByte);
+    if (rebuild) fxHoldUntil_ = now_ + kFxHoldMs;
     afterWrite();
 }
 
 void Controller::afterWrite() {
     edited_ = true;
     lastWriteAt_ = now_;
-    readBackAt_ = now_ + kReadBackMs;
+    readBackAt_ = std::max(now_ + kReadBackMs, fxHoldUntil_);   // after the rebuild hold, if one runs
 }
 
 void Controller::presetChanged() {
@@ -1823,15 +1829,15 @@ bool Controller::lockedHint(int ref) {
     return true;
 }
 
-// The insert modulation block: one partial write of the edit buffer (offset 64, 10 bytes) per gesture, at most one
-// per kModWriteMs, then read back.
+// The insert modulation block: one partial write of the edit buffer (offset 64, 10 bytes) per gesture, not during
+// the rebuild hold; it starts a new hold, and the read-back follows it.
 void Controller::pumpMod() {
-    if (!modPending_ || !modReady_ || now_ < modNextAt_ || !open_ || !link_.running()) return;
+    if (!modPending_ || !modReady_ || now_ < fxHoldUntil_ || !open_ || !link_.running()) return;
     if (!link_.send(edproto::partialWrite({edproto::kPreset, 0, 0, 0, 64, 10}, std::vector<uint8_t>(modBlock_.begin(), modBlock_.end()))))
         return;
     modPending_ = modReady_ = false;
-    modNextAt_ = now_ + kModWriteMs;
     lastSendAt_ = now_;
+    fxHoldUntil_ = now_ + kFxHoldMs;
     afterWrite();
 }
 

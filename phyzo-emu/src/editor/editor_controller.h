@@ -16,8 +16,9 @@
 //  - INSERT and REVERB (docs/editor/EFFECTS_EDITOR_SPEC.md, round 3): effect parameter values by a raw-memory write of
 //    the word into the edit buffer, then the OS's effect parameter message; the algorithm by NRPN MSB 1 LSB 30, 31,
 //    then 32 = 0; variations by NRPN LSB 32 / 33; the insert modulation as one 10-byte partial write of the edit
-//    buffer (offset 64) per gesture, at most one per 150 ms. Under a variation the slot's values are those that play
-//    (the running performance), display only.
+//    buffer (offset 64) per gesture. After the modulation write or LSB 30-33 every effect send waits kFxHoldMs (the
+//    OS rebuilds its effects). Under a variation the slot's values are those that play (the running performance),
+//    display only.
 // Every edit is clamped to the field's range, shown at once, sent (NRPN and partial writes paced like panel knob moves,
 // the latest value winning; arp edits one at a time, the latest target winning) and read back after the last write.
 //
@@ -131,7 +132,10 @@ public:
     static constexpr double kOwnLedsMs = 1000;       // LED messages this soon after a write are the edit's own
     static constexpr int kPresets = 64, kPresetsPerPage = 8;
     static constexpr int kDragDpPerStep = 4, kFineDragDpPerStep = 16;
-    static constexpr double kModWriteMs = 150;      // the insert modulation block: at most one write per 150 ms
+    // The rebuild hold (docs/editor/ROUND3_ANSWERS.md 4): after the modulation block write or NRPN LSB 30-33 the OS
+    // rebuilds the running effects and loses effect edits from the sound for about 280 ms; every effect send waits this
+    // long after one of them (the latest queued value is sent then), and the read-back follows the hold.
+    static constexpr double kFxHoldMs = 350;
 
     // Tests
     std::vector<std::vector<uint8_t>> pageReadsForTest() const { return pageReads(); }
@@ -234,7 +238,7 @@ private:
     // modulation block write (one per gesture)
     std::array<uint8_t, 10> modBlock_{};
     bool modPending_ = false, modReady_ = false;
-    double modNextAt_ = 0;
+    double fxHoldUntil_ = -1e9;                      // effect sends wait until then (the rebuild hold)
 
     Link& link_;
     edtables::OsTables tables_;

@@ -28,8 +28,10 @@ Name-free design documents for the editor unit, from the project chat:
   raw-memory write of the word into the edit buffer, then the OS's effect parameter message (clamped to the record's
   range; never a partial write of the preset, never NRPN LSB 34/35); the algorithm by NRPN MSB 1 LSB 30, 31, then
   32 = 0; the variations by LSB 32 / 33 (PSEt only where the panel offers it); the insert modulation as one 10-byte
-  partial write of the edit buffer (offset 64) per gesture, at most one per 150 ms. Under a variation the slot's values
-  are the ones that play (read from the running performance), display only, not underlined ("select PSEt to edit").
+  partial write of the edit buffer (offset 64) per gesture. After that write or NRPN LSB 30-33 the OS rebuilds its
+  effects: every effect send waits 350 ms (the latest queued value goes then) and the read-back follows. Under a
+  variation the slot's values are the ones that play (read from the running performance), display only, not
+  underlined ("select PSEt to edit").
   The insert modulation moved here from COMMON.
 - Editing (round 2): only fields with a write path verified live are editable (EDITOR_ROUND2.md section 1), every other
   field is display only. Drag a value (1 step per 4 dp, Shift fine), double-click for typed entry, right-click for the

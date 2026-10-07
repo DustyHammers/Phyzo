@@ -8,8 +8,10 @@
 //  4. Controller with a fake OS: the pages; an effect value is a raw-memory write of the word into the edit buffer,
 //     then the effect parameter message, clamped; the algorithm is NRPN LSB 30, 31, then 32 = 0; variations and their
 //     PSEt rules; under a variation the slot's values are those that play, display only (not underlined, a hint); the
-//     insert modulation is one 10-byte partial write per gesture (a new destination resets its range), at most one
-//     per 150 ms; nothing is sent while closed.
+//     insert modulation is one 10-byte partial write per gesture (a new destination resets its range); nothing is
+//     sent while closed.
+//  5. The rebuild hold: after the modulation write or NRPN LSB 30-33 no effect message for 350 ms, then the latest
+//     queued value; modulation writes at least 350 ms apart.
 #include <cstdio>
 #include <cstring>
 #include <set>
@@ -261,10 +263,13 @@ void testMessage() {
 struct FakeLink : editor::Link {
     Bytes preset = Bytes(414, 0), playing = Bytes(0x2CC + 0x10E, 0);
     std::vector<Bytes> sent, replies;
+    std::vector<double> sentAt;                      // when each message was sent (with `clock`)
+    const double* clock = nullptr;
     bool open = false;
     void setOpen(bool on) override { open = on; }
     bool send(const Bytes& m) override {
         sent.push_back(m);
+        sentAt.push_back(clock ? *clock : 0);
         if (m.size() > 20 && m[5] == edproto::kPartialRead) {
             edproto::Address a;
             a.type = m[6]; a.number = uint16_t(edproto::get14(&m[7])); a.subtype = m[9];
@@ -421,7 +426,7 @@ void testController(const edtables::FxTables& fx) {
     std::vector<Bytes> varMsgs = edproto::nrpn(0, 1, 32, 1);
     CHECK(link.sent == varMsgs);
     p[332] = 1;                                      // the OS selected u02
-    tick(10);
+    tick(20);                                        // (past the rebuild hold)
     // The insert mix with a variation: word 292, then the effect message slot 0, param 13.
     const int mix = refOfLabel(c, "ROUTE 13");
     link.sent.clear();
@@ -456,8 +461,8 @@ void testController(const edtables::FxTables& fx) {
     Bytes blk = {1, 3, 0, 0, 0, 127, 0, 11, uint8_t(2011 >> 8), uint8_t(2011 & 0xFF)};
     CHECK(link.sent.size() == 1 && link.sent[0] == edproto::partialWrite({edproto::kPreset, 0, 0, 0, 64, 10}, blk));
     for (size_t i = 0; i < blk.size(); ++i) p[64 + i] = blk[i];                 // the OS holds it
-    tick(10);
-    // A drag writes once, on release; edits closer than 150 ms wait.
+    tick(20);                                                                    // (past the rebuild hold)
+    // A drag writes once, on release; a write within 350 ms of the last waits (the rebuild hold).
     const int srcMin = refOfLabel(c, "SOURCE MIN");
     link.sent.clear();
     c.command("drag_begin", std::to_string(srcMin));
@@ -466,9 +471,11 @@ void testController(const edtables::FxTables& fx) {
     c.command("drag_end", "");
     CHECK(link.writes() == 1 && link.sent.back() == edproto::partialWrite({edproto::kPreset, 0, 0, 0, 64, 10}, {1, 3, 0, 5, 0, 127, 0, 11, uint8_t(2011 >> 8), uint8_t(2011 & 0xFF)}));
     c.key("plus");
-    CHECK(link.writes() == 1);                       // within 150 ms: waits
+    CHECK(link.writes() == 1);                       // within the hold: waits
     for (int i = 0; i < 10; ++i) c.tick(now += 20);
-    CHECK(link.writes() == 2);
+    CHECK(link.writes() == 1);                       // 200 ms: still waiting
+    for (int i = 0; i < 8; ++i) c.tick(now += 20);
+    CHECK(link.writes() == 2);                       // 360 ms
     // Under an insert variation: display only.
     p[332] = 0;
     tick(20);
@@ -496,7 +503,7 @@ void testController(const edtables::FxTables& fx) {
     c.choose(refOfLabel(c, "VARIATION"), -1);
     CHECK(link.sent == edproto::nrpn(0, 1, 33, -1));
     p[333] = 0xFF;                                   // the OS selected PSEt
-    tick(10);
+    tick(20);                                        // (past the rebuild hold)
     v = c.view();
     CHECK(v.screen.rowText(1).find("40") != std::string::npos);                 // PSEt: the stored value, editable
     link.sent.clear();
@@ -523,6 +530,93 @@ void testController(const edtables::FxTables& fx) {
     CHECK(link.sent.empty());
     std::printf("editor_fx_test: INSERT and REVERB pages, write paths, variations, the modulation block\n");
 }
+// The rebuild hold (docs/editor/ROUND3_ANSWERS.md 4, spec write path 5a).
+void testRebuildHold(const edtables::FxTables& fx) {
+    FakeLink link;
+    editor::Controller c(link);
+    edtables::OsTables t;
+    t.ok = true;
+    t.fx = fx;
+    c.setTables(t);
+    Bytes& p = link.preset;
+    p[330] = 2; p[331] = 0; p[332] = 0xFF; p[333] = 0xFF;
+    link.word(p, 174, 2); link.word(p, 176, 0); link.word(p, 294, 1); link.word(p, 296, 0);
+    p[64] = 1; p[65] = 1; link.word(p, 66, 0); link.word(p, 68, 127); link.word(p, 70, -120); link.word(p, 72, 60);
+    double now = 0;
+    link.clock = &now;
+    auto tick = [&](int n = 1) { for (int i = 0; i < n; ++i) c.tick(now += 10); };
+    c.setOpen(true);
+    c.command("area", "INSERT");
+    tick(3);
+    const int algoRef = refOfLabel(c, "ALGO"), varRef = refOfLabel(c, "VARIATION");
+    const int probe = refOfLabel(c, "ROUTE 11");     // a routing slot: editable under any variation
+    auto fxAt = [&](int value, double& at) {         // the effect message for the probe with this value, and when it went
+        for (size_t i = 0; i < link.sent.size(); ++i)
+            if (link.sent[i] == edproto::fxParameter(0, 11, value)) { at = link.sentAt[i]; return true; }
+        return false;
+    };
+    auto effectMessages = [&] { int n = 0; for (const Bytes& m : link.sent) n += m.size() == 14 && m[2] == 0x7F && m[3] == 0x7F; return n; };
+    // After each rebuild message (algorithm: LSB 30, 31, 32; insert variation: 32; reverb variation: 33): no effect
+    // message for 350 ms, then only the latest queued value, raw write first.
+    const int reverbVar = [&] { c.command("area", "REVERB"); tick(3); const int r = refOfLabel(c, "VARIATION");
+                                c.command("area", "INSERT"); tick(3); return r; }();
+    struct Trigger { int ref; int64_t value; };
+    for (const Trigger& tr : {Trigger{algoRef, 0}, Trigger{varRef, -1}, Trigger{reverbVar, -1}}) {
+        tick(40);                                    // (well clear of the previous hold)
+        link.sent.clear(); link.sentAt.clear();
+        c.choose(tr.ref, tr.value);
+        const double t0 = now;
+        CHECK(!link.sent.empty() && link.sent.back()[0] == 0xB0);   // the NRPN went out
+        c.choose(probe, 10);
+        tick(10);
+        c.choose(probe, 20);                         // the latest value wins
+        while (now < t0 + 340) tick();
+        CHECK(effectMessages() == 0);
+        while (now < t0 + 400) tick();
+        double at = 0;
+        CHECK(effectMessages() == 1 && fxAt(20, at) && at >= t0 + 350);
+        CHECK(!fxAt(10, at));
+        size_t raw = link.sent.size(), msg = link.sent.size();
+        for (size_t i = 0; i < link.sent.size(); ++i) {
+            if (link.sent[i] == edproto::partialWrite({edproto::kRawMemory, 0, 0, 0, edproto::kEditBufferRam + 132, 2}, {0, 20})) raw = i;
+            if (link.sent[i] == edproto::fxParameter(0, 11, 20)) msg = i;
+        }
+        CHECK(raw < msg);                            // raw write, then the effect message
+        // The read-back comes after the hold.
+        bool earlyRead = false;
+        for (size_t i = 0; i < link.sent.size(); ++i)
+            earlyRead |= link.sent[i].size() > 6 && link.sent[i][5] == edproto::kPartialRead && link.sentAt[i] > t0 && link.sentAt[i] < t0 + 350;
+        CHECK(!earlyRead);
+    }
+    // After the modulation write: no effect message for 350 ms; two modulation choices 200 ms apart: the second write
+    // no earlier than 350 ms after the first.
+    c.command("section", "MOD");
+    tick(40);
+    const int src = refOfLabel(c, "MOD SOURCE");
+    link.sent.clear(); link.sentAt.clear();
+    c.choose(src, 2);
+    const double t0 = now;
+    auto modWrites = [&](std::vector<double>& at) {
+        at.clear();
+        for (size_t i = 0; i < link.sent.size(); ++i)
+            if (link.sent[i].size() > 20 && link.sent[i][5] == edproto::kPartialWrite && link.sent[i][6] == edproto::kPreset) at.push_back(link.sentAt[i]);
+        return at.size();
+    };
+    std::vector<double> at;
+    CHECK(modWrites(at) == 1 && at[0] == t0);
+    c.command("section", "ALGO");
+    c.choose(probe, 30);
+    while (now < t0 + 200) tick();
+    c.command("section", "MOD");
+    c.choose(src, 0);                                // 200 ms after the first
+    while (now < t0 + 340) tick();
+    double fxTime = 0;
+    CHECK(effectMessages() == 0 && modWrites(at) == 1);
+    while (now < t0 + 800) tick();
+    CHECK(fxAt(30, fxTime) && fxTime >= t0 + 350);
+    CHECK(modWrites(at) == 2 && at[1] >= at[0] + 350);
+    std::printf("editor_fx_test: the rebuild hold (350 ms after the modulation write and NRPN LSB 30-33)\n");
+}
 }  // namespace
 
 int main() {
@@ -531,6 +625,7 @@ int main() {
     testTables(fx);
     testMessage();
     if (fx.ok) testController(fx);
+    if (fx.ok) testRebuildHold(fx);
     std::printf("editor_fx_test: %s\n", failures ? "FAILED" : "passed");
     return failures ? 1 : 0;
 }
