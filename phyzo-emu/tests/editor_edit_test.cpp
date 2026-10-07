@@ -298,6 +298,7 @@ OsTables tables() {
     for (int i = 0; i < 8; ++i) t.system.fields.push_back(mkField("S" + std::to_string(i), uint32_t(i), kUnsignedByte, 0, 127));
     t.system.fields[6].format = kFmtThreeDigits;                                  // shown as stored, "000"
     t.system.fields.push_back(mkField("NRPN", 25, kBitField, (1 << 8) | 5, 1));   // a flag: bit 5 of byte 25
+    t.system.fields.push_back(mkField("Channel", 9, kUnsignedByte, 0, 1));          // the stored value may be outside
     for (int i = 0; i < edpages::kOscillatorFields; ++i) t.oscillator.fields.push_back(mkField("SPARE " + std::to_string(i), 0xF0, kUnsignedByte, 0, 1));
     t.oscillator.fields[51] = mkField("Wave ID", 0x4C, kLong, 0, -1);
     t.oscillator.fields[30] = mkField("Filter Mode", 0x3A, kUnsignedByte, 0, 1);
@@ -473,6 +474,7 @@ void testEditing() {
     c.command("area", "SYSTEM");
     Bytes sys(32, 0);
     sys[25] = 0x5F;
+    sys[9] = 3;                                                                 // outside the table's range 0-1
     for (const Bytes& m : link.sent) if (m.size() > 6 && m[5] == edproto::kPartialRead && FakeLink::addressOf(m).type == edproto::kSystem) link.answer(m, sys);
     tick(10);
     link.sent.clear();
@@ -484,6 +486,24 @@ void testEditing() {
     tick(10);
     CHECK(link.sent.back() == edproto::partialWrite({edproto::kSystem, 0, 0, 0, 25, 1}, {0x7F}));
     tick(200);
+    // Revert restores the stored value exactly, even outside the table's range; new edits stay in it.
+    {
+        const int ch = c.refForTest('s', 9);
+        link.sent.clear();
+        c.choose(ch, 0);
+        CHECK(link.sent.back() == edproto::partialWrite({edproto::kSystem, 0, 0, 0, 9, 1}, {0}));
+        tick(20);
+        CHECK(c.menu(ch).revert && c.menu(ch).revertLabel == "3");
+        c.revert(ch);
+        CHECK(link.sent.back() == edproto::partialWrite({edproto::kSystem, 0, 0, 0, 9, 1}, {3}));
+        tick(20);
+        c.choose(ch, 5);                                                         // clamped to 0-1
+        CHECK(link.sent.back() == edproto::partialWrite({edproto::kSystem, 0, 0, 0, 9, 1}, {1}));
+        tick(20);
+        c.revert(ch);
+        CHECK(link.sent.back() == edproto::partialWrite({edproto::kSystem, 0, 0, 0, 9, 1}, {3}));
+        tick(200);
+    }
     // Format 0xC000: stored 0 shows "000"; typed numbers are the shown numbers.
     {
         const int id = c.refForTest('s', 6);

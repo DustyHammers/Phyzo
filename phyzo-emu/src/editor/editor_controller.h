@@ -183,7 +183,7 @@ private:
     std::vector<Choice> listOf(int ref) const;       // the OS's values for a field with a list (empty: none)
 
     // writing
-    void write(int ref, int64_t d);                  // clamp, show, queue
+    void write(int ref, int64_t d, bool exact = false);   // clamp (not `exact`: revert), show, queue
     void apply(int ref, int64_t d);                  // into the bytes the editor holds (shown at once)
     void pump();                                     // paced sends
     void sendWrite(int ref, int64_t d);

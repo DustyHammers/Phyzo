@@ -710,12 +710,12 @@ bool Controller::parseTyped(int ref, const std::string& s, int64_t& d) const {
 
 // ------------------------------------------------------------------ writing
 
-void Controller::write(int ref, int64_t d) {
+void Controller::write(int ref, int64_t d, bool exact) {
     if (!open_ || !link_.running() || !editable(ref)) return;
     if (!notice_.empty()) setNotice("");             // a new edit: an earlier message no longer applies
     int64_t lo, hi;
     if (!rangeOf(ref, lo, hi)) return;
-    d = std::clamp(d, lo, hi);
+    if (!exact) d = std::clamp(d, lo, hi);          // a revert restores the stored value, even outside the table's range
     int64_t cur;
     if (!before_.count(ref) && valueOf(ref, cur)) before_[ref] = cur;
     apply(ref, d);
@@ -1084,7 +1084,7 @@ void Controller::choose(int ref, int64_t value) {
 
 void Controller::revert(int ref) {
     auto it = before_.find(ref);
-    if (it != before_.end()) write(ref, it->second);
+    if (it != before_.end()) write(ref, it->second, true);   // the exact value it had, unclamped
 }
 
 // Follow: the panel's solidly lit LEDs pick the target (the sound being edited is solid, the other active sounds
