@@ -399,6 +399,7 @@ void Controller::readPage() {
 
 void Controller::handleReply(const std::vector<uint8_t>& m) {
     if (outstanding_ > 0) --outstanding_;
+    unanswered_ = false;
     edproto::Message r;
     if (!edproto::parse(m.data(), m.size(), r) || r.command != edproto::kPartialReply) return;
     const edproto::Address& a = r.address;
@@ -1269,7 +1270,8 @@ void Controller::arpPump() {
             if (runMode_ < 0) runMode_ = panelMode_;
             if (job_.control < 0) { press(f->button, true); next(ArpJob::Stage::ToggleUp); }
             else next(ArpJob::Stage::Select);
-        } else if (since > kReplyTimeoutMs) {
+        } else if (since > kReplyTimeoutMs) {        // no answer (the OS's demo answers no SysEx): press nothing
+            setNotice("The panel is busy (e.g. demo); the arp setting was not changed.");
             arpFinish(false, true);
         }
         break;
@@ -1413,22 +1415,26 @@ void Controller::tick(double nowMs) {
             if (raw != edfields::kNone16 && !patternRequested_.count(int(raw)) && link_.send(edproto::partialRead({edproto::kArpPattern, uint16_t(raw), 0, 0, 8, 16}))) {
                 patternRequested_.insert(int(raw));
                 ++outstanding_;
+                lastSendAt_ = now_;
             }
         }
-        for (int i = 0; i < 2 && outstanding_ == 0 && arpNamesRequested_ < edfields::kArpPresets; ++i) {
+        // (not while the OS leaves requests unanswered, e.g. in its demo: a request is never repeated every tick)
+        for (int i = 0; i < 2 && outstanding_ == 0 && !unanswered_ && arpNamesRequested_ < edfields::kArpPresets; ++i) {
             if (!link_.send(edproto::partialRead({edproto::kArpPreset, uint16_t(arpNamesRequested_), 0, 0, 8, 16}))) break;
             ++arpNamesRequested_;
             ++outstanding_;
+            lastSendAt_ = now_;
         }
     }
     // PRESETS: every stored preset's name once (to find the current preset by its name), a few per tick.
-    if (currentArea() && currentArea()->name == "PRESETS" && quiet)
+    if (currentArea() && currentArea()->name == "PRESETS" && quiet && !unanswered_)
         for (int i = 0; i < 2 && presetNamesRequested_ < kPresets; ++i, ++presetNamesRequested_) {
             if (presetNameRead_[size_t(presetNamesRequested_)]) continue;
             if (!link_.send(edproto::partialRead({edproto::kPreset, uint16_t(edproto::kStoredPreset + presetNamesRequested_), 0, 0, 8, 16}))) break;
             ++outstanding_;
+            lastSendAt_ = now_;
         }
-    if (outstanding_ > 0 && now_ - lastSendAt_ > kReplyTimeoutMs) outstanding_ = 0;
+    if (outstanding_ > 0 && now_ - lastSendAt_ > kReplyTimeoutMs) { outstanding_ = 0; unanswered_ = true; }
     render();
 }
 

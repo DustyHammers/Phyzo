@@ -281,6 +281,7 @@ private:
     std::array<char, 4> lastDisplay_{};
     double now_ = 0, readDue_ = -1, displayChangedAt_ = -1, lastLedChangeAt_ = -1;
     int outstanding_ = 0;
+    bool unanswered_ = false;                        // requests timed out with no reply since: no name reads
     double lastSendAt_ = 0;
 
     mutable std::mutex viewMtx_;

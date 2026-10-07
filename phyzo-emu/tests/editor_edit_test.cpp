@@ -224,10 +224,11 @@ struct FakeLink : editor::Link {
     int lastControl = -1;
     std::map<int, int> ledModes;
     std::array<char, 4> disp{{'P', ' ', '0', '1'}};
+    bool demo = false;                               // the OS answers no SysEx at all (its demo mode)
     void setOpen(bool on) override { open = on; }
     bool send(const Bytes& m) override {
         sent.push_back(m);
-        if (arp.on && m.size() > 20 && m[5] == edproto::kPartialRead && addressOf(m).type == edproto::kRawMemory) {
+        if (!demo && arp.on && m.size() > 20 && m[5] == edproto::kPartialRead && addressOf(m).type == edproto::kRawMemory) {
             const edproto::Address a = addressOf(m);
             if (a.offset == edfields::kArpControlVar) answerData(m, {uint8_t(arp.var)});
             else if (a.offset == edfields::kPanelMode) answerData(m, {uint8_t(arp.mode)});
@@ -869,11 +870,37 @@ void testArpPresetPlaceholder() {
     std::printf("editor_edit_test: ARP preset field: placeholder at once, clickable once read\n");
 }
 
+// Demo mode: the OS answers no SysEx. An arp edit started there sends a bounded number of requests (none repeated every
+// tick), presses nothing, and ends with one message.
+void testDemoMode() {
+    FakeLink link;
+    editor::Controller c(link);
+    c.setTables(tables());
+    c.setOpen(true);
+    double now = 0;
+    link.arp.on = true;
+    c.command("area", "ARP");
+    c.tick(now += 10);
+    c.tick(now += 10);                                // the page is read; then the OS goes into its demo
+    link.demo = true;
+    link.sent.clear(); link.presses.clear();
+    const uint32_t notices = c.noticeSerial();
+    c.choose(c.refForTest('a', 13), 40);              // tch
+    for (int i = 0; i < 500; ++i) c.tick(now += 20);   // 10 s
+    int requests = 0;
+    for (const Bytes& m : link.sent) requests += m.size() > 6 && m[5] == edproto::kPartialRead;
+    CHECK(requests <= 10);
+    CHECK(link.presses.empty());
+    CHECK(c.noticeSerial() == notices + 1 && c.notice().find("busy") != std::string::npos);
+    std::printf("editor_edit_test: demo mode: %d requests in 10 s, nothing pressed, one message\n", requests);
+}
+
 int main() {
     testMessages();
     testFields();
     testEditing();
     testArpPresetPlaceholder();
+    testDemoMode();
     std::printf("editor_edit_test: %s\n", failures ? "FAILED" : "passed");
     return failures ? 1 : 0;
 }
