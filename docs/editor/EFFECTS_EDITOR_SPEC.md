@@ -90,12 +90,14 @@ min/max). The destination is the insert parameter slot k (offset 194 + 2k), not 
    330/331 equal 174/176 (insert), and for the reverb only when the stored reverb area (294) is family 1 / sub 0; the
    same rules as the panel. All 64 factory presets have a reverb variation selected.
 4a. **Insert modulation (preset 64-73):** one SysEx partial write of the preset edit buffer (type 7 #0, offset 64,
-   length 10: the whole block from the last read-back with the edited field changed); one write per gesture, at most
-   one per 150 ms, then read back. It reloads the insert (the same short dip as an algorithm change); this is the only
+   length 10: the whole block from the last read-back with the edited field changed); one write per gesture, then
+   read back. It reloads the insert (the same short dip as an algorithm change); this is the only
    path the OS applies fully (a raw write into the running copy switches only the source; destination and range stay
    cached). When the destination changes, write in the same block dest min = the destination's min (11 if
    tempo-syncable) and dest max = its max, as the OS does. Display-only under an insert variation.
 5. NRPN: all four controllers (99, 98, 6, 38), then the null (99/98 = 0x7F); the OS applies on CC 38.
+5a. **Rebuild hold:** after the modulation write or NRPN LSB 30-33, hold every effect send for 350 ms (the OS loses
+   effect edits from the sound for about 280 ms while it rebuilds), then send the latest queued value.
 6. Read back after every edit (partial read) and show what the OS holds. Under a variation every field of that slot
    is display-only (decision 1).
 

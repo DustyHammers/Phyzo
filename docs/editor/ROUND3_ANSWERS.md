@@ -123,7 +123,12 @@ every selectable algorithm.
   from the last read-back with the edited field changed). Verified: the destination and range are honoured
   (dest 14: +3.9 dB, range 0..0: no change).
 - It reloads the insert, the same ⅓-second dip as an algorithm change. Send one write per gesture (on release / Enter),
-  at most one per 150 ms, then read back.
+  then read back.
+- **Rebuild hold (measured after the round-3 build; corrects the 150 ms given here first).** The modulation write and
+  NRPN LSB 30/31/32/33 (algorithm, insert or reverb variation) make the OS rebuild the running effects. For about
+  280 ms after one of them, any effect edit (raw write + FX message, any slot) and any further modulation write is
+  stored but lost from the sound: lost at 270 ms, applied from 285 ms. Hold every effect send for 350 ms after any of
+  these messages, then send the latest queued value.
 - With an insert variation selected, these fields are display-only (the variation brings its own mod block).
 
 ## 5. 0xAC868 and the PID lookup
