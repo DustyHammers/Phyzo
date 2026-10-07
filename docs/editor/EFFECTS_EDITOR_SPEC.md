@@ -95,6 +95,21 @@ min/max). The destination is the insert parameter slot k (offset 194 + 2k), not 
    path the OS applies fully (a raw write into the running copy switches only the source; destination and range stay
    cached). When the destination changes, write in the same block dest min = the destination's min (11 if
    tempo-syncable) and dest max = its max, as the OS does. Display-only under an insert variation.
+4b. **Copy variation to PSEt (owner, 2026-10-07; verified on the real OS).** Variations load their defaults; to edit
+   one, the editor copies what plays into the preset's stored effect, then selects PSEt. Editor side only.
+   - Trigger (owner): the first edit in the editor of a field that a variation locks (insert or reverb). The main
+     panel is never involved and keeps the OS's own behaviour. Fields already editable under a variation (INSERT MIX =
+     word 292) keep their current path and do not trigger a copy.
+   - Source = the running copy of the effect block (RAM 0x0BE09C88 + 0x2CC holds preset offset 60; preset offset o is
+     at 0x0BE09C88 + 0x2CC − 60 + o), read with partial reads.
+   - Insert: raw-write into the edit buffer the running bytes 174-257 (insert area), 64-73 (modulation block),
+     118-119 and 122-123 (the two routing words a variation sets), and the edit buffer's word 292 into word 136.
+   - Reverb: raw-write the running bytes 294-329.
+   - Then read the written ranges back and send NRPN LSB 32 (insert) / 33 (reverb) = −1 **only when the read-back
+     equals the copy** (the OS stores a large raw write in pieces; PSEt sent earlier takes a half-written buffer —
+     measured: the reverb's last four parameters zeroed, the insert mix lost). Then the 350 ms hold (5a), then read back.
+   - Result on the real OS (41 algorithms × 280 variations, 8 reverb variations × 3 presets): PSEt taken, the running
+     effect unchanged, the effects-chip program identical.
 5. NRPN: all four controllers (99, 98, 6, 38), then the null (99/98 = 0x7F); the OS applies on CC 38.
 5a. **Rebuild hold:** after the modulation write or NRPN LSB 30-33, hold every effect send for 350 ms (the OS loses
    effect edits from the sound for about 280 ms while it rebuilds), then send the latest queued value.
