@@ -1198,7 +1198,8 @@ void Controller::arpEnd() {
 //     read the control; otherwise the edit stops without pressing (the variable keeps its value outside the arp
 //     menu: in normal mode those buttons step the main preset);
 //  4. the value read back each round until it lands.
-// Any panel input or other MIDI during the edit stops it at once (and the edits queued behind it). On/off and keyboard:
+// Any panel input or other MIDI during the edit stops it at once (and the edits queued behind it); none starts while a
+// panel button is held (latched by the skin, or not released). On/off and keyboard:
 // their own button once, if the OS's flag differs.
 void Controller::arpPump() {
     if (!open_ || !link_.running()) return;
@@ -1221,6 +1222,13 @@ void Controller::arpPump() {
         if (f->arpControl < 0) {                     // a flag: nothing to do if the OS's flag is already so
             int64_t cur;
             if (valueOf(job_.ref, cur) && cur == job_.target) return;
+        }
+        if (link_.panelButtonHeld()) {               // a button latched or held on the panel: press nothing
+            setNotice("The arp settings cannot be changed while a panel button is held (latched). Release it first. "
+                      "Nothing was changed.");
+            pendingArp_.clear();
+            render();
+            return;
         }
         job_.control = f->arpControl;
         job_.gestures = link_.panelGestures();

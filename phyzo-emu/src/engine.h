@@ -49,6 +49,8 @@ public:
     int controlPosition(int cc) const { return cc >= 0 && cc < 26 ? positions_[size_t(cc)].load() : 0; }
     // A front-panel button by its panel id (raw): sends 81 raw (down) or 80 raw (up). Lock-free for the audio thread.
     void pressRaw(int raw, bool down);
+    // A panel button is down now (pressed and not yet released, or latched by the skin), by either call above.
+    bool anyButtonHeld() const;
 
     // LEDs as the OS last set them (panel messages 90 off, 91 on, 92 flash, 9D beat flash).
     enum LedMode : uint8_t { LedOff = 0, LedOn = 1, LedFlash = 2, LedBeat = 3 };
@@ -279,7 +281,9 @@ private:
 
     // panel buttons: ring (UI threads) -> audio thread, never merged
     static constexpr int kButtonRing = 1024;
-    std::array<std::atomic<uint32_t>, kButtonRing> buttons_{};   // (kind << 24) | payload
+    std::array<std::atomic<uint32_t>, kButtonRing> buttons_{};
+    std::array<std::atomic<uint32_t>, 4> heldRaw_{};  // the raw buttons down now (one bit each)
+    std::atomic<uint32_t> heldOs_{0};                 // pressButton's -/No and +/Yes down now   // (kind << 24) | payload
     std::mutex pushMtx_;                                         // producers: message thread and skin render thread
     std::array<std::atomic<uint16_t>, 26> positions_{};          // current control positions (for the UI)
     std::mutex controlsMtx_;

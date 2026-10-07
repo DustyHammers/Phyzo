@@ -8,6 +8,7 @@
 //     editor; replies to other senders' requests, and replies when nothing is pending, pass unchanged.
 //  5. Reply routing with requests the OS answers with its error message (0x7F) or not at all: partial-read replies by
 //     the address they echo, the error message to the oldest request, each request expiring on its own.
+//  6. A panel button held (a latched one, or a press not yet released) is reported until it is released.
 //  4. The editor's messages never split a host message: a 3000-byte SysEx stays whole with editor messages around it.
 #include <chrono>
 #include <cstdio>
@@ -236,6 +237,23 @@ int main() {
         r.run(40);
         CHECK((answers(r.out) == std::vector<Msg>{error(10)}) && r.replies().empty());
         std::printf("editor_engine_test: error messages and unanswered requests: every reply reaches its own sender\n");
+    }
+
+    // 6. Held panel buttons.
+    {
+        Engine e;
+        CHECK(!e.anyButtonHeld());
+        e.pressRaw(0x19, true);                      // latched by the skin: down, no release yet
+        e.pressRaw(0x0D, true);
+        e.pressRaw(0x0D, false);
+        CHECK(e.anyButtonHeld());
+        e.pressRaw(0x19, false);
+        CHECK(!e.anyButtonHeld());
+        e.pressButton(1, true);
+        CHECK(e.anyButtonHeld());
+        e.pressButton(1, false);
+        CHECK(!e.anyButtonHeld());
+        std::printf("editor_engine_test: held panel buttons reported until released\n");
     }
 
     fs::remove_all(dir);

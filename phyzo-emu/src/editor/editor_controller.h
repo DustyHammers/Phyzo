@@ -52,6 +52,7 @@ struct Link {
     virtual void pressButton(int /*raw*/, bool /*down*/) {}   // a front-panel button, as the panel sends it (81 / 80 raw);
                                                               // counted in panelGestures like the panel's own presses
     virtual uint64_t externalMidi() const { return 0; }       // MIDI messages into the OS from the host / virtual port
+    virtual bool panelButtonHeld() const = 0;        // a panel button is down now (latched by the skin, or not released)
 };
 
 // What the skin shows (a copy; legends by their text as in docs/editor/EDITOR_PANEL_LAYOUT.json).

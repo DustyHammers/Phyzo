@@ -124,14 +124,23 @@ void Engine::push(uint32_t entry) {
 }
 
 void Engine::pressButton(int osButton, bool down) {
+    const uint32_t bit = 1u << (osButton & 31);
+    if (down) heldOs_.fetch_or(bit); else heldOs_.fetch_and(~bit);
     ++panelGestures_;
     push(uint32_t((osButton << 1) | (down ? 1 : 0)));
 }
 
 void Engine::pressRaw(int raw, bool down) {
     if (raw < 0 || raw > 0x7F) return;
+    const uint32_t bit = 1u << (raw & 31);
+    if (down) heldRaw_[size_t(raw >> 5)].fetch_or(bit); else heldRaw_[size_t(raw >> 5)].fetch_and(~bit);
     ++panelGestures_;
     push((2u << 24) | (down ? 0x100u : 0u) | uint32_t(raw));
+}
+
+bool Engine::anyButtonHeld() const {
+    for (const auto& w : heldRaw_) if (w.load()) return true;
+    return heldOs_.load() != 0;
 }
 
 Engine::LedInfo Engine::led(int code) const {

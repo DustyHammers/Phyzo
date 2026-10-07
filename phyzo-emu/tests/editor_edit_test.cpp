@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 #include "editor/editor_controller.h"
@@ -182,7 +183,11 @@ struct FakeLink : editor::Link {
     std::vector<std::pair<int, bool>> presses;
     std::vector<double> pressTimes;
     const double* clock = nullptr;
+    std::set<int> downNow;                           // buttons down now: the editor's own presses
+    std::set<int> latched;                           // and the skin's latched buttons
+    bool panelButtonHeld() const override { return !downNow.empty() || !latched.empty(); }
     void pressButton(int raw, bool down) override {
+        if (down) downNow.insert(raw); else downNow.erase(raw);
         presses.push_back({raw, down});
         pressTimes.push_back(clock ? *clock : 0);
         ++gestures;                                  // the engine counts every edge as panel input
@@ -631,6 +636,15 @@ void testEditing() {
     CHECK(c.notice().empty() && c.noticeSerial() == refused + 1);
     settle();
     CHECK(link.arp.live[34] == 32 && c.notice().empty());
+    // A panel button latched by the skin (the preset bank button): no arp edit, no button edge at all, a message.
+    link.presses.clear();
+    link.latched.insert(edfields::kBtnBank);
+    const uint32_t beforeLatched = c.noticeSerial();
+    c.choose(tempo, 140);
+    settle();
+    CHECK(link.presses.empty() && link.arp.bankSwitches == 0 && c.noticeSerial() == beforeLatched + 1);
+    CHECK(c.notice().find("held") != std::string::npos);
+    link.latched.clear();
     // Safety: the panel leaves the arp menu while the editor waits (the variable keeps reading the control): the edit
     // stops without pressing -/No or +/Yes.
     link.presses.clear(); link.arp.stepVars.clear();

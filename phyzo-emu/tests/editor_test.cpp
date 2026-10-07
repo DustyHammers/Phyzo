@@ -345,6 +345,7 @@ struct FakeLink : editor::Link {
     uint64_t ledStateMessages() const override { return leds; }
     uint64_t presetTriggers() const override { return triggers; }
     uint64_t panelGestures() const override { return gestures; }
+    bool panelButtonHeld() const override { return false; }
     int ledMode(int code) const override { auto it = ledModes.find(code); return it == ledModes.end() ? 0 : it->second; }
     std::array<char, 4> display() const override { return disp; }
     bool running() const override { return run; }
