@@ -154,6 +154,11 @@ private:
         uint32_t editorSerial() override { return proc.editor_.serial(); }
         void editorState(skin::EditorState& out) override;
         void editorCommand(const std::string& action, const std::string& text) override {
+            if (action == "library" && text == "LIBRARY") {   // from any page, and from the main document: the editor
+                PhyzoProcessor* p = &proc;                   // unit opens on the library list if it was closed
+                proc.postToEditor([p](editor::Controller& c) { p->openEditorUnit(); c.command("library", "LIBRARY"); });
+                return;
+            }
             proc.postToEditor([action, text](editor::Controller& c) { c.command(action, text); });
         }
         void editorFollowExtraLeds(int noise, int lfo, int filterKbd) override {
@@ -187,6 +192,7 @@ private:
         bool takeNotice(std::string& text) override;
         void save() override { if (library::Service* s = proc.libraryService()) s->save(); }
         void exportBank(int bank) override { if (library::Service* s = proc.libraryService()) s->exportBank(bank); }
+        void exportMenu() override { proc.showExportMenu(); }
         void importFiles() override { proc.chooseImport(); }
         void reveal() override { proc.revealLibrary(); }
         PhyzoProcessor& proc;
@@ -194,6 +200,9 @@ private:
     library::Service* libraryService();
     void chooseImport();
     void revealLibrary();
+    void showExportMenu();                           // the window's menu of the two banks
+    void openEditorUnit();                           // LIBRARY with the editor unit closed
+    void runEditorQueue();                           // the skin's editor calls (message thread)
     void serviceLibrary();                           // timer: an exported bank waiting for its save dialog
     void libraryNotice(const std::string& text) { libraryNotices_.push_back(text); }
 

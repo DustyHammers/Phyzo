@@ -461,6 +461,21 @@ void PhyzoEditor::resized() {
     }
 }
 
+// LIBRARY pressed while the editor unit is closed: open it (the project's choice, as right-click > Editor).
+void PhyzoEditor::openEditorUnit() {
+    if (!rml_ || !rml_->hasEditor() || editorShown_) return;
+    proc.setEditorWanted(true);
+    updateEditorUnit();
+}
+
+// EXPORT: a menu of the two banks, like the editor's value lists; a choice runs EXPORT B1 / B2, dismissing does nothing.
+void PhyzoEditor::showExportMenu() {
+    juce::PopupMenu menu;
+    menu.addItem("Bank 1 (presets 1-32)", [this] { proc.editorController().command("library", "EXPORT B1"); });
+    menu.addItem("Bank 2 (presets 33-64)", [this] { proc.editorController().command("library", "EXPORT B2"); });
+    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition());
+}
+
 // Right-click on an editor value: the OS's value or name list (long lists in groups) and revert.
 bool PhyzoEditor::showValueMenu(int ref) {
     editor::Controller& c = proc.editorController();

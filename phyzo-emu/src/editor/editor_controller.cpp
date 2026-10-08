@@ -1233,6 +1233,17 @@ void Controller::render() {
             }
         }
     }
+    // A library message replaces row 4 for 3 seconds, on whatever page shows (the library controls work from any).
+    if (libNoticeUntil_ >= 0 && now_ < libNoticeUntil_) {
+        const size_t last = size_t(edpages::kRows - 1);
+        for (size_t c = 0; c < size_t(edpages::kCols); ++c) {
+            v.screen.chars[last][c] = c < libNoticeText_.size() ? libNoticeText_[c] : ' ';
+            v.screen.underline[last][c] = v.screen.dot[last][c] = false;
+        }
+        v.screen.values.erase(std::remove_if(v.screen.values.begin(), v.screen.values.end(),
+                                             [](const auto& sp) { return sp.row == edpages::kRows - 1; }), v.screen.values.end());
+        if (v.focusRow == edpages::kRows - 1) v.focusRow = -1;
+    }
     std::lock_guard<std::mutex> lk(viewMtx_);
     auto sameSpans = [](const std::vector<edpages::Screen::Span>& a, const std::vector<edpages::Screen::Span>& b) {
         if (a.size() != b.size()) return false;
@@ -2058,8 +2069,7 @@ void Controller::libraryNotice(const std::string& text) {
 }
 
 void Controller::renderLibrary(View& v) {
-    v.area = "LIBRARY";
-    v.sections = {"SOURCES", "PRESETS"};
+    v.area = "LIBRARY";                              // no section legends: LIBRARY itself goes back to the list
     const int sec = section_ == 1 ? 1 : 0;
     v.section = sec == 0 ? "SOURCES" : "PRESETS";
     const int pages = libraryPages(sec);
@@ -2106,24 +2116,28 @@ void Controller::renderLibrary(View& v) {
                 if (sp.ref == kLibraryEntryRef + libMarked_) { v.focusRow = sp.row; v.focusCol = sp.col; v.focusLen = sp.len; }
         }
     }
-    if (libNoticeUntil_ >= 0 && now_ < libNoticeUntil_) {   // a message replaces row 4
-        put(edpages::kRows - 1, 0, libNoticeText_, edpages::kCols);
-        sc.values.erase(std::remove_if(sc.values.begin(), sc.values.end(), [](const auto& sp) { return sp.row == edpages::kRows - 1; }),
-                        sc.values.end());
-        if (v.focusRow == edpages::kRows - 1) v.focusRow = -1;
-    }
     v.screen = sc;
 }
 
 bool Controller::libraryCommand(const std::string& action, const std::string& text) {
     if (!lib_) return false;
-    if (action == "area" && text == "LIBRARY") {
-        for (size_t i = 0; i < areas_.size(); ++i)
-            if (areas_[i].name == "LIBRARY") {
-                if (int(i) != area_) go(int(i), 0, 0);
+    // The five library controls (legend action "library"), from any page: LIBRARY, SAVE, IMPORT, EXPORT, FOLDER.
+    if (action == "library" || (action == "area" && text == "LIBRARY")) {
+        const std::string what = action == "area" ? std::string("LIBRARY") : text;
+        if (what == "LIBRARY") {                     // the source list; from a source's presets, back to it
+            if (!libraryArea()) {
+                for (size_t i = 0; i < areas_.size(); ++i) if (areas_[i].name == "LIBRARY") go(int(i), 0, 0);
                 lib_->open();                        // rescans whenever it is opened
-                render();
             }
+            section_ = 0;
+            render();
+        } else if (what == "SAVE") {
+            if (link_.ledMode(kCompareLed) != 0) { libraryNotice("UNSAVED EDITS  SAVE ON THE PANEL FIRST"); render(); }
+            else lib_->save();
+        } else if (what == "EXPORT") lib_->exportMenu();   // Bank 1 or Bank 2: then EXPORT B1 / EXPORT B2
+        else if (what == "EXPORT B1" || what == "EXPORT B2") lib_->exportBank(what == "EXPORT B1" ? 0 : 1);
+        else if (what == "IMPORT") lib_->importFiles();
+        else if (what == "FOLDER") lib_->reveal();
         return true;
     }
     if (!libraryArea()) return false;
@@ -2167,15 +2181,6 @@ bool Controller::libraryCommand(const std::string& action, const std::string& te
             section_ = 1;
             render();
         }
-        return true;
-    }
-    if (action == "library") {
-        if (text == "SAVE") {
-            if (link_.ledMode(kCompareLed) != 0) { libraryNotice("UNSAVED EDITS  SAVE ON THE PANEL FIRST"); render(); }
-            else lib_->save();
-        } else if (text == "EXPORT B1" || text == "EXPORT B2") lib_->exportBank(text == "EXPORT B1" ? 0 : 1);
-        else if (text == "IMPORT") lib_->importFiles();
-        else if (text == "FOLDER") lib_->reveal();
         return true;
     }
     // Values to focus, drag or type do not exist here; Follow and the rest work as elsewhere.

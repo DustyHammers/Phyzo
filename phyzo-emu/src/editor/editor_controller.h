@@ -15,8 +15,10 @@
 //  - PRESETS: a click on a name sends its program change; the current preset is marked (focused).
 //  - LIBRARY (v0.8.3 step 2; docs/editor/LIBRARY.md): the preset library's sources and their presets, from
 //    LibraryLink. A click on a preset sends its stored single-preset message, and nothing else, into the OS's MIDI
-//    input: the OS puts it in Compare, as for a single-preset dump over MIDI. SAVE, IMPORT, EXPORT B1/B2 and FOLDER
-//    are the library's (files only; SAVE refused while the Compare LED is lit). Messages replace row 4 for 3 seconds.
+//    input: the OS puts it in Compare, as for a single-preset dump over MIDI. Five controls (legend action "library"),
+//    from any page: LIBRARY (the source list; again from a source's presets: back to the list), SAVE (refused while
+//    the Compare LED is lit), IMPORT, EXPORT (a menu: Bank 1 or Bank 2) and FOLDER. Their messages replace row 4 for
+//    3 seconds on whatever page shows.
 //  - INSERT and REVERB (docs/editor/EFFECTS_EDITOR_SPEC.md, round 3): effect parameter values by a raw-memory write of
 //    the word into the edit buffer, then the OS's effect parameter message; the algorithm by NRPN MSB 1 LSB 30, 31,
 //    then 32 = 0; variations by NRPN LSB 32 / 33; the insert modulation as one 10-byte partial write of the edit
@@ -78,6 +80,7 @@ struct LibraryLink {
     virtual bool message(int source, int entry, std::vector<uint8_t>& out) const = 0;   // the stored single-preset message
     virtual bool takeNotice(std::string& text) = 0;  // the library's messages, in order
     virtual void save() = 0;                         // SAVE (the Compare LED was checked here)
+    virtual void exportMenu() = 0;                   // EXPORT: the menu of the two banks (its choice: EXPORT B1 / B2)
     virtual void exportBank(int bank) = 0;           // EXPORT B1 (0) / B2 (1): then the save dialog
     virtual void importFiles() = 0;                  // IMPORT: the open dialog
     virtual void reveal() = 0;                       // FOLDER: Library/ in the file browser
@@ -133,7 +136,8 @@ public:
     void setOpen(bool open);
     bool isOpen() const { return open_; }
     // Legends: action "area" | "section" | "target" | "page" | "page_prev" | "page_next" | "toggle_follow" with the
-    // legend's text (as in the layout table); "library" with SAVE, IMPORT, EXPORT B1, EXPORT B2 or FOLDER. The glass (text = a value's reference from View::screen.values):
+    // legend's text (as in the layout table); "library" with LIBRARY, SAVE, IMPORT, EXPORT or FOLDER (and EXPORT B1 /
+    // EXPORT B2, the EXPORT menu's choices), from any page. The glass (text = a value's reference from View::screen.values):
     // "focus", "pick" (a name to pick: its program change), "drag_begin", "drag" (text = steps from the start),
     // "drag_end", "type" (typed entry). Unknown or unavailable targets do nothing.
     void command(const std::string& action, const std::string& text);

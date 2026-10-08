@@ -115,6 +115,14 @@ void PhyzoProcessor::chooseImport() {
                           });
 }
 
+void PhyzoProcessor::showExportMenu() {
+    if (auto* ed = dynamic_cast<PhyzoEditor*>(getActiveEditor())) ed->showExportMenu();
+}
+
+void PhyzoProcessor::openEditorUnit() {
+    if (auto* ed = dynamic_cast<PhyzoEditor*>(getActiveEditor())) ed->openEditorUnit();
+}
+
 // FOLDER: the Library folder opened in Finder (or Explorer).
 void PhyzoProcessor::revealLibrary() {
     const juce::File lib = dataFolder_.getChildFile("Library");
@@ -173,10 +181,14 @@ void PhyzoProcessor::postToEditor(std::function<void(editor::Controller&)> f) {
     editorQueue_.push_back(std::move(f));
 }
 
-void PhyzoProcessor::editorTick() {
+void PhyzoProcessor::runEditorQueue() {
     std::vector<std::function<void(editor::Controller&)>> q;
     { std::lock_guard<std::mutex> lk(editorQueueMtx_); q.swap(editorQueue_); }
     for (auto& f : q) f(editor_);
+}
+
+void PhyzoProcessor::editorTick() {
+    runEditorQueue();
     editor_.tick(juce::Time::getMillisecondCounterHiRes());
 }
 
@@ -202,11 +214,15 @@ void PhyzoProcessor::EditorPort::editorState(skin::EditorState& out) {
     out.page = v.page; out.pages = v.pages;
     out.prev = v.prev; out.next = v.next; out.follow = v.follow; out.data = v.data; out.edited = v.edited;
     out.areas = v.areas; out.sections = v.sections;
+    out.open = proc.editorActive_.load();
     out.serial = v.serial;
 }
 
 void PhyzoProcessor::timerCallback() {
     engine_.service();
+    // The skin's editor calls while the editor unit is closed: the library controls in the main document (LIBRARY
+    // opens the unit; SAVE, IMPORT, EXPORT and FOLDER work without it). While it is open, its own ticker runs them.
+    if (!editorActive_.load()) runEditorQueue();
     serviceLibrary();
     if (!scan_.complete() && ++timerTicks_ >= kScanEveryTicks) {
         timerTicks_ = 0;

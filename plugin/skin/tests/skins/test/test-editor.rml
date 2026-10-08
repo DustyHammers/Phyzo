@@ -25,9 +25,8 @@
 	<legend id="lNext" action="page_next" value="NEXT" style="left: 906.8dp; top: 55dp; width: 56dp;">NEXT</legend>
 	<legend id="lFollow" action="toggle_follow" value="FOLLOW" style="left: 1458dp; top: 55dp; width: 63.5dp;">FOLLOW</legend>
 	<legend id="lData" action="indicator" value="DATA" style="left: 1601dp; top: 55dp; width: 42dp;">DATA</legend>
-	<legend id="lLibrary" action="area" value="LIBRARY" style="left: 700dp; top: 55dp; width: 70dp;">LIBRARY</legend>
-	<legend id="lSources" action="section" value="SOURCES" style="left: 400dp; top: 73dp; width: 70dp;">SOURCES</legend>
+	<legend id="lLibrary" action="library" value="LIBRARY" style="left: 700dp; top: 55dp; width: 70dp;">LIBRARY</legend>
 	<legend id="lSave" action="library" value="SAVE" style="left: 400dp; top: 91dp; width: 40dp;">SAVE</legend>
-	<legend id="lExportB2" action="library" value="EXPORT B2" style="left: 460dp; top: 91dp; width: 80dp;">EXPORT B2</legend>
+	<legend id="lExport" action="library" value="EXPORT" style="left: 460dp; top: 91dp; width: 80dp;">EXPORT</legend>
 </body>
 </rml>

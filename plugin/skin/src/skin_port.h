@@ -37,6 +37,7 @@ struct EditorState {
     int page = 0, pages = 0;                         // 1-based page in the section, pages in the section
     bool prev = false, next = false, follow = true, data = false, edited = false;
     std::set<std::string> areas, sections;           // legends that lead somewhere
+    bool open = false;                               // the editor unit is shown (the library legend LIBRARY lit)
     uint32_t serial = 0;                             // changes when anything above changes
 };
 

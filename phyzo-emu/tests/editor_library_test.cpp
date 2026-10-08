@@ -1,7 +1,8 @@
-// Editor LIBRARY area test (no ROM data; v0.8.3 step 2): the area's legends and page layout (8 entries per page,
-// across the rows as the PRESETS area), progress in the count column, messages on row 4 for 3 seconds, a preset click
-// sending exactly its stored message and nothing else, SAVE refused while the Compare LED is lit, the other actions,
-// and nothing sent while the editor is closed.
+// Editor LIBRARY area test (no ROM data; v0.8.3 step 2): the five library controls (LIBRARY: the source list, again
+// from a source's presets back to it; SAVE, IMPORT, EXPORT with its bank menu and FOLDER from any page), the page
+// layout (8 entries per page, across the rows as the PRESETS area), progress in the count column, messages on row 4
+// for 3 seconds on whatever page shows, a preset click sending exactly its stored message and nothing else, SAVE
+// refused while the Compare LED is lit, and nothing sent while the editor is closed.
 #include <cstdio>
 #include <map>
 #include <string>
@@ -38,7 +39,7 @@ struct FakeLibrary : editor::LibraryLink {
     std::map<int, std::vector<Entry>> entryLists;
     std::vector<std::string> notices;
     uint64_t ser = 1;
-    int opens = 0, saves = 0, imports = 0, reveals = 0;
+    int opens = 0, saves = 0, imports = 0, reveals = 0, exportMenus = 0;
     std::vector<int> exports;
     void open() override { ++opens; }
     uint64_t serial() const override { return ser; }
@@ -52,6 +53,7 @@ struct FakeLibrary : editor::LibraryLink {
     }
     bool takeNotice(std::string& t) override { if (notices.empty()) return false; t = notices.front(); notices.erase(notices.begin()); return true; }
     void save() override { ++saves; }
+    void exportMenu() override { ++exportMenus; }
     void exportBank(int bank) override { exports.push_back(bank); }
     void importFiles() override { ++imports; }
     void reveal() override { ++reveals; }
@@ -94,10 +96,10 @@ void test() {
     editor::View v = c.view();
     CHECK(v.areas.count("LIBRARY") == 1);
     CHECK(lib.opens == 0);
-    c.command("area", "LIBRARY");
+    c.command("library", "LIBRARY");
     CHECK(lib.opens == 1);                                   // rescans when opened
     v = c.view();
-    CHECK(v.area == "LIBRARY" && v.section == "SOURCES" && v.sections == std::set<std::string>({"SOURCES", "PRESETS"}));
+    CHECK(v.area == "LIBRARY" && v.section == "SOURCES" && v.sections.empty());   // no section legends
     CHECK(v.page == 1 && v.pages == 1 && !v.prev && !v.next);
     // SOURCES: across the rows, as the PRESETS area; the count at the right of each half, progress while read.
     CHECK_EQ(row(v, 0), line("FACTORY BANK 1       32  FACTORY BANK 2       32"));
@@ -113,6 +115,14 @@ void test() {
     c.command("page_next", "NEXT");
     v = c.view();
     CHECK(v.page == 2 && v.prev);
+    // LIBRARY again: back to the list (no rescan: the area did not close); a source again: its presets where they were.
+    c.command("library", "LIBRARY");
+    CHECK(c.view().section == "SOURCES" && lib.opens == 1);
+    CHECK_EQ(row(c.view(), 0), line("FACTORY BANK 1       32  FACTORY BANK 2       32"));
+    c.command("library", "LIBRARY");
+    CHECK(c.view().section == "SOURCES");
+    c.command("pick", std::to_string(editor::Controller::kLibrarySourceRef + 0));
+    CHECK(c.view().section == "PRESETS" && c.view().page == 2);
     CHECK_EQ(row(v, 0), halves("09  Preset 9", "10  Preset 10"));
     c.command("page", "4");
     CHECK(c.view().page == 4 && !c.view().next);
@@ -155,12 +165,37 @@ void test() {
     link.leds[editor::Controller::kCompareLed] = 0;
     c.command("library", "SAVE");
     CHECK(lib.saves == 1);
+    c.command("library", "EXPORT");                          // the bank menu; its choices are EXPORT B1 / B2
+    CHECK(lib.exportMenus == 1 && lib.exports.empty());
     c.command("library", "EXPORT B1");
     c.command("library", "EXPORT B2");
     c.command("library", "IMPORT");
     c.command("library", "FOLDER");
     CHECK((lib.exports == std::vector<int>{0, 1}) && lib.imports == 1 && lib.reveals == 1);
     tick(3100);
+    // From any page: the controls work there, and their messages replace row 4 there for 3 seconds.
+    c.command("area", "SYSTEM");
+    const std::string systemRow3 = row(c.view(), 3);
+    link.leds[editor::Controller::kCompareLed] = 1;
+    c.command("library", "SAVE");
+    CHECK(c.view().area == "SYSTEM" && lib.saves == 1);
+    CHECK_EQ(row(c.view(), 3), line("UNSAVED EDITS  SAVE ON THE PANEL FIRST"));
+    link.leds[editor::Controller::kCompareLed] = 0;
+    c.command("library", "SAVE");
+    c.command("library", "EXPORT");
+    c.command("library", "IMPORT");
+    c.command("library", "FOLDER");
+    CHECK(lib.saves == 2 && lib.exportMenus == 2 && lib.imports == 2 && lib.reveals == 2 && c.view().area == "SYSTEM");
+    lib.notices = {"SAVED  Singles/Alpha Pad.syx"};
+    tick(3100);
+    tick(20);
+    CHECK_EQ(row(c.view(), 3), line("SAVED  Singles/Alpha Pad.syx"));
+    tick(3100);
+    CHECK(row(c.view(), 3) == systemRow3);                  // the page's own row again
+    // LIBRARY from another page: the source list (rescanned), the open source kept for the next pick.
+    c.command("library", "LIBRARY");
+    CHECK(c.view().area == "LIBRARY" && c.view().section == "SOURCES" && lib.opens == 2);
+    c.command("pick", std::to_string(editor::Controller::kLibrarySourceRef + 0));
     // The library's messages: row 4, 3 s each, in order.
     lib.notices = {"SAVED  Singles/Beta Arp.syx", "EXPORTED BANK 1"};
     tick(20);
