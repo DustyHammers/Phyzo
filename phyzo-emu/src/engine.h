@@ -47,6 +47,11 @@ public:
     // Message thread, before setRoms.
     void setFactoryUserFlash(bool on, const std::string& cacheDir);
     using UserFlash = std::shared_ptr<const std::vector<uint8_t>>;
+    // The factory user flash this process made or read for an OS image (null: not yet, or it could not be made).
+    static UserFlash factoryUserFlashFor(const std::string& osMd5);
+    // The running machine's state alone (getState without the engine's wrapping): what a library clone restores.
+    // Taken the same way (a snapshot at a block boundary); the machine is not paused, pressed or read otherwise.
+    std::vector<uint8_t> machineState();
     // Front-panel button press/release by OS button id (0 = -/No, 1 = +/Yes); lock-free, message thread.
     void pressButton(int osButton, bool down);
     // An analog panel control moved (docs/PANEL_CONTROLS.md): cc 0-25, raw 0-1023. Lock-free, any UI thread.

@@ -162,6 +162,11 @@ add_executable(editor_edit_test tests/editor_edit_test.cpp src/editor/editor_pro
 target_include_directories(editor_edit_test PRIVATE src)
 target_compile_options(editor_edit_test PRIVATE -Wall -Wextra)
 add_test(NAME editor_edit COMMAND editor_edit_test)
+add_executable(editor_library_test tests/editor_library_test.cpp src/editor/editor_proto.cpp src/editor/editor_tables.cpp
+  src/editor/editor_pages.cpp src/editor/editor_fields.cpp src/editor/editor_controller.cpp)
+target_include_directories(editor_library_test PRIVATE src)
+target_compile_options(editor_library_test PRIVATE -Wall -Wextra)
+add_test(NAME editor_library COMMAND editor_library_test)
 add_executable(editor_fx_test tests/editor_fx_test.cpp src/editor/editor_proto.cpp src/editor/editor_tables.cpp
   src/editor/editor_pages.cpp src/editor/editor_fields.cpp src/editor/editor_controller.cpp)
 target_include_directories(editor_fx_test PRIVATE src)

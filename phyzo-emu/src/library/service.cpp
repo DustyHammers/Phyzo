@@ -1,6 +1,7 @@
 #include "library/service.h"
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <filesystem>
 #include "library/syx.h"
 #include "os_image.h"
@@ -10,6 +11,7 @@ namespace fs = std::filesystem;
 namespace library {
 
 namespace {
+std::mutex g_oneJob;                                // one hidden-machine job at a time in the process (all instances)
 std::string upper(std::string s) { for (char& c : s) c = char(std::toupper(static_cast<unsigned char>(c))); return s; }
 std::string factoryKey(int bank) { return "factory" + std::to_string(bank); }
 }  // namespace
@@ -77,7 +79,9 @@ void Service::run() {
             running_ = true;
             cancel_ = false;
         }
-        switch (job.type) {
+        std::unique_lock<std::mutex> one(g_oneJob, std::defer_lock);   // another instance's job first: wait (cancellable)
+        while (!one.try_lock() && !quit_ && !cancel_) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        if (one.owns_lock()) switch (job.type) {
         case Job::Type::Refresh: refresh(); break;
         case Job::Type::Index: index(job.path, job.md5); break;
         case Job::Type::Save: doSave(); break;

@@ -1,6 +1,6 @@
 // The preset library's jobs (v0.8.3 step 2; no plugin framework here). One worker thread runs one job at a time, never
-// the audio thread; jobs are queued, can be cancelled, and are stopped when the service is destroyed (the plugin
-// closes). The synth's own memory is never written: a library preset reaches the synth only when the UI sends its
+// the audio thread (and one at a time in the whole process: instances take turns); jobs are queued, can be cancelled,
+// and are stopped when the service is destroyed (the plugin closes). The synth's own memory is never written: a library preset reaches the synth only when the UI sends its
 // stored message (into Compare, as a single-preset dump over MIDI does), and files are written only on request
 // (SAVE, EXPORT, IMPORT) and for the factory bank files.
 #pragma once

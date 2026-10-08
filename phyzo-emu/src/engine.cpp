@@ -257,6 +257,18 @@ void Engine::setFactoryUserFlashForTest(const std::string& osMd5, UserFlash data
 }
 uint64_t Engine::factoryRunsForTest() { return g_factoryRuns.load(); }
 
+Engine::UserFlash Engine::factoryUserFlashFor(const std::string& osMd5) {
+    std::lock_guard<std::mutex> lk(g_factoryMtx);
+    const auto it = g_factory.find(osMd5);
+    return it == g_factory.end() ? nullptr : it->second;
+}
+
+std::vector<uint8_t> Engine::machineState() {
+    if (state_.load() != State::Running) return {};
+    Blob b;
+    return unpackBlob(getState(), b) ? std::move(b.machine) : std::vector<uint8_t>();
+}
+
 std::string Engine::message() const { std::lock_guard<std::mutex> lk(msgMtx_); return message_; }
 void Engine::setMessage(const std::string& s) { std::lock_guard<std::mutex> lk(msgMtx_); message_ = s; }
 

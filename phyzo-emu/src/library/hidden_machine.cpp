@@ -150,7 +150,7 @@ private:
 };
 }  // namespace
 
-RealMachines::RealMachines(std::string osPath, std::string wavePath, std::shared_ptr<const std::vector<uint8_t>> factoryUserFlash)
+RealMachines::RealMachines(std::string osPath, std::string wavePath, std::function<UserFlash()> factoryUserFlash)
     : osPath_(std::move(osPath)), wavePath_(std::move(wavePath)), factory_(std::move(factoryUserFlash)) {}
 RealMachines::~RealMachines() = default;
 
@@ -169,7 +169,6 @@ std::unique_ptr<Machine> RealMachines::make(std::string& err) {
 }
 
 std::unique_ptr<Ops> RealMachines::fresh(const std::atomic<bool>& cancel, std::string& err) {
-    if (!factory_) { err = "no factory user memory"; return nullptr; }
     std::unique_ptr<Machine> m = make(err);
     if (!m) return nullptr;
     if (!booted_.empty()) {
@@ -177,7 +176,9 @@ std::unique_ptr<Ops> RealMachines::fresh(const std::atomic<bool>& cancel, std::s
         return std::make_unique<HiddenMachine>(std::move(m), cancel);
     }
     // Boot the v0.8.3 way: the factory user flash seeded first, then to the preset display, then let it settle.
-    m->setUserFlash(factory_->data(), factory_->size());
+    const UserFlash factory = factory_ ? factory_() : nullptr;
+    if (!factory) { err = "no factory user memory"; return nullptr; }
+    m->setUserFlash(factory->data(), factory->size());
     const uint64_t limit = m->cyclesFromMs(8000);
     bool shown = false;
     while (!cancel && m->cycles() < limit && !shown) {

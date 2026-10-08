@@ -568,6 +568,7 @@ void legendState(const EditorState& s, const std::string& action, const std::str
     else if (action == "toggle_follow") { avail = true; lit = s.follow; }
     else if (action == "indicator") { lit = (value == "DATA" && s.data) || (value == "EDITED" && s.edited); }
     else if (action == "label") { lit = s.pages > 0; }
+    else if (action == "library") { avail = s.area == "LIBRARY"; }   // SAVE, IMPORT, EXPORT B1/B2, FOLDER: actions, never lit
 }
 
 void SkinView::setEditorVisible(bool on) {

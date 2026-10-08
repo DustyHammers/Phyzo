@@ -54,9 +54,10 @@ public:
 // is kept and restored for the next ones.
 class RealMachines : public Machines {
 public:
-    // `factoryUserFlash` may be null (then no fresh machine can be made: the factory banks must come from a machine that
-    // booted with it).
-    RealMachines(std::string osPath, std::string wavePath, std::shared_ptr<const std::vector<uint8_t>> factoryUserFlash);
+    using UserFlash = std::shared_ptr<const std::vector<uint8_t>>;
+    // `factoryUserFlash` is asked when the first fresh machine is made (the engine may still be making it when the
+    // library starts); null: no fresh machine can be made (they must boot with it).
+    RealMachines(std::string osPath, std::string wavePath, std::function<UserFlash()> factoryUserFlash);
     ~RealMachines() override;
     std::unique_ptr<Ops> fresh(const std::atomic<bool>& cancel, std::string& err) override;
     std::unique_ptr<Ops> clone(const std::vector<uint8_t>& machineState, const std::atomic<bool>& cancel, std::string& err) override;
@@ -64,7 +65,7 @@ public:
 private:
     std::unique_ptr<Machine> make(std::string& err);
     std::string osPath_, wavePath_;
-    std::shared_ptr<const std::vector<uint8_t>> factory_;
+    std::function<UserFlash()> factory_;
     std::unique_ptr<OsImage> os_;
     std::vector<uint8_t> booted_;                  // a fresh machine's state right after its boot
 };

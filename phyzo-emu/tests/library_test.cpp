@@ -52,7 +52,7 @@ Bytes cat(std::initializer_list<Bytes> parts) { Bytes out; for (const Bytes& p :
 // ------------------------------------------------------------------ splitting
 
 void testSplit() {
-    const Bytes p1 = presetMsg("Warm Pad"), p2 = presetMsg("Bell Pad", 0x10);
+    const Bytes p1 = presetMsg("Alpha Pad"), p2 = presetMsg("Epsilon Bell", 0x10);
     std::vector<std::string> names(32);
     for (int i = 0; i < 32; ++i) names[size_t(i)] = "B2 " + std::to_string(i + 1);
     const Bytes b2 = bankMsg(1, names), b1 = bankMsg(0, names);
@@ -84,7 +84,7 @@ void testSplit() {
 // ------------------------------------------------------------------ names, files, cache, scan
 
 void testNames(const fs::path& dir) {
-    CHECK(safeFileName("Arp Layers") == "Arp Layers");
+    CHECK(safeFileName("Beta Arp") == "Beta Arp");
     CHECK(safeFileName("  Bass/Lead: 2?  ") == "Bass_Lead_ 2_");
     CHECK(safeFileName("a\\b*c\"d<e>f|g") == "a_b_c_d_e_f_g");
     CHECK(safeFileName(std::string("x\x01y")) == "x_y");
@@ -108,7 +108,7 @@ void testIndexCache(const fs::path& dir) {
     const std::string os = "0123456789abcdef0123456789abcdef";
     Index idx;
     idx.other = 2;
-    idx.entries.push_back({"Warm Pad", presetMsg("Warm Pad"), true});
+    idx.entries.push_back({"Alpha Pad", presetMsg("Alpha Pad"), true});
     idx.entries.push_back({"Odd", presetMsg("Odd"), false});
     const std::string md5 = "fedcba9876543210fedcba9876543210";
     const std::string path = indexPath((dir / "cache").string(), md5);
@@ -116,7 +116,7 @@ void testIndexCache(const fs::path& dir) {
     CHECK(writeIndex(path, os, idx));
     Index back;
     CHECK(readIndex(path, os, back));
-    CHECK(back.other == 2 && back.entries.size() == 2 && back.entries[0].name == "Warm Pad" && back.entries[0].message == presetMsg("Warm Pad"));
+    CHECK(back.other == 2 && back.entries.size() == 2 && back.entries[0].name == "Alpha Pad" && back.entries[0].message == presetMsg("Alpha Pad"));
     CHECK(back.entries[1].accepted == false);
     CHECK(!readIndex(path, "ffffffffffffffffffffffffffffffff", back));   // made with another OS
     Bytes raw; CHECK(readFile(path, raw));
@@ -372,18 +372,18 @@ void testService(const fs::path& dir) {
         size_t after = 0; for (const auto& e : fs::directory_iterator(lib / "Singles")) { (void)e; ++after; }
         CHECK(after == files);
         sh.running.compare = false;
-        sh.running.edit = "Arp/Layers";
+        sh.running.edit = "Beta/Arp";
         s.save();
         CHECK(waitIdle(s));
-        CHECK(has(notices(s), "SAVED  Singles/Arp_Layers.syx"));
+        CHECK(has(notices(s), "SAVED  Singles/Beta_Arp.syx"));
         Bytes b;
-        CHECK(readFile((lib / "Singles" / "Arp_Layers.syx").string(), b) && b == presetMsg("Arp/Layers"));
+        CHECK(readFile((lib / "Singles" / "Beta_Arp.syx").string(), b) && b == presetMsg("Beta/Arp"));
         s.save();
         CHECK(waitIdle(s));
-        CHECK(has(notices(s), "SAVED  Singles/Arp_Layers 2.syx"));
-        CHECK(readFile((lib / "Singles" / "Arp_Layers.syx").string(), b) && b == presetMsg("Arp/Layers"));   // untouched
+        CHECK(has(notices(s), "SAVED  Singles/Beta_Arp 2.syx"));
+        CHECK(readFile((lib / "Singles" / "Beta_Arp.syx").string(), b) && b == presetMsg("Beta/Arp"));   // untouched
         const auto singles = s.entries(sourceOf(s, "SINGLES"));
-        CHECK(singles.size() == 4 && singles[0].name == "Arp/Layers" && singles[0].ready);   // known at once, no re-read
+        CHECK(singles.size() == 4 && singles[0].name == "Beta/Arp" && singles[0].ready);   // known at once, no re-read
         // EXPORT: a clone's bank dump, handed to the UI.
         sh.running.stored[32] = "Saved On Panel";
         s.exportBank(1);

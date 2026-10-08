@@ -459,6 +459,18 @@ int main() {
         click(v, 1601 + 10, 848 + 55 + 5);                                       // an indicator: not a control
         v.evalForTest("editor.click('page', '3')");
         CHECK((p3.ed.commands == std::vector<std::string>{"area SOUND", "toggle_follow FOLLOW", "page 3"}));
+        // LIBRARY (v0.8.3 step 2): its actions are available in that area only; a click sends action and value.
+        CHECK(!avail("lSave") && !avail("lLibrary"));
+        st.area = "LIBRARY"; st.section = "SOURCES"; st.areas.insert("LIBRARY"); st.sections = {"SOURCES", "PRESETS"}; ++st.serial;
+        v.update(t += 0.02);
+        CHECK(lit("lLibrary") && lit("lSources") && avail("lSave") && avail("lExportB2") && !lit("lSave"));
+        p3.ed.commands.clear();
+        click(v, 400 + 10, 848 + 91 + 5);
+        click(v, 460 + 10, 848 + 91 + 5);
+        CHECK((p3.ed.commands == std::vector<std::string>{"library SAVE", "library EXPORT B2"}));
+        st.area = "SOUND"; st.section = "FILTER"; st.areas.erase("LIBRARY"); st.sections = {"FILTER", "WAVE"}; ++st.serial;
+        v.update(t += 0.02);
+        p3.ed.commands.clear();
         // Values on the glass (spans from the editor): drag (1 step per 4 dp, Shift per 16 dp), double-click for typed
         // entry, a name to pick; right-click asks which value is under the mouse. The wheel never changes a value.
         st.rows[1] = "01  Big Pad" + std::string(39, ' ');
@@ -537,6 +549,10 @@ int main() {
         legendState(s, "page_prev", "", l, a); CHECK(!l && !a);
         legendState(s, "label", "PAGE", l, a); CHECK(l && !a);
         legendState(s, "area", "ARP", l, a); CHECK(!l && !a);
+        legendState(s, "library", "SAVE", l, a); CHECK(!l && !a);       // LIBRARY's actions: only in that area
+        s.areas.insert("LIBRARY"); s.area = "LIBRARY";
+        legendState(s, "library", "FOLDER", l, a); CHECK(!l && a);
+        legendState(s, "area", "LIBRARY", l, a); CHECK(l && a);
     }
 
     std::printf("skin_test: %s\n", failures ? "FAILED" : "passed");
