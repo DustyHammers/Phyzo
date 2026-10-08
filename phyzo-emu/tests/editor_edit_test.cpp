@@ -1155,6 +1155,59 @@ void testArpRound() {
     std::printf("editor_edit_test: ARP round: no list end taken while the OS answers nothing\n");
 }
 
+// Long arp preset names (invented): the arp preset's value uses its half up to col 24, never the gap cell (col 25):
+// 20 cells from col 5. A 15-character name fits exactly after a four-character label (AP07), a 14-character one after
+// a five-character label (AP104). A 15-character name after a five-character label (AP105) needs 21 cells: it loses
+// exactly its last character, and the gap cell stays blank.
+void testArpLongNames() {
+    FakeLink link;
+    editor::Controller c(link);
+    c.setTables(tables());
+    c.setOpen(true);
+    double now = 0;
+    auto runFor = [&](double ms) { for (double t = 0; t < ms; t += 10) c.tick(now += 10); };
+    link.arp.on = true;
+    link.arp.presets = 110;
+    Bytes& live = link.arp.live;
+    live[390 - 350] = live[391 - 350] = live[392 - 350] = live[393 - 350] = live[394 - 350] = live[395 - 350] = 0xFF;
+    live[402 - 350 + 3] = 96; live[406 - 350 + 3] = 120; live[385 - 350] = 128;
+    link.objNames[{edproto::kArpPreset, 7}] = "Omicron Pattern";                // 15 characters
+    link.objNames[{edproto::kArpPreset, 104}] = "Kappa Sequence";               // 14
+    link.objNames[{edproto::kArpPreset, 105}] = "Upsilon Cascade";              // 15
+    link.arp.preset = 7;
+    c.command("area", "ARP");
+    runFor(5000);                                                              // every name, and the end of the list
+    const int prst = c.refForTest('a', 0);
+    auto show = [&](int preset) {
+        link.arp.preset = preset;
+        c.command("page_next", ""); runFor(30); c.command("page_prev", ""); runFor(30);
+        return c.view();
+    };
+    editor::View v = show(7);
+    CHECK_EQ(v.screen.rowText(0), std::string("PRST AP07 Omicron Pattern NRES 16th   NDUR 50     "));
+    const edpages::Screen::Span* sp = spanOf(v, prst);
+    CHECK(sp && sp->col == 5 && sp->len == 20 && v.screen.underline[0][24] && !v.screen.underline[0][25]);
+    v = show(104);
+    CHECK_EQ(v.screen.rowText(0), std::string("PRST AP104 Kappa Sequence NRES 16th   NDUR 50     "));
+    sp = spanOf(v, prst);
+    CHECK(sp && sp->col == 5 && sp->len == 20 && v.screen.underline[0][24] && !v.screen.underline[0][25]);
+    v = show(105);                                                             // the limit: the last character only
+    CHECK_EQ(v.screen.rowText(0), std::string("PRST AP105 Upsilon Cascad NRES 16th   NDUR 50     "));
+    sp = spanOf(v, prst);
+    CHECK(sp && sp->col == 5 && sp->len == 20 && v.screen.rowText(0)[25] == ' ' && !v.screen.underline[0][25]);
+    // The right-click list has the whole names.
+    const editor::Menu m = c.menu(prst);
+    bool whole7 = false, whole104 = false, whole105 = false;
+    for (const auto& g : m.groups)
+        for (const editor::Choice& ch : g.second) {
+            whole7 |= ch.value == 7 && ch.label == "AP07 Omicron Pattern";
+            whole104 |= ch.value == 104 && ch.label == "AP104 Kappa Sequence";
+            whole105 |= ch.value == 105 && ch.label == "AP105 Upsilon Cascade";
+        }
+    CHECK(whole7 && whole104 && whole105);
+    std::printf("editor_edit_test: long arp preset names: the half to col 24, never the gap cell\n");
+}
+
 // Demo mode: the OS answers no SysEx. An arp edit started there sends a bounded number of requests (none repeated every
 // tick), presses nothing, and ends with one message.
 void testDemoMode() {
@@ -1186,6 +1239,7 @@ int main() {
     testEditing();
     testArpPresetPlaceholder();
     testArpRound();
+    testArpLongNames();
     testDemoMode();
     std::printf("editor_edit_test: %s\n", failures ? "FAILED" : "passed");
     return failures ? 1 : 0;

@@ -335,7 +335,7 @@ void Controller::build() {
             Item x = pitem('a', int(i));
             if (arp_[i].kind == Kind::Text) { x.col = 0; name.items.push_back(x); continue; }
             x.span = arp_[i].span;
-            x.width = std::min(x.width, x.span == 2 ? 19 : 7);
+            x.width = std::min(x.width, x.span == 2 ? 20 : 7);
             grid.push_back(x);
         }
         std::vector<Row> rows = edpages::gridRows(grid);

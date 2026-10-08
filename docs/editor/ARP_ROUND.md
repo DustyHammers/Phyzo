@@ -25,7 +25,14 @@ NAME Kappa Steps
 ```
 
 The grid has four columns per row (at 0, 12, 26 and 38); a two-column item starts a half, shows its label in full and
-its value up to the half's end.
+its value up to the half's last cell (col 24 on the left, col 49 on the right), never the gap cell (col 25) before the
+next item.
+
+**Limit (the arp preset's value):** after `PRST ` the value has 20 cells (cols 5-24): the number, a space and the
+name. A 15-character name fits exactly after a four-character number (`AP07`), a 14-character one after a
+five-character number (`AP104`). A longer name loses its last characters there (a 15-character name at a
+five-character number loses exactly its last one); the gap cell stays blank. The right-click list always shows the
+whole name.
 
 ## The objects an arp preset refers to
 

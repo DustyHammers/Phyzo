@@ -346,6 +346,17 @@ void testPages() {
     CHECK_EQ(wsc.rowText(1), std::string("CD   2      EF   3        GH   4                  "));
     CHECK_EQ(wsc.rowText(2), std::string("WIDE TWO v                                        "));
     CHECK(wsc.values.size() == 6 && wsc.values[1].col == 35 && wsc.values[1].len == 15);
+    // A long value in the left half fills it to its last cell (col 24); the gap cell (col 25) stays blank, and the next
+    // item is untouched. In the right half the value ends at col 49.
+    std::vector<Item> longer = {{"Wide", "abcdefghijklmnopqrstuvwxyz", 0}, {"IJ", "5", 1}, {"KL", "6", 2},
+                                {"MN", "7", 3}, {"Wide", "abcdefghijklmnopqrstuvwxyz", 4}};
+    longer[0].span = longer[4].span = 2;
+    const std::vector<Row> lr = gridRows(longer);
+    const Screen lsc = render(Page(lr.begin(), lr.end()));
+    CHECK_EQ(lsc.rowText(0), std::string("WIDE abcdefghijklmnopqrst IJ   5      KL   6      "));
+    CHECK_EQ(lsc.rowText(1), std::string("MN   7                    WIDE abcdefghijklmnopqrs"));
+    CHECK(lsc.values[0].col == 5 && lsc.values[0].len == 20 && lsc.underline[0][24] && !lsc.underline[0][25]);
+    CHECK(lsc.values[4].col == 31 && lsc.values[4].len == 19 && lsc.underline[1][49]);
     std::vector<Item> presets;
     for (int i = 0; i < 64; ++i) presets.push_back({(i < 9 ? "0" : "") + std::to_string(i + 1), "Preset " + std::to_string(i + 1), -1});
     const std::vector<Page> pages = paginate(nameRows(presets));

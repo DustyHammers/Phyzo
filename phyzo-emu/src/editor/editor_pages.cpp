@@ -321,8 +321,9 @@ Screen render(const Page& page) {
                 if (x.span == 2 && slot % 2 == 0) {  // a whole half: the name in full, the value up to the half's end
                     const std::string name = upper(trim(x.name)).substr(0, size_t(kHalf - 8));
                     const int at = col + std::max(5, int(name.size()) + 1);
+                    const int end = slot == 0 ? kHalf : kCols;   // up to the half's last cell (24 / 49), never the gap (25)
                     put(s, row, col, name, int(name.size()), false, false, -1);
-                    put(s, row, at, x.value, col + kHalf - 1 - at, false, x.ref >= 0, x.ref);
+                    put(s, row, at, x.value, end - at, false, x.ref >= 0, x.ref);
                     continue;
                 }
                 put(s, row, col, upper(trim(x.name)).substr(0, 4), 4, false, false, -1);

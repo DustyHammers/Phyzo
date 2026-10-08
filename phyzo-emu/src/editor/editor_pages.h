@@ -68,7 +68,7 @@ std::vector<Row> twoColumnRows(const std::vector<Item>& items);
 std::vector<Row> stageRows(const std::vector<Item>& items, std::vector<Item>& rest);
 bool isStageName(const std::string& name, bool& isTime, int& stage);
 // Four slots per row (two per half); an item with span 2 takes a whole half, so it starts a half (a slot is left
-// empty before it if needed).
+// empty before it if needed). Its value may use the half's last cell (col 24 / 49), never the gap cell (col 25).
 std::vector<Row> gridRows(const std::vector<Item>& items);
 std::vector<Row> nameRows(const std::vector<Item>& items);
 std::vector<Page> paginate(const std::vector<Row>& rows);
