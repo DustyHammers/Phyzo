@@ -1,17 +1,21 @@
 // Phyzo audio processor: the emulated machine (Engine) as a VST3/AU instrument.
-// Data folder: ~/Documents/Phyzo/ with roms/ (the two ROM files, found by checksum), skins/ and cache/ (the factory
-// user flash made from the user's own OS, by its MD5).
+// Data folder: ~/Documents/Phyzo/ with roms/ (the two ROM files, found by checksum), skins/, Library/ (the preset
+// library's .syx files) and cache/ (the factory user flash made from the user's own OS, by its MD5; the library's
+// index).
 #pragma once
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <array>
 #include <atomic>
+#include <deque>
 #include <functional>
+#include <memory>
 #include <map>
 #include <mutex>
 #include <string>
 #include <vector>
 #include "editor/editor_controller.h"
 #include "engine.h"
+#include "library/service.h"
 #include "rom_id.h"
 #include "skin_port.h"
 #include "VirtualMidiPort.h"
@@ -168,6 +172,31 @@ private:
         void timerCallback() override { proc.editorTick(); }
         PhyzoProcessor& proc;
     };
+    // The preset library (v0.8.3 step 2) for the editor's LIBRARY area: library::Service (made when the area first
+    // opens, with the ROMs known) and the plugin's file dialogs. Message thread.
+    class LibraryBridge : public editor::LibraryLink {
+    public:
+        explicit LibraryBridge(PhyzoProcessor& p) : proc(p) {}
+        void open() override { if (library::Service* s = proc.libraryService()) s->open(); }
+        uint64_t serial() const override { return proc.library_ ? proc.library_->serial() : 0; }
+        std::vector<Source> sources() const override;
+        std::vector<Entry> entries(int source) const override;
+        bool message(int source, int entry, std::vector<uint8_t>& out) const override {
+            return proc.library_ && proc.library_->message(source, entry, out);
+        }
+        bool takeNotice(std::string& text) override;
+        void save() override { if (library::Service* s = proc.libraryService()) s->save(); }
+        void exportBank(int bank) override { if (library::Service* s = proc.libraryService()) s->exportBank(bank); }
+        void importFiles() override { proc.chooseImport(); }
+        void reveal() override { proc.revealLibrary(); }
+        PhyzoProcessor& proc;
+    };
+    library::Service* libraryService();
+    void chooseImport();
+    void revealLibrary();
+    void serviceLibrary();                           // timer: an exported bank waiting for its save dialog
+    void libraryNotice(const std::string& text) { libraryNotices_.push_back(text); }
+
     // Skin threads hand their editor calls to the message thread through this queue.
     void postToEditor(std::function<void(editor::Controller&)> f);
     void editorTick();
@@ -183,6 +212,11 @@ private:
     VirtualMidiPort vport_{engine_.virtualMidiOut(), &PhyzoProcessor::virtualBytes, this};   // after engine_: closed first
     EditorLink editorLink_{engine_};
     editor::Controller editor_{editorLink_};
+    LibraryBridge libraryBridge_{*this};
+    std::unique_ptr<library::Service> library_;       // after engine_: stopped before it (its clones ask the engine)
+    std::unique_ptr<juce::FileChooser> chooser_;      // the import / export dialog (released by the timer once done)
+    bool chooserBusy_ = false;                        // a dialog is open
+    std::deque<std::string> libraryNotices_;          // the plugin's own library messages (exports)
     EditorPort editorPort_{*this};
     EditorTicker editorTicker_{*this};
     std::atomic<bool> editorWanted_{false}, editorActive_{false};
