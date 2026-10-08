@@ -158,7 +158,11 @@ which Phyzo keeps with the project (each project, and each Phyzo in it, has its 
 factory presets only, like a new unit. **Factory restore** on the panel works too (hold Save, press Compare; the display
 asks `rSt?`; press +/Yes; after a moment the first preset shows again): it puts the factory presets back in that Phyzo.
 Sending the synth a bank dump over MIDI replaces its stored presets, as on the hardware. Projects saved with a
-version before 0.8.3 open as they were, with the factory presets in user memory.
+version before 0.8.3 open exactly as they did then; their synth can't save presets on the panel (it checks for that
+only when it starts), so add a new Phyzo to save presets.
+
+A new Phyzo takes about 0.2 s longer to start than in 0.8.2, because the synth indexes its user memory, as a new unit
+does. So LFO, arpeggiator and random timings differ from 0.8.2 renders; every preset and sound is identical.
 
 The first time Phyzo starts with your OS, it makes the factory presets once from the OS itself (a few extra seconds
 while it boots) and keeps them in **Documents > Phyzo > cache**. That file is made from your

@@ -29,8 +29,8 @@ Boot-ROM services are host traps: reboot (vector slot 1), OS update (slot 254),
 and an unexpected exception lands on a per-vector stub. Slot 251, the flash-write
 service, is served (since v0.8.3), so the OS's saves work:
 
-- The OS calls it as a C function with (destination flash address, source address, length, scratch buffer, scratch
-  length) on the stack and expects D0 = 0 for success. It passes whole regions (0xD0000 and 0xE0000, 64 KB each;
+- The OS reads the slot once, at boot (into RAM 0x0BE00808), and calls it as a C function with (destination flash
+  address, source address, length, scratch buffer, scratch length) on the stack; D0 = 0 means success. It passes whole regions (0xD0000 and 0xE0000, 64 KB each;
   0xF0000, 32 KB; 0xFFE00, 512 bytes), so a plain copy is all the flash needs (no erase or program sequence).
 - Slot 251 points at a two-instruction routine in the boot block, `move.l sp,($2040).l` then `rts`. Its write to the
   service port 0x2040 (only from that routine) runs the copy in the host (`Machine::flashService`), which puts the
@@ -200,7 +200,8 @@ constant latency, which the plugin reports to the host. The ESP2 DAC output (24-
 44.1 kHz to the host rate by `Resampler` (Kaiser windowed sinc, 128 taps at 44.1 kHz, about 100 dB accuracy, no
 added delay). `Machine::saveState()/loadState()` hold the complete machine (CPU, RAM, all devices, timing) and the
 user flash (section `UFLS`, since v0.8.3); the rest of the flash and the wave memory are not stored. A state without
-the user flash (saved before v0.8.3) loads exactly as before, then `Machine::seedUserFlash` is called. Several
+the user flash (saved before v0.8.3) loads exactly as before, with the user flash left erased (that machine cannot
+save: its OS read the service pointer at boot, when it was null, and indexed blank user memory). Several
 machines can run in one process: Musashi's single CPU is shared under a lock, with each machine's CPU state parked
 while another one runs.
 
@@ -211,8 +212,13 @@ then `P 01`), waiting for the display rather than a fixed delay. The flash is re
 `P 01` and the OS has written exactly that many bytes (`burn` is watched for but not required: the service takes no
 machine time, so it can be gone before it reaches the panel). It is cached by the OS image's MD5 (the plugin:
 `~/Documents/Phyzo/cache/`; made from the user's own OS on the user's machine, never shipped or committed). A new
-machine gets it before it boots; a state without the user flash gets it after it loads; when the OS restarts itself,
-the new machine keeps the user flash the old one had. Without it (tests, tools) the user flash starts erased.
+machine gets it before it boots; a restored state keeps its own user flash (none for a state from before v0.8.3);
+when the OS restarts itself, the new machine keeps the user flash the old one had. Without it (tests, tools) the user
+flash starts erased.
+
+Audio with the factory user flash is not byte-identical to an erased machine (v0.8.2), by design: the OS indexes its
+user memory at boot, which takes about 0.2 s longer, so LFO, arp and random timing differ. Every preset and sound is
+identical.
 
 ## phyzo_stress: real-time check of the plugin engine
 
