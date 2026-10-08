@@ -156,7 +156,7 @@ you open it.
 **Saving presets** on the synth's panel works as on the hardware: the saved presets go to the synth's user memory,
 which Phyzo keeps with the project (each project, and each Phyzo in it, has its own). A new Phyzo starts with the
 factory presets only, like a new unit. **Factory restore** on the panel works too (hold Save, press Compare; the display
-asks `rSt?`; press +/Yes; it shows `burn`, then the first preset): it puts the factory presets back in that Phyzo.
+asks `rSt?`; press +/Yes; after a moment the first preset shows again): it puts the factory presets back in that Phyzo.
 Sending the synth a bank dump over MIDI replaces its stored presets, as on the hardware. Projects saved with a
 version before 0.8.3 open as they were, with the factory presets in user memory.
 
