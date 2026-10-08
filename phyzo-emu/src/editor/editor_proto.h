@@ -20,7 +20,8 @@ constexpr uint8_t kWholeReply = 0x41, kPartialReply = 0x44;
 // The OS's error message (F0 0F 11 01 <device> 7F ... F7): its answer to a request it cannot serve.
 constexpr uint8_t kError = 0x7F;
 // Object types
-constexpr uint8_t kSystem = 0, kSound = 1, kPerformance = 2, kPreset = 7, kArpPreset = 8, kArpPattern = 9, kRawMemory = 0x7F;
+constexpr uint8_t kSystem = 0, kSound = 1, kPerformance = 2, kPreset = 7, kArpPreset = 8, kArpPattern = 9, kArpFeel = 10,
+                  kArpRiff = 11, kRawMemory = 0x7F;
 constexpr uint16_t kEditBuffer = 0x3FFF;             // performance edit buffer number
 // Preset numbers (type kPreset): 0 = the edit buffer; 0x40 + n = stored preset n (the user's, in the user flash);
 // 0x100 + n = the factory copy of preset n in the OS image (not what the user stored).

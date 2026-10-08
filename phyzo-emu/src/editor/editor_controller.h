@@ -176,6 +176,7 @@ public:
     std::vector<std::vector<uint8_t>> pageReadsForTest() const { return pageReads(); }
     int refForTest(char kind, int field) const { return refOf(kind, field); }
     int focusForTest() const { return focus_; }
+    bool rangeForTest(int ref, int64_t& lo, int64_t& hi) const { return rangeOf(ref, lo, hi); }
     bool arpBusyForTest() const { return jobActive_ || !pendingArp_.empty(); }
     // The OS's panel mode read before the last arp edit pressed any button (-1: none yet). After an arp edit the panel
     // stays in the arp menu; the editor does not try to return it (docs/editor/ROUND2_REVIEW.md, to be settled).
@@ -238,6 +239,10 @@ private:
     bool rangeOf(int ref, int64_t& lo, int64_t& hi) const;
     bool editable(int ref) const;
     std::string textOf(int ref, int64_t d) const;
+    // An ARP field's value as shown: the arp preset with its name, the feel's number with its name.
+    std::string arpText(const edfields::Field& f, int64_t d) const;
+    std::string objName(int type, int64_t number) const;   // trimmed; empty if not read (or the OS gave none)
+    int64_t lastArpPreset() const;                   // the last arp preset offered (-1: none)
     bool parseTyped(int ref, const std::string& s, int64_t& d) const;
     std::vector<Choice> listOf(int ref) const;       // the OS's values for a field with a list (empty: none)
 
@@ -342,10 +347,18 @@ private:
     std::array<std::string, kPresets> presetNames_;
     std::array<uint8_t, edfields::kArpBlockSize> live_{};   // the live arp state
     bool liveValid_ = false;
-    std::map<int, std::string> patternNames_;        // arp pattern number -> name
-    std::set<int> patternRequested_;
-    std::array<std::string, edfields::kArpPresets> arpPresetNames_;
-    int arpNamesRequested_ = 0;
+    // Names of the OS objects the ARP fields refer to (note pattern, feel, riff): by (type, number), each read once.
+    std::map<std::pair<int, int>, std::string> objNames_;
+    std::set<std::pair<int, int>> objNamesRequested_;
+    // The arp presets' names, read one at a time from 0 while the ARP area shows. When the OS does not answer one, a
+    // read of the last answered one (the probe) shows whether it answers at all: if it does, the arp presets end there
+    // and no name past them is read; if not (e.g. its demo), the read is tried again after the OS's next answer.
+    std::vector<std::string> arpPresetNames_;        // arp presets 0 .. size - 1, answered
+    int arpNameOut_ = -1, arpProbe_ = -1;            // the read out (-1: none) and when it was sent
+    double arpNameAt_ = 0, arpProbeAt_ = 0;
+    bool arpProbeDue_ = false;
+    bool arpNamesWait_ = false;                      // no answer to the last one: wait for any answer of the OS
+    int arpPresetCount_ = -1;                        // the number of arp presets, once known
     bool wavesRequested_ = false;
 
     // editing

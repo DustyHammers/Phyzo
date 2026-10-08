@@ -147,10 +147,11 @@ void Controller::setTables(const edtables::OsTables& tables) {
     presetNameRead_ = {};
     presetNamesRequested_ = 0;
     currentPreset_ = -1;
-    patternNames_.clear();
-    patternRequested_.clear();
-    arpPresetNames_ = {};
-    arpNamesRequested_ = 0;
+    objNames_.clear();
+    objNamesRequested_.clear();
+    arpPresetNames_.clear();
+    arpNameOut_ = arpProbe_ = arpPresetCount_ = -1;
+    arpProbeDue_ = arpNamesWait_ = false;
     build();
     render();
 }
@@ -198,6 +199,8 @@ void Controller::setOpen(bool open) {
         }
     } else {
         outstanding_ = 0;
+        arpNameOut_ = arpProbe_ = -1;               // asked again when the editor opens
+        arpProbeDue_ = arpNamesWait_ = false;
         readDue_ = displayChangedAt_ = readBackAt_ = -1;
         pending_.clear(); rmw_.clear(); pendingArp_.clear();   // the engine drops its queue too
         modPending_ = modReady_ = false;
@@ -323,26 +326,21 @@ void Controller::build() {
         }
         if (!a.sections.empty()) areas_.push_back(a);
     }
-    if (!arp_.empty()) {   // ARP: page 1 the OS's codes four per row; page 2 resolution, tempo, feel, arp preset, pattern, name
-        std::vector<Item> first, second;
-        Row pattern, name;
-        pattern.kind = name.kind = edpages::RowKind::Fixed;
+    if (!arp_.empty()) {   // ARP (owner-approved mockup): the fields in their order, four grid columns per row (the arp
+                           // preset, pattern, riff and feel take two), then the arp settings name on a row of its own
+        std::vector<Item> grid;
+        Row name;
+        name.kind = edpages::RowKind::Fixed;
         for (size_t i = 0; i < arp_.size(); ++i) {
             Item x = pitem('a', int(i));
-            if (arp_[i].kind == Kind::Pattern) { x.col = 0; pattern.items.push_back(x); }
-            else if (arp_[i].kind == Kind::Text) { x.col = 0; name.items.push_back(x); }
-            else (arp_[i].page == 0 ? first : second).push_back(x);
+            if (arp_[i].kind == Kind::Text) { x.col = 0; name.items.push_back(x); continue; }
+            x.span = arp_[i].span;
+            x.width = std::min(x.width, x.span == 2 ? 19 : 7);
+            grid.push_back(x);
         }
-        for (Item& x : first) x.width = std::min(x.width, 7);
-        for (Item& x : second) x.width = std::min(x.width, 7);
-        Page p1 = edpages::gridRows(first), p2 = edpages::gridRows(second);
-        p2.push_back(pattern);
-        p2.push_back(name);
-        std::vector<Page> pages;
-        for (size_t i = 0; i < p1.size(); i += size_t(edpages::kRows))
-            pages.emplace_back(p1.begin() + long(i), p1.begin() + long(std::min(p1.size(), i + size_t(edpages::kRows))));
-        pages.push_back(p2);
-        areas_.push_back({"ARP", {{"", pages}}});
+        std::vector<Row> rows = edpages::gridRows(grid);
+        if (!name.items.empty()) rows.push_back(name);
+        areas_.push_back({"ARP", {{"", edpages::paginate(rows)}}});
     }
     if (tables_.fx.ok) {   // INSERT (ALGO, MOD, SENDS) and REVERB (ALGO, SENDS): docs/editor/EFFECTS_EDITOR_SPEC.md
         const edtables::FxTables& t = tables_.fx;
@@ -485,7 +483,7 @@ void Controller::readPage() {
 
 void Controller::handleReply(const std::vector<uint8_t>& m) {
     if (outstanding_ > 0) --outstanding_;
-    unanswered_ = false;
+    unanswered_ = arpNamesWait_ = false;
     edproto::Message r;
     if (!edproto::parse(m.data(), m.size(), r) || r.command != edproto::kPartialReply) return;
     const edproto::Address& a = r.address;
@@ -526,11 +524,27 @@ void Controller::handleReply(const std::vector<uint8_t>& m) {
         for (char& c : name) if (static_cast<unsigned char>(c) < 0x20 || static_cast<unsigned char>(c) > 0x7E) c = ' ';
         return name;
     };
-    if (a.type == edproto::kArpPreset && a.number < edfields::kArpPresets) {
-        if (a.offset == 8) arpPresetNames_[a.number] = text();
+    if (a.type == edproto::kArpPreset) {
+        if (a.offset != 8) return;
+        const size_t n = a.number;
+        if (n < arpPresetNames_.size()) {
+            arpPresetNames_[n] = text();
+        } else if (n == arpPresetNames_.size() && arpPresetCount_ < 0) {   // the next one (also a late answer: no end)
+            arpPresetNames_.push_back(text());
+            arpProbe_ = -1;
+            arpProbeDue_ = false;
+        }
+        if (int(n) == arpNameOut_) arpNameOut_ = -1;
+        if (int(n) == arpProbe_) {                   // the OS answers, but not the next one: the arp presets end here
+            arpProbe_ = -1;
+            arpPresetCount_ = int(arpPresetNames_.size());
+        }
         return;
     }
-    if (a.type == edproto::kArpPattern && a.offset == 8) { patternNames_[a.number] = text(); return; }
+    if ((a.type == edproto::kArpPattern || a.type == edproto::kArpFeel || a.type == edproto::kArpRiff) && a.offset == 8) {
+        objNames_[{a.type, a.number}] = text();
+        return;
+    }
     if (a.type == edproto::kPreset && a.number >= edproto::kStoredPreset && a.offset == 8) {
         const int n = a.number - edproto::kStoredPreset;
         if (n >= 0 && n < kPresets) { presetNames_[size_t(n)] = text(); presetNameRead_[size_t(n)] = true; }
@@ -675,7 +689,10 @@ bool Controller::valueOf(int ref, int64_t& d) const {
 bool Controller::rangeOf(int ref, int64_t& lo, int64_t& hi) const {
     if (ref < 0 || size_t(ref) >= refs_.size()) return false;
     const Ref& r = refs_[size_t(ref)];
-    if (const edfields::Field* f = presetField(r)) { lo = f->lo; hi = f->hi; return true; }
+    if (const edfields::Field* f = presetField(r)) {
+        lo = f->lo; hi = f->kind == Kind::PresetAction ? lastArpPreset() : f->hi;
+        return true;
+    }
     if (r.kind == 'x') {
         const FxRef& e = fx_[size_t(r.field)];
         const edtables::FxTables& t = tables_.fx;
@@ -780,7 +797,7 @@ bool Controller::editable(int ref) const {
 
 std::string Controller::textOf(int ref, int64_t d) const {
     const Ref& r = refs_[size_t(ref)];
-    if (const edfields::Field* f = presetField(r)) return edfields::format(*f, d, tables_.arp);
+    if (const edfields::Field* f = presetField(r)) return arpText(*f, d);
     if (r.kind == 'x') {
         const FxRef& e = fx_[size_t(r.field)];
         const edtables::FxTables& t = tables_.fx;
@@ -808,6 +825,25 @@ std::string Controller::textOf(int ref, int64_t d) const {
     return edpages::formatValue(f, *r.table, d, &waves_);
 }
 
+std::string Controller::objName(int type, int64_t number) const {
+    auto it = objNames_.find({type, int(number)});
+    return it == objNames_.end() ? std::string() : edpages::trimmed(it->second);
+}
+
+int64_t Controller::lastArpPreset() const {
+    if (arpPresetCount_ >= 0) return arpPresetCount_ - 1;   // where the OS stops answering
+    // Until then: the last one answered, or the OS's current one if higher.
+    return std::max<int64_t>(int64_t(arpPresetNames_.size()) - 1, arpPresetValid_ ? currentArpPreset_ : -1);
+}
+
+std::string Controller::arpText(const edfields::Field& f, int64_t d) const {
+    std::string s = edfields::format(f, d, tables_.arp);
+    std::string name;
+    if (f.kind == Kind::PresetAction && d >= 0 && size_t(d) < arpPresetNames_.size()) name = edpages::trimmed(arpPresetNames_[size_t(d)]);
+    if (f.kind == Kind::Feel && d >= 0) name = objName(f.nameType, d);
+    return name.empty() ? s : s + " " + name;
+}
+
 std::vector<Choice> Controller::listOf(int ref) const {
     std::vector<Choice> out;
     if (ref < 0 || size_t(ref) >= refs_.size()) return out;
@@ -817,11 +853,7 @@ std::vector<Choice> Controller::listOf(int ref) const {
     if (const edfields::Field* f = presetField(r)) {
         if (f->kind == Kind::PresetAction) {         // the preset's own settings, then the arp presets by number and name
             if (!arpPresetValid_) return out;        // not read yet
-            out.push_back({edfields::format(*f, -1, tables_.arp), -1, known && cur == -1});
-            for (int n = 0; n < edfields::kArpPresets; ++n) {
-                const std::string name = edpages::trimmed(arpPresetNames_[size_t(n)]);
-                out.push_back({edfields::arpPresetLabel(tables_.arp, n) + (name.empty() ? "" : " " + name), n, known && cur == n});
-            }
+            for (int64_t n = -1; n <= lastArpPreset(); ++n) out.push_back({arpText(*f, n), n, known && cur == n});
             return out;
         }
         switch (f->kind) {
@@ -1194,11 +1226,10 @@ void Controller::render() {
                                     for (char& c : x.value) if (static_cast<unsigned char>(c) < 0x20 || static_cast<unsigned char>(c) > 0x7E) c = ' ';
                                     x.value = edpages::trimmed(x.value);
                                 }
-                            } else if (f->kind == Kind::Pattern) {
+                            } else if (f->kind == Kind::Pattern) {   // the name; the number if the OS gives none
                                 if (liveValid_ && edfields::rawOf(*f, live_.data(), live_.size(), edfields::kArpBlock, raw)) {
-                                    auto it = patternNames_.find(int(raw));
-                                    x.value = raw == edfields::kNone16 ? std::string("NONE")
-                                              : it != patternNames_.end() ? edpages::trimmed(it->second) : std::to_string(raw);
+                                    const std::string n = objName(f->nameType, raw);
+                                    x.value = raw == edfields::kNone16 ? std::string("NONE") : !n.empty() ? n : std::to_string(raw);
                                 }
                             } else {
                                 int64_t d;
@@ -1206,7 +1237,7 @@ void Controller::render() {
                                 // An arp edit on its way through the panel's buttons: its target until the OS holds it.
                                 if (jobActive_ && job_.ref == x.ref) { d = job_.target; known = true; }
                                 else if (auto it = pendingArp_.find(x.ref); it != pendingArp_.end()) { d = it->second; known = true; }
-                                if (known) x.value = edfields::format(*f, d, tables_.arp);
+                                if (known) x.value = arpText(*f, d);
                                 else if (f->kind == Kind::PresetAction) x.value = "...";   // shown at once; read soon
                             }
                         } else {
@@ -2238,24 +2269,51 @@ void Controller::tick(double nowMs) {
     const bool quiet = pending_.empty() && pendingArp_.empty() && !jobActive_ && rmw_.empty() && !modPending_ && !copying();
     if (readBackAt_ >= 0 && now_ >= readBackAt_ && quiet && dragRef_ < 0) { readBackAt_ = -1; readPage(); }
 
-    // Names for the ARP area: the pattern shown, and the arp presets for the right-click list (a few per tick, only
-    // once the page's own reads are answered, so they never hold up a page).
+    // Names for the ARP area: the pattern, riff and feel shown (each number once), and the arp presets for the arp
+    // preset field and its right-click list (one at a time, only once the page's own reads are answered, so they never
+    // hold up a page).
     if (currentArea() && currentArea()->name == "ARP" && quiet) {
         for (const edfields::Field& f : arp_) {
             int64_t raw;
-            if (f.kind != Kind::Pattern || !liveValid_ || !edfields::rawOf(f, live_.data(), live_.size(), edfields::kArpBlock, raw)) continue;
-            if (raw != edfields::kNone16 && !patternRequested_.count(int(raw)) && link_.send(edproto::partialRead({edproto::kArpPattern, uint16_t(raw), 0, 0, 8, 16}))) {
-                patternRequested_.insert(int(raw));
+            if (f.nameType < 0 || !liveValid_ || !edfields::rawOf(f, live_.data(), live_.size(), edfields::kArpBlock, raw)) continue;
+            const std::pair<int, int> key{f.nameType, int(raw)};
+            if (raw != edfields::kNone16 && !objNamesRequested_.count(key) &&
+                link_.send(edproto::partialRead({uint8_t(f.nameType), uint16_t(raw), 0, 0, 8, 16}))) {
+                objNamesRequested_.insert(key);
                 ++outstanding_;
                 lastSendAt_ = now_;
             }
         }
-        // (not while the OS leaves requests unanswered, e.g. in its demo: a request is never repeated every tick)
-        for (int i = 0; i < 2 && outstanding_ == 0 && !unanswered_ && arpNamesRequested_ < edfields::kArpPresets; ++i) {
-            if (!link_.send(edproto::partialRead({edproto::kArpPreset, uint16_t(arpNamesRequested_), 0, 0, 8, 16}))) break;
-            ++arpNamesRequested_;
-            ++outstanding_;
-            lastSendAt_ = now_;
+        if (arpNameOut_ >= 0 && now_ - arpNameAt_ > kReplyTimeoutMs) {   // no answer for this arp preset
+            if (arpNameOut_ > 0 && size_t(arpNameOut_) == arpPresetNames_.size()) arpProbeDue_ = true;
+            else arpNamesWait_ = true;
+            arpNameOut_ = -1;
+        }
+        if (arpProbe_ >= 0 && now_ - arpProbeAt_ > kReplyTimeoutMs) {   // nor for the probe: the OS answers nothing now
+            arpProbe_ = -1;
+            arpNamesWait_ = true;
+        }
+        if (arpProbeDue_ && arpProbe_ < 0 && !arpPresetNames_.empty()) {   // the probe: once per arp preset not answered
+            const int n = int(arpPresetNames_.size()) - 1;
+            arpProbeDue_ = false;
+            if (link_.send(edproto::partialRead({edproto::kArpPreset, uint16_t(n), 0, 0, 8, 16}))) {
+                arpProbe_ = n;
+                arpProbeAt_ = now_;
+                ++outstanding_;
+                lastSendAt_ = now_;
+            }
+        }
+        // (not again until the OS answers something, e.g. after its demo: a request is never repeated every tick; a
+        // pattern, riff or feel the OS gives no name for does not hold the list up)
+        if (arpPresetCount_ < 0 && arpNameOut_ < 0 && arpProbe_ < 0 && !arpProbeDue_ && outstanding_ == 0 && !arpNamesWait_ &&
+            arpPresetNames_.size() <= 0x3FFF) {
+            const int n = int(arpPresetNames_.size());
+            if (link_.send(edproto::partialRead({edproto::kArpPreset, uint16_t(n), 0, 0, 8, 16}))) {
+                arpNameOut_ = n;
+                arpNameAt_ = now_;
+                ++outstanding_;
+                lastSendAt_ = now_;
+            }
         }
     }
     // PRESETS: every stored preset's name once (to find the current preset by its name), a few per tick.

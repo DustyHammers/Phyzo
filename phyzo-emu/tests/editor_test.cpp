@@ -334,6 +334,18 @@ void testPages() {
     const Screen gs = render(Page(grid.begin(), grid.end()));
     CHECK_EQ(gs.rowText(0).substr(0, 12), std::string("C0XX 0      "));
     CHECK_EQ(gs.rowText(0).substr(38, 12), std::string("C3XX 30     "));
+    // Two-slot items (a whole half): the name in full, the value up to the half's end; one never straddles the halves.
+    std::vector<Item> wide = {{"AB", "1", 0}, {"Wide One", "a value nineteen ch", 1}, {"CD", "2", 2}, {"EF", "3", 3},
+                              {"GH", "4", 4}, {"Wide Two", "v", 5}};
+    wide[1].span = wide[5].span = 2;
+    const std::vector<Row> wr = gridRows(wide);
+    CHECK(wr.size() == 3 && wr[0].items.size() == 2 && wr[0].items[1].col == 2);   // slot 1 left empty
+    CHECK(wr[1].items.size() == 3 && wr[2].items.size() == 1 && wr[2].items[0].col == 0);
+    const Screen wsc = render(Page(wr.begin(), wr.end()));
+    CHECK_EQ(wsc.rowText(0), std::string("AB   1                    WIDE ONE a value ninetee"));
+    CHECK_EQ(wsc.rowText(1), std::string("CD   2      EF   3        GH   4                  "));
+    CHECK_EQ(wsc.rowText(2), std::string("WIDE TWO v                                        "));
+    CHECK(wsc.values.size() == 6 && wsc.values[1].col == 35 && wsc.values[1].len == 15);
     std::vector<Item> presets;
     for (int i = 0; i < 64; ++i) presets.push_back({(i < 9 ? "0" : "") + std::to_string(i + 1), "Preset " + std::to_string(i + 1), -1});
     const std::vector<Page> pages = paginate(nameRows(presets));

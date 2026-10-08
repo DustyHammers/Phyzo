@@ -102,7 +102,9 @@ owner step by step through anything they must do by hand on github.com or on the
   effects); under a variation the slot shows the values that play, and the first edit of one in the editor copies the
   variation to PSEt (write path 4b: raw writes, PSEt only once the read-back equals the copy). COMMON
   and ARP fields (no OS table) are in `editor_fields.*`; ARP values come from the live arp state and the OS's arp
-  variables in RAM. Follow also jumps to the page of the panel knob last moved (`Engine::lastPanelControl`).
+  variables in RAM. ARP page (v0.8.3.5, docs/editor/ARP_ROUND.md): the owner-approved order (the Arp Mode button's);
+  arp presets by the OS's own number (from 0); their list ends where the OS stops answering name reads (never a count
+  in the code); PATTERN / RIFF (types 9 / 11) display only, FEEL with its type-10 name. Follow also jumps to the page of the panel knob last moved (`Engine::lastPanelControl`).
   The skin side: `<name>-editor.rml`, `<vfdrow>` (values take drags, double-click, right-click), `<legend>`, the Lua
   `editor` API with `editor.knobLabels` (docs/SKINS.md).
   LIBRARY (v0.8.3 step 2, docs/editor/LIBRARY.md, `phyzo-emu/src/library/`): `.syx` files in

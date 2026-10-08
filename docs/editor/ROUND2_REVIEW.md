@@ -46,8 +46,9 @@ unchanged, no knob moves; resolution 16th → 32nd; Range Oct1 → Oct2; Lo n +3
 FEEL Off → 0. The main display shows the arp setting, as when the panel is used by hand.
 
 Fields and sources (values read from the OS; no LED codes needed):
-- PrSt: the OS's current arp preset 0x0BE01880 (32-bit, −1 = " Snd", else 0–120), shown with its name; drag one step
-  per step, typed entry and the right-click list (121 arp presets) step to the target.
+- PrSt: the OS's current arp preset 0x0BE01880 (32-bit, −1 = " Snd", else the arp preset), shown with its name; drag
+  one step per step, typed entry and the right-click list step to the target. (v0.8.3.5, ARP_ROUND.md: labelled with
+  the OS's own number from 0; the list ends where the OS stops answering name reads.)
 - nrES, ndur, FEEL, −3rd … Oct, Lo n, Hi n, tch, CEnt, ntLt, HELd: from the live arp state (0x0BE093D0, layout as in
   EDITOR_ROUND2.md §3); all editable as above. FEEL is now editable (stepping, shown as the OS's own values).
 - Range (Oct n, up and down together): from live $11 / 12.
