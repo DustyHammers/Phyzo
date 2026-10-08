@@ -15,6 +15,8 @@ Name-free design documents for the editor unit, from the project chat:
   the Presets page marking the current preset.
 - `EFFECTS_EDITOR_SPEC.md` and `ROUND3_ANSWERS.md` (round 3): the INSERT and REVERB pages, the effect tables' layouts
   and the verified write paths.
+- `LIBRARY.md` (v0.8.3 step 2): the preset library and its LIBRARY area: `.syx` files browsed, auditioned in Compare,
+  saved, imported and exported, read by hidden machines.
 - `IMPLEMENTATION_STEPS.md`: the plan.
 
 ## What is implemented
@@ -22,7 +24,8 @@ Name-free design documents for the editor unit, from the project chat:
 - `phyzo-emu/src/editor/`: messages (`editor_proto`: partial reads and writes, whole reads and dumps, NRPN, program
   changes), the OS tables and arp texts read from the user's OS at run time (`editor_tables`), the preset object's
   COMMON and ARP fields (`editor_fields`), pages (`editor_pages`) and the controller (`editor_controller`): areas
-  SYSTEM, PRESETS, COMMON, SOUND, OSC, ARP, INSERT and REVERB.
+  SYSTEM, PRESETS, COMMON, SOUND, OSC, ARP, INSERT, REVERB and LIBRARY (the preset library, `phyzo-emu/src/library/`,
+  LIBRARY.md).
 - INSERT (ALGO, MOD, SENDS) and REVERB (ALGO, SENDS), round 3 (EFFECTS_EDITOR_SPEC.md): names, ranges, lists, units,
   the edit order, the variations and the panel's codes read from the user's OS image at run time. Effect values: a
   raw-memory write of the word into the edit buffer, then the OS's effect parameter message (clamped to the record's

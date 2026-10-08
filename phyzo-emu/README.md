@@ -220,6 +220,24 @@ Audio with the factory user flash is not byte-identical to an erased machine (v0
 user memory at boot, which takes about 0.2 s longer, so LFO, arp and random timing differ. Every preset and sound is
 identical.
 
+## Preset library (src/library/*, v0.8.3)
+
+The editor's LIBRARY area (`docs/editor/LIBRARY.md`) browses `.syx` files in `~/Documents/Phyzo/Library/`.
+
+- **Auditioning:** a clicked preset's stored single-preset message goes into the synth's MIDI input, and the OS puts
+  it in Compare. Save on the panel keeps it.
+- **Hidden machines:** the files are read by hidden machines on a worker thread, one job at a time in the process,
+  never on the audio thread. The machines are driven only through the OS: panel Dump and +/Yes, program changes,
+  SysEx in, name reads.
+  - Fresh machines boot with the factory user memory. Clones restore the running machine's snapshot.
+  - `syx.*` splits and classifies the files: single preset `02 17`, bank `0D <bank>`.
+- **Index cache:** `library.*` keeps `cache/library/<file MD5>.idx`. It also scans the folder (factory banks first,
+  then files, then SINGLES) and makes new file names (never overwriting).
+- **Jobs (`service.*`):**
+  - make the factory bank files from the user's own OS (`Library/Factory/`, never shipped);
+  - read files;
+  - SAVE (refused while the Compare LED, 0x16, is lit), EXPORT and IMPORT.
+
 ## phyzo_stress: real-time check of the plugin engine
 
     build/phyzo_stress [--seconds S] [--no-state]

@@ -45,6 +45,10 @@ the geometry of the glass and every legend is in `docs/editor/EDITOR_PANEL_LAYOU
 - `<legend action="…" value="…">`: a legend; actions and values as in `EDITOR_PANEL_LAYOUT.json` (`area`, `section`,
   `target`, `page`, `page_prev`, `page_next`, `toggle_follow`, `indicator`, `label`). Class `lit` when active, `avail`
   when clicking it leads somewhere; style hover with `:hover`. A click goes to the editor.
+- The preset library (v0.8.3, `docs/editor/LIBRARY.md`): the area `LIBRARY` (`action="area"`), its sections `SOURCES`
+  and `PRESETS` (`action="section"`), and its actions `action="library"` with value `SAVE`, `IMPORT`, `EXPORT B1`,
+  `EXPORT B2` or `FOLDER` (`avail` in the LIBRARY area only, never `lit`). Without these legends the area cannot be
+  reached from the skin.
 - Lua: `editor.isOpen()`, `editor.state()` (area, section, sound, osc, oscBoth (both oscillators edited), page, pages, follow, data, rows), `editor.click(action,
   value)`, `editor.onChange(fn)` (called when the glass or the legends change), and
   `editor.followLeds{sound = {…4 codes}, osc = {…2}, env = {pitch, filter, amp}, noise = c, lfo = c, filterKbd = c}`: the

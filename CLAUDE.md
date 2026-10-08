@@ -105,6 +105,18 @@ owner step by step through anything they must do by hand on github.com or on the
   variables in RAM. Follow also jumps to the page of the panel knob last moved (`Engine::lastPanelControl`).
   The skin side: `<name>-editor.rml`, `<vfdrow>` (values take drags, double-click, right-click), `<legend>`, the Lua
   `editor` API with `editor.knobLabels` (docs/SKINS.md).
+  LIBRARY (v0.8.3 step 2, docs/editor/LIBRARY.md, `phyzo-emu/src/library/`): `.syx` files in
+  `~/Documents/Phyzo/Library/`, never the synth's memory.
+  - A clicked preset's stored single-preset message goes into the MIDI input (the OS puts it in Compare; Save on the
+    panel keeps it).
+  - Files are read by hidden machines on a worker thread, one job at a time in the process. Fresh machines boot the
+    v0.8.3 way; clones restore the running machine's snapshot, which is never paused, pressed or read otherwise.
+  - The machines are driven only through the OS: panel Dump 0x0C and +/Yes 0x0D, program changes, SysEx in, name
+    reads (#0, 0x40 + n).
+  - Index cache: `cache/library/<file MD5>.idx`. Factory bank files: `Library/Factory/`, from the user's OS, never
+    shipped.
+  - SAVE is refused while the Compare LED (0x16) is lit. New files are never overwritten. Entries go across the rows,
+    as on the PRESETS page.
 - Real-time rules for `engine.*`: the audio thread never waits on other threads. `getState` asks the audio thread
   for a snapshot at a block boundary (`Machine::saveStateInto`, preallocated); panel controls go through a
   lock-free latest-value slot per cc, sent at most once per 10 ms each and only while the panel link keeps up;
