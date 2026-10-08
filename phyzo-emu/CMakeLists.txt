@@ -71,7 +71,7 @@ endforeach()
 # One static library with the Musashi core inside (the core and our glue call each other).
 add_library(phyzo_core STATIC
   src/machine.cpp src/mc68340.cpp src/esp2_stub.cpp src/esp2_core.cpp src/voice_core.cpp src/panel_model.cpp
-  src/os_image.cpp src/rom_id.cpp src/musashi_glue.cpp src/resampler.cpp src/engine.cpp src/midi_stream.cpp
+  src/os_image.cpp src/rom_id.cpp src/musashi_glue.cpp src/resampler.cpp src/engine.cpp src/midi_stream.cpp src/user_flash.cpp
   src/editor/editor_proto.cpp src/editor/editor_tables.cpp src/editor/editor_pages.cpp src/editor/editor_fields.cpp src/editor/editor_controller.cpp
   ${MUSASHI_SOURCES})
 target_include_directories(phyzo_core PUBLIC src PRIVATE "${MUSASHI_DIR}" "${MUSASHI_DIR}/softfloat" "${GENERATED_DIR}")
@@ -216,3 +216,7 @@ add_executable(panel_test tests/panel_test.cpp src/panel_model.cpp)
 target_include_directories(panel_test PRIVATE src)
 target_compile_options(panel_test PRIVATE -Wall -Wextra)
 add_test(NAME panel COMMAND panel_test)
+add_executable(user_flash_test tests/user_flash_test.cpp)
+target_link_libraries(user_flash_test PRIVATE phyzo_core)
+target_compile_options(user_flash_test PRIVATE -Wall -Wextra)
+add_test(NAME user_flash COMMAND user_flash_test)

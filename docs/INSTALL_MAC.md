@@ -150,7 +150,19 @@ The **Built-in** skin shows:
   44.1 kHz to the host rate) and **queue** (passing knob, button and MIDI events to the synth).
 
 Play Phyzo from a MIDI track. Everything the synth does (including the selected preset, any edits made over
-MIDI and the knob positions) is saved with the REAPER project and restored when you open it.
+MIDI, the knob positions and the presets you saved on the panel) is saved with the REAPER project and restored when
+you open it.
+
+**Saving presets** on the synth's panel works as on the hardware: the saved presets go to the synth's user memory,
+which Phyzo keeps with the project (each project, and each Phyzo in it, has its own). A new Phyzo starts with the
+factory presets only, like a new unit. **Factory restore** on the panel works too (hold Save, press Compare; the display
+asks `rSt?`; press +/Yes; it shows `burn`, then the first preset): it puts the factory presets back in that Phyzo.
+Sending the synth a bank dump over MIDI replaces its stored presets, as on the hardware. Projects saved with a
+version before 0.8.3 open as they were, with the factory presets in user memory.
+
+The first time Phyzo starts with your OS, it makes the factory presets once from the OS itself (a few extra seconds
+while it boots) and keeps them in **Documents > Phyzo > cache**. That file is made from your
+own OS, so don't share it. Deleting it is harmless: it is made again when needed.
 
 ## 8. MIDI ports
 

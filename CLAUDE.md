@@ -60,7 +60,10 @@ owner step by step through anything they must do by hand on github.com or on the
   MIDI input as whole messages (`midi_stream.*`). `plugin/` wraps it (JUCE) and scans `~/Documents/Phyzo/roms/`. Musashi has one global CPU:
   machines take turns on it per 68k slice under a lock (`Machine::becomeCpuOwner`); each machine's devices (timers,
   serial, voice chip, ESP2) run outside the lock, in parallel across instances. Project state = complete machine state
-  (`Machine::saveState`), tied to the ROM checksums.
+  (`Machine::saveState`), tied to the ROM checksums, including the user flash 0xD0000-0xFFFFF (presets saved on the
+  panel), which only the boot ROM's flash-write service (slot 251, a host service) writes. New instances and projects
+  from before v0.8.3 get the factory user flash (`user_flash.*`): made once per OS image by the OS's own factory restore
+  in a hidden machine, cached in `~/Documents/Phyzo/cache/` (from the user's OS: never shipped or committed).
 - Skins: `plugin/skin/` (no JUCE) is the runtime: RmlUi 6.3 + Lua 5.4 (sandboxed, 3 s limit) + FreeType, the custom
   elements knob/pbutton/led/vfdigit and the `panel`/`plugin` Lua API; `skin_test` drives the test skin in CI.
   `plugin/Source/RmlSkinComponent.*` draws a file skin with OpenGL (all RmlUi/Lua work on the GL thread);

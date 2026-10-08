@@ -1,5 +1,6 @@
 // Phyzo audio processor: the emulated machine (Engine) as a VST3/AU instrument.
-// Data folder: ~/Documents/Phyzo/ with roms/ (the two ROM files, found by checksum) and skins/.
+// Data folder: ~/Documents/Phyzo/ with roms/ (the two ROM files, found by checksum), skins/ and cache/ (the factory
+// user flash made from the user's own OS, by its MD5).
 #pragma once
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <array>
