@@ -167,7 +167,7 @@ void Service::makeFactory(const std::vector<int>& banks) {
         std::lock_guard<std::mutex> lk(mtx_);
         for (const int k : banks) progress_[factoryKey(k)] = {0, size_t(kBankPresets)};
     }
-    notice("MAKING FACTORY BANKS (ONCE)  ABOUT A MINUTE");
+    notice("MAKING FACTORY BANKS (ONCE)  ABOUT 2 MINUTES");
     auto clear = [&] { std::lock_guard<std::mutex> lk(mtx_); for (const int k : banks) progress_.erase(factoryKey(k)); };
     std::string err;
     std::unique_ptr<Ops> ops = machines_->fresh(cancel_, err);
@@ -256,6 +256,8 @@ void Service::doSave() {
     std::string err;
     std::unique_ptr<Ops> ops = state.empty() ? nullptr : machines_->clone(state, cancel_, err);
     if (!ops) { if (!cancel_) notice("NOT SAVED  THE SYNTH IS NOT RUNNING"); return; }
+    // The clone shows what the panel showed (e.g. `donE` right after a panel Dump): first the preset display.
+    if (!ops->waitForPreset()) { if (!cancel_) notice("NOT SAVED  " + upper(ops->error())); return; }
     if (ops->compareLit()) { notice("UNSAVED EDITS  SAVE ON THE PANEL FIRST"); return; }
     std::string name;
     std::vector<uint8_t> message;
@@ -284,8 +286,10 @@ void Service::doExport(int bank) {
     std::string err;
     std::unique_ptr<Ops> ops = state.empty() ? nullptr : machines_->clone(state, cancel_, err);
     if (!ops) { if (!cancel_) notice("NOT EXPORTED  THE SYNTH IS NOT RUNNING"); return; }
+    // The preset display first (a clone shows what the panel showed), then P 64: the Dump list starts at the current
+    // preset, so bAn1 and bAn2 are the next two steps (from P 01 it would be 64).
     std::vector<uint8_t> message;
-    if (!ops->dumpBank(bank, message, nullptr)) {
+    if (!ops->waitForPreset() || !ops->programChange(63) || !ops->dumpBank(bank, message, nullptr)) {
         if (!cancel_) notice("NOT EXPORTED  " + upper(ops->error()));
         return;
     }

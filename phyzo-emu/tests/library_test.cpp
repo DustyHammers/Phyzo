@@ -1,6 +1,7 @@
 // Preset library test (no ROM data; v0.8.3 step 2): .syx splitting and classification, the index cache, the Library
 // scan, safe file names, and the job service against a scripted stand-in for the OS's hidden machines (its own preset
 // and bank messages, made up here: no OS data).
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -159,6 +160,7 @@ struct Model {
     std::string edit;
     bool compare = false;
     int current = 0;
+    bool done = false;                              // the display shows `donE` (after a Dump)
 };
 Model factoryModel() {
     Model m;
@@ -170,6 +172,7 @@ Model factoryModel() {
 struct Shared {
     std::mutex mtx;
     std::vector<std::thread::id> threads;           // every call's thread
+    std::vector<std::string> calls;                 // every call, in order (name and argument)
     int fresh = 0, clones = 0, receives = 0;
     Model running = factoryModel();                 // the running machine, for clones
     std::atomic<bool> blockReceive{false};          // receive() waits here until the job is cancelled
@@ -183,7 +186,7 @@ class FakeOps : public Ops {
 public:
     FakeOps(Shared& sh, Model m, const std::atomic<bool>& cancel) : sh_(sh), m_(std::move(m)), cancel_(cancel) {}
     bool receive(const std::vector<uint8_t>& msg, const Progress& progress) override {
-        note();
+        note("receive");
         { std::lock_guard<std::mutex> lk(sh_.mtx); ++sh_.receives; }
         while (sh_.blockReceive) {
             if (cancel_) { sh_.sawCancel = true; return fail("cancelled"); }
@@ -202,32 +205,42 @@ public:
         default: return true;
         }
     }
-    bool programChange(int p) override { note(); m_.current = p; m_.edit = m_.stored[size_t(p)]; m_.compare = false; return true; }
+    bool programChange(int p) override { note("programChange " + std::to_string(p)); m_.current = p; m_.edit = m_.stored[size_t(p)]; m_.compare = false; return true; }
     bool readName(uint16_t n, std::string& name) override {
-        note();
+        note("readName " + std::to_string(n));
         if (n == 0) name = m_.edit;
         else if (n >= 0x40 && n < 0x80) name = m_.stored[size_t(n - 0x40)];
         else return fail("bad number");
         return true;
     }
-    bool compareLit() override { note(); return m_.compare; }
+    bool compareLit() override { note("compareLit"); return m_.compare; }
+    bool waitForPreset() override { note("waitForPreset"); m_.done = false; return true; }
+    // As the real hidden machine: the Dumps wait for the preset display first, and leave `donE` behind.
     bool dumpPreset(std::vector<uint8_t>& msg) override {
-        note();
+        note("dumpPreset");
+        if (m_.done) m_.done = false;
         int k;
         { std::lock_guard<std::mutex> lk(sh_.mtx); k = sh_.dumps++; }
         if (k == sh_.gateAt) { sh_.atGate = true; while (!sh_.gateOpen && !cancel_) std::this_thread::sleep_for(std::chrono::milliseconds(1)); }
         msg = presetMsg(m_.edit);
+        m_.done = true;
         return true;
     }
     bool dumpBank(int bank, std::vector<uint8_t>& msg, const Progress& progress) override {
-        note();
+        note("dumpBank " + std::to_string(bank));
+        if (m_.done) m_.done = false;
         if (progress) { progress(51210, 102420); progress(102420, 102420); }
         msg = bankMsg(bank, std::vector<std::string>(m_.stored.begin() + bank * 32, m_.stored.begin() + bank * 32 + 32));
+        m_.done = true;
         return true;
     }
     std::string error() const override { return err_; }
 private:
-    void note() { std::lock_guard<std::mutex> lk(sh_.mtx); sh_.threads.push_back(std::this_thread::get_id()); }
+    void note(const std::string& call) {
+        std::lock_guard<std::mutex> lk(sh_.mtx);
+        sh_.threads.push_back(std::this_thread::get_id());
+        sh_.calls.push_back(call);
+    }
     bool fail(const std::string& e) { err_ = e; return false; }
     Shared& sh_;
     Model m_;
@@ -239,18 +252,26 @@ class FakeMachines : public Machines {
 public:
     explicit FakeMachines(Shared& sh) : sh_(sh) {}
     std::unique_ptr<Ops> fresh(const std::atomic<bool>& cancel, std::string&) override {
-        { std::lock_guard<std::mutex> lk(sh_.mtx); ++sh_.fresh; sh_.threads.push_back(std::this_thread::get_id()); }
+        { std::lock_guard<std::mutex> lk(sh_.mtx); ++sh_.fresh; sh_.threads.push_back(std::this_thread::get_id()); sh_.calls.push_back("fresh"); }
         return std::make_unique<FakeOps>(sh_, factoryModel(), cancel);
     }
     std::unique_ptr<Ops> clone(const std::vector<uint8_t>& state, const std::atomic<bool>& cancel, std::string& err) override {
         std::lock_guard<std::mutex> lk(sh_.mtx);
-        ++sh_.clones; sh_.threads.push_back(std::this_thread::get_id());
+        ++sh_.clones; sh_.threads.push_back(std::this_thread::get_id()); sh_.calls.push_back("clone");
         if (state != Bytes{1, 2, 3}) { err = "bad state"; return nullptr; }
         return std::make_unique<FakeOps>(sh_, sh_.running, cancel);
     }
 private:
     Shared& sh_;
 };
+
+// The calls made since the last machine of that kind ("clone" or "fresh") was made.
+std::vector<std::string> callsSince(Shared& sh, const std::string& kind) {
+    std::lock_guard<std::mutex> lk(sh.mtx);
+    for (size_t i = sh.calls.size(); i-- > 0;)
+        if (sh.calls[i] == kind) return std::vector<std::string>(sh.calls.begin() + long(i) + 1, sh.calls.end());
+    return {};
+}
 
 bool waitIdle(Service& s, int ms = 10000) {
     for (int i = 0; i < ms && s.busy(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -294,7 +315,14 @@ void testService(const fs::path& dir) {
         CHECK((titles == std::vector<std::string>{"FACTORY BANK 1:32", "FACTORY BANK 2:32", "My Pads:32", "Two:2", "SINGLES:2"}));
         const auto n = notices(s);
         CHECK(has(n, "Bad.syx  NO PRESET OR BANK IN THIS FILE"));
-        CHECK(has(n, "MAKING FACTORY BANKS (ONCE)  ABOUT A MINUTE"));
+        CHECK(has(n, "MAKING FACTORY BANKS (ONCE)  ABOUT 2 MINUTES"));
+        {   // the factory banks: from P 64, bAn1 then bAn2, each Dump waiting for the preset display (after `donE`)
+            std::lock_guard<std::mutex> lk(sh.mtx);
+            const auto first = std::find(sh.calls.begin(), sh.calls.end(), "fresh");
+            CHECK(first != sh.calls.end() && sh.calls.end() - first >= 4);
+            if (sh.calls.end() - first >= 4)
+                CHECK((std::vector<std::string>(first + 1, first + 4) == std::vector<std::string>{"programChange 63", "dumpBank 0", "dumpBank 1"}));
+        }
         // Names come from the OS: a bank's stored presets (0x40 + n), a single's edit buffer.
         const auto fb2 = s.entries(1);
         CHECK(fb2.size() == 32 && fb2[0].name == "Factory 33" && fb2[31].name == "Factory 64");
@@ -373,9 +401,11 @@ void testService(const fs::path& dir) {
         CHECK(after == files);
         sh.running.compare = false;
         sh.running.edit = "Beta/Arp";
+        sh.running.done = true;                              // right after a panel Dump: the clone shows `donE`
         s.save();
         CHECK(waitIdle(s));
         CHECK(has(notices(s), "SAVED  Singles/Beta_Arp.syx"));
+        CHECK((callsSince(sh, "clone") == std::vector<std::string>{"waitForPreset", "compareLit", "readName 0", "dumpPreset"}));
         Bytes b;
         CHECK(readFile((lib / "Singles" / "Beta_Arp.syx").string(), b) && b == presetMsg("Beta/Arp"));
         s.save();
@@ -388,6 +418,8 @@ void testService(const fs::path& dir) {
         sh.running.stored[32] = "Saved On Panel";
         s.exportBank(1);
         CHECK(waitIdle(s));
+        // The preset display first, then P 64 (bAn1 and bAn2 are the next steps of the Dump list), then the bank.
+        CHECK((callsSince(sh, "clone") == std::vector<std::string>{"waitForPreset", "programChange 63", "dumpBank 1"}));
         int bank = -1; Bytes ex;
         CHECK(s.takeExport(bank, ex) && bank == 1 && ex.size() > 8 && ex[6] == 1);
         CHECK(trimmed(std::string(ex.begin() + 8, ex.begin() + 24)) == "Saved On Panel");

@@ -12,8 +12,12 @@ namespace {
 constexpr double kStepMs = 5;                       // machine time between checks while waiting
 constexpr double kHoldMs = 110, kGapMs = 250;       // a press as hands do it: held, then a pause before the next
 constexpr double kMidiByteMs = 0.32;                // 31.25 kbaud
+constexpr double kPresetDisplayMs = 5000;           // longest wait for the display to show a preset again (`donE`)
 
 std::string presetText(int preset) { char b[16]; std::snprintf(b, sizeof b, "P %02d", preset + 1); return b; }
+bool isPresetText(const std::string& t) {           // "P nn"
+    return t.size() == 4 && t[0] == 'P' && t[1] == ' ' && t[2] >= '0' && t[2] <= '9' && t[3] >= '0' && t[3] <= '9';
+}
 std::string trimRight(std::string s) { while (!s.empty() && (s.back() == ' ' || s.back() == '\0')) s.pop_back(); return s; }
 
 class HiddenMachine : public Ops {
@@ -64,15 +68,20 @@ public:
         return it != m_->panel.ledState.end() && it->second != 0;
     }
 
+    bool waitForPreset() override {
+        return wait(kPresetDisplayMs, [&] { return isPresetText(m_->panel.text()); }) ||
+               fail("the display did not come back to a preset");
+    }
+
     bool dumpPreset(std::vector<uint8_t>& message) override {
         msgs_.clear();
-        if (!press(kRawDump) || !press(kRawDump)) return false;
+        if (!waitForPreset() || !press(kRawDump) || !press(kRawDump)) return false;
         return wait(6000, [&] { return take(Kind::Preset, -1, message); }) || fail("the OS sent no preset");
     }
 
     bool dumpBank(int bank, std::vector<uint8_t>& message, const Progress& progress) override {
         msgs_.clear();
-        if (!press(kRawDump)) return false;
+        if (!waitForPreset() || !press(kRawDump)) return false;
         const std::string want = bank == 0 ? "bAn1" : "bAn2";
         // The Dump list starts at the current preset; +/Yes steps through P 01 ... P 64, bAn1, bAn2. A blank display
         // (a blink) is not a step: the last text shown counts.

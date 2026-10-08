@@ -33,9 +33,12 @@ public:
     virtual bool programChange(int preset) = 0;              // 0-63; returns once the display shows P nn
     virtual bool readName(uint16_t number, std::string& name) = 0;   // trimmed
     virtual bool compareLit() = 0;
-    // The panel's Dump of the current preset (Dump, Dump): its single-preset message.
+    // Waits until the display shows a preset (P nn): after a Dump the OS shows `donE` for a while, and a clone starts
+    // with whatever the panel showed. A Dump pressed before that only clears `donE` and enters no Dump list.
+    virtual bool waitForPreset() = 0;
+    // The panel's Dump of the current preset (Dump, Dump): its single-preset message. Waits for P nn first.
     virtual bool dumpPreset(std::vector<uint8_t>& message) = 0;
-    // The panel's Dump of bAn1 (bank 0) or bAn2 (bank 1): its bank message.
+    // The panel's Dump of bAn1 (bank 0) or bAn2 (bank 1): its bank message. Waits for P nn first.
     virtual bool dumpBank(int bank, std::vector<uint8_t>& message, const Progress& progress) = 0;
     virtual std::string error() const = 0;
 };
