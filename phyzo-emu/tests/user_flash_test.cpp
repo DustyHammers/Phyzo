@@ -359,8 +359,8 @@ void testCache(const fs::path& dir) {
 
 // ------------------------------------------------------------------ the engine
 
-bool waitRunning(Engine& e) {
-    for (int i = 0; i < 1000 && e.state() != Engine::State::Running; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+bool waitRunning(Engine& e) {                     // up to 30 s: some cases boot a hidden machine first (slow builds)
+    for (int i = 0; i < 3000 && e.state() != Engine::State::Running; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
     return e.state() == Engine::State::Running;
 }
 std::vector<uint8_t> userFlashOf(Engine& e) {
