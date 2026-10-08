@@ -563,7 +563,7 @@ void testController() {
     link.sent.clear();
     c.command("area", "PRESETS");
     CHECK(link.sent.size() == 9 && link.sent[8] == edproto::partialRead({edproto::kPreset, 0, 0, 0, 8, 16}));
-    CHECK(link.sent[3] == edproto::partialRead({edproto::kPreset, 0x103, 0, 0, 8, 16}));
+    CHECK(link.sent[3] == edproto::partialRead({edproto::kPreset, 0x43, 0, 0, 8, 16}));   // stored preset 3 (0x40 + n)
     Bytes preset(24, ' ');
     const char* nm = "Big Pad 4       ";
     std::memcpy(preset.data() + 8, nm, 16);

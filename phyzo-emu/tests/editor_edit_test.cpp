@@ -784,20 +784,32 @@ void testEditing() {
 
     // ---- PRESETS: the current preset marked (focused) and its view shown; a click sends the program change; a
     // preset change ends EDITED and revert
+    // Stored presets are numbers 0x40 + n (the user's, as saved); 0x100 + n are the factory copies in the OS image,
+    // which the fake OS names differently: the editor must never show those.
+    CHECK(edproto::kStoredPreset == 0x40 && edproto::kFactoryPreset == 0x100);
     std::string currentName = "Preset 12";
     auto presetName = [](int n) { std::string s = "Preset " + std::to_string(n + 1); s.resize(16, ' '); return s; };
+    int storedReads = 0, otherReads = 0;
     auto answerPresets = [&]() {
         for (const Bytes& m : link.sent) {
             if (!(m.size() > 6 && m[5] == edproto::kPartialRead && FakeLink::addressOf(m).type == edproto::kPreset)) continue;
             const edproto::Address a = FakeLink::addressOf(m);
-            if (a.number >= edproto::kStoredPreset) { const std::string n = presetName(a.number - edproto::kStoredPreset); link.answerData(m, Bytes(n.begin(), n.end())); }
-            else if (a.number == 0 && a.offset == 8) { std::string n = currentName; n.resize(16, ' '); link.answerData(m, Bytes(n.begin(), n.end())); }
+            if (a.number >= edproto::kStoredPreset && a.number < edproto::kStoredPreset + 64) {
+                ++storedReads;
+                const std::string n = presetName(a.number - edproto::kStoredPreset); link.answerData(m, Bytes(n.begin(), n.end()));
+            } else if (a.number >= edproto::kFactoryPreset) {
+                ++otherReads;
+                std::string n = "Factory " + std::to_string(a.number - edproto::kFactoryPreset + 1); n.resize(16, ' ');
+                link.answerData(m, Bytes(n.begin(), n.end()));
+            } else if (a.number == 0 && a.offset == 8) { std::string n = currentName; n.resize(16, ' '); link.answerData(m, Bytes(n.begin(), n.end())); }
+            else ++otherReads;
         }
         link.sent.clear();
     };
     link.sent.clear();
     c.command("area", "PRESETS");
     for (int i = 0; i < 60; ++i) { answerPresets(); tick(20); }
+    CHECK(storedReads >= 64 && otherReads == 0);                               // every name from the stored presets
     v = c.view();
     CHECK(v.area == "PRESETS" && v.page == 2);                                  // preset 12 is on the second view
     CHECK(v.focusRow == 1 && v.focusCol == 25 && v.focusLen == 20);            // marked: "12  Preset 12" blinks
