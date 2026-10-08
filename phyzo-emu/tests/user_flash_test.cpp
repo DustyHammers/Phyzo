@@ -231,11 +231,11 @@ void testSeeding() {
 // ------------------------------------------------------------------ the factory-restore sequence
 
 // A scripted stand-in for the OS's panel behaviour (times in ms): Save held and Compare pressed and released, then Save
-// released, makes it ask `r5t?` after confirmMs; +/Yes then shows `burn` after burnMs and writes `bytes` over writeMs,
-// then the display shows `P 01` again.
+// released, makes it ask `r5t?` after confirmMs; +/Yes then shows `burn` after burnMs for writeMs, then `P 01` again.
+// It writes `bytes` from burn on, all of them by bytesMs (default: 90 % of writeMs).
 struct FakeOs : userflash::Panel {
     double now = 0;
-    double confirmMs = 30, burnMs = 40, writeMs = 340;
+    double confirmMs = 30, burnMs = 40, writeMs = 340, bytesMs = -1;
     uint64_t bytes = userflash::kFactoryRestoreBytes;
     bool ignoreCompare = false, stopAtYes = false;
     bool saveHeld = false, compared = false;
@@ -267,7 +267,8 @@ struct FakeOs : userflash::Panel {
     }
     uint64_t serviceBytes() const override {
         if (burnAt < 0 || now < burnAt) return 0;
-        const double f = std::min(1.0, (now - burnAt) / (writeMs * 0.9));
+        const double span = bytesMs >= 0 ? bytesMs : writeMs * 0.9;
+        const double f = span <= 0 ? 1.0 : std::min(1.0, (now - burnAt) / span);
         return uint64_t(double(bytes) * f);
     }
 };
@@ -297,6 +298,18 @@ void testFactoryRestore() {
         FakeOs os; os.burnMs = 20; std::string err;
         CHECK(userflash::factoryRestore(os, err));
         CHECK(os.now == os.burnAt + os.writeMs);
+    }
+    // Writing so fast that `burn` never reaches the display: done when the display is back and all bytes are written.
+    {
+        FakeOs os; os.writeMs = 0; std::string err;
+        CHECK(userflash::factoryRestore(os, err));
+        CHECK(os.now == 691);                                   // the first moment after +/Yes is released
+    }
+    // The display comes back before the last write: done only once every byte is written.
+    {
+        FakeOs os; os.bytesMs = os.writeMs + 50; std::string err;
+        CHECK(userflash::factoryRestore(os, err));
+        CHECK(os.now == os.burnAt + os.writeMs + 50);
     }
     // No confirmation: +/Yes is never pressed.
     {

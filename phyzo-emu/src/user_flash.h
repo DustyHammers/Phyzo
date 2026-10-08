@@ -20,9 +20,9 @@ constexpr uint8_t kRawSave = 0x0B, kRawCompare = 0x20, kRawYes = 0x0D;
 constexpr const char* kConfirmText = "r5t?";
 constexpr const char* kBurnText = "burn";
 constexpr const char* kPresetText = "P 01";
-// Longest waits for each display (machine time). They only bound a wait: every step goes on as soon as its display
-// shows, never after a fixed delay.
-constexpr double kConfirmLimitMs = 2000, kBurnLimitMs = 3000, kPresetLimitMs = 5000;
+// Longest waits (machine time): for the confirmation, and for the writing to end. They only bound a wait: every step
+// goes on as soon as its condition holds, never after a fixed delay.
+constexpr double kConfirmLimitMs = 2000, kWriteLimitMs = 8000;
 
 // What the factory restore needs from a booted machine (MachinePanel; tests use a fake).
 struct Panel {
@@ -37,10 +37,10 @@ struct Panel {
 };
 
 // The OS's own factory restore, played on the panel as hands do (verified on the real OS): Save down, 200 ms,
-// Compare down, 150 ms, Compare up, 200 ms, Save up; the display asks `r5t?`; +/Yes down for 110 ms, up; the display
-// shows `burn` while the OS writes, then `P 01`. Each display is waited for (never a fixed delay); the flash is
-// complete only once the display is back from `burn`. Checks that the OS wrote kFactoryRestoreBytes. On success the
-// machine's user flash holds the factory user flash.
+// Compare down, 150 ms, Compare up, 200 ms, Save up; the display asks `r5t?` (waited for); +/Yes down for 110 ms, up;
+// the display shows `burn` while the OS writes, then `P 01`. Finished (never after a fixed delay) once the display is
+// back on `P 01` and the OS has written kFactoryRestoreBytes through the flash-write service; exactly that many, or it
+// fails. On success the machine's user flash holds the factory user flash.
 bool factoryRestore(Panel& p, std::string& err);
 
 // The Panel of a real machine. `cancel` (optional) stops a run.

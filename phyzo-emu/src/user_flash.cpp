@@ -32,30 +32,22 @@ bool factoryRestore(Panel& p, std::string& err) {
     case Panel::Run::Shown: break;
     }
 
-    // +/Yes: the OS writes the factory data (`burn`), then shows the preset again. `burn` may already show while
-    // +/Yes is held.
+    // +/Yes: the OS writes the factory data (the display shows `burn`), then shows the preset again. Done once the
+    // display is back and every byte is written. `burn` may show while +/Yes is held, and may be gone before the next
+    // display update reaches the panel (the service takes no machine time), so it is watched for, not required.
+    const auto written = [&] { return p.serviceBytes() - before; };
     bool burn = false;
-    auto watchBurn = [&](const std::string& d) { if (d == kBurnText) burn = true; return false; };
     p.press(kRawYes, true);
-    if (p.run(110, watchBurn) == Panel::Run::Stopped) return stopped("after +/Yes");
+    if (p.run(110, [&](const std::string& d) { burn |= d == kBurnText; return false; }) == Panel::Run::Stopped)
+        return stopped("after +/Yes");
     p.press(kRawYes, false);
-    if (!burn) {
-        switch (p.run(kBurnLimitMs, shows(kBurnText))) {
-        case Panel::Run::Stopped: return stopped("before writing");
-        case Panel::Run::Time: err = std::string("the display did not show ") + kBurnText; return false;
-        case Panel::Run::Shown: break;
-        }
-    }
-    switch (p.run(kPresetLimitMs, shows(kPresetText))) {
-    case Panel::Run::Stopped: return stopped("while writing");
-    case Panel::Run::Time: err = std::string("the display did not come back to ") + kPresetText; return false;
-    case Panel::Run::Shown: break;
-    }
-    const uint64_t written = p.serviceBytes() - before;
-    if (written != kFactoryRestoreBytes) {
-        err = "the factory restore wrote " + std::to_string(written) + " bytes, not " + std::to_string(kFactoryRestoreBytes);
+    const auto done = [&](const std::string& d) { burn |= d == kBurnText; return d == kPresetText && written() >= kFactoryRestoreBytes; };
+    if (p.run(kWriteLimitMs, done) == Panel::Run::Stopped) return stopped(burn ? "while writing" : "after +/Yes");
+    if (written() != kFactoryRestoreBytes) {
+        err = "the factory restore wrote " + std::to_string(written()) + " bytes, not " + std::to_string(kFactoryRestoreBytes);
         return false;
     }
+    if (!done(kPresetText)) { err = std::string("the display did not come back to ") + kPresetText; return false; }
     return true;
 }
 

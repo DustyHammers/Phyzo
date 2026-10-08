@@ -207,8 +207,9 @@ while another one runs.
 Factory user flash (`src/user_flash.*`, `Engine::setFactoryUserFlash`, on in the plugin): what the OS's own factory
 restore writes (164,352 bytes). It is made once per OS image in a hidden machine: a freshly booted machine plays the
 restore on its panel (Save down, Compare pressed, Save up; the display asks `r5t?`; +/Yes; the display shows `burn`,
-then `P 01`), each step waiting for its display rather than a fixed delay; the flash is read only after the display is
-back from `burn`, and only if the OS wrote exactly that many bytes. It is cached by the OS image's MD5 (the plugin:
+then `P 01`), waiting for the display rather than a fixed delay. The flash is read only once the display is back on
+`P 01` and the OS has written exactly that many bytes (`burn` is watched for but not required: the service takes no
+machine time, so it can be gone before it reaches the panel). It is cached by the OS image's MD5 (the plugin:
 `~/Documents/Phyzo/cache/`; made from the user's own OS on the user's machine, never shipped or committed). A new
 machine gets it before it boots; a state without the user flash gets it after it loads; when the OS restarts itself,
 the new machine keeps the user flash the old one had. Without it (tests, tools) the user flash starts erased.
