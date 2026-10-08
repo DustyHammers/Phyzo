@@ -50,12 +50,11 @@ public:
     // Complete machine state for plugin projects: CPU, RAM, every device, timing, and the user flash. The rest of
     // the flash and the wave memory are not included (they come from the ROM files, which must be the same ones).
     // load() needs init() and the wave memory first; on failure the machine is left as it was before the call only if
-    // the data was rejected up front. A state without the user flash (saved before v0.8.3) loads as before, then
-    // seedUserFlash (if set) is called with the loaded machine.
+    // the data was rejected up front. A state without the user flash (saved before v0.8.3) loads exactly as before
+    // and leaves the user flash as it is.
     std::vector<uint8_t> saveState();
     void saveStateInto(std::vector<uint8_t>& out);
     bool loadState(const std::vector<uint8_t>& data, std::string& err);
-    std::function<void(Machine&)> seedUserFlash;
 
     // The user flash (kUserFlashSize bytes from kUserFlashBase). setUserFlash ignores data of another size.
     const uint8_t* userFlash() const { return &flash_[kUserFlashBase]; }
@@ -149,7 +148,6 @@ private:
     void moduleWrite8(uint32_t off, uint8_t v, bool& ok);
     void logUnmapped(uint32_t a, char rw, int size, uint32_t v);
     void flashService(uint32_t sp);
-    bool loadSections(const std::vector<uint8_t>& data, std::string& err, bool& userFlash);
     void noteDevice(const char* dev, char rw, uint32_t a, int size, uint32_t v);
     void updateIrq();
     void advanceDevices();

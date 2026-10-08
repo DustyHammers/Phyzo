@@ -364,13 +364,6 @@ Engine::UserFlash Engine::factoryUserFlash(const Job& job, const OsImage& os) {
 void Engine::runJob(Job job, std::vector<uint8_t> state, uint64_t generation) {
     OsImage os; std::string err;
     if (!os.load(job.osPath, err)) { fail("Cannot read the OS image: " + err); return; }
-    // The factory user flash, made only when a machine needs it: a new machine, or a state saved before v0.8.3.
-    bool factoryAsked = false;
-    UserFlash factory;
-    auto getFactory = [&]() -> UserFlash {
-        if (job.factoryOn && !factoryAsked) { factoryAsked = true; factory = factoryUserFlash(job, os); }
-        return factory;
-    };
     auto make = [&](std::unique_ptr<Machine>& m) {
         m = std::make_unique<Machine>();
         Machine::Config cfg;
@@ -380,9 +373,6 @@ void Engine::runJob(Job job, std::vector<uint8_t> state, uint64_t generation) {
         { std::lock_guard<std::mutex> lk(controlsMtx_); m->panel.controls = controls_; }   // answered to the OS's F4
         m->captureAudio = true;
         m->audio.reserve(1 << 16); m->wet.reserve(1 << 16);
-        m->seedUserFlash = [&](Machine& mm) {        // a state without user flash: the factory's (none: stays erased)
-            if (UserFlash f = getFactory()) mm.setUserFlash(f->data(), f->size());
-        };
         return true;
     };
     std::unique_ptr<Machine> m;
@@ -397,14 +387,18 @@ void Engine::runJob(Job job, std::vector<uint8_t> state, uint64_t generation) {
         }
     }
     if (cancel_) return;
+    // A restored state keeps its own user flash (a state saved before v0.8.3 has none and stays erased, as then: its
+    // OS read the flash-write service pointer at boot, when it was null, so that machine never saves). A new machine
+    // gets the user flash before it boots: after an OS restart the one it had, else the factory's.
     if (!restored) {                     // seed the user flash, cold boot to the preset display, then let it settle
-        if (UserFlash seed = job.keep ? job.keep : getFactory()) m->setUserFlash(seed->data(), seed->size());
+        UserFlash seed = job.keep;
+        if (!seed && job.factoryOn) seed = factoryUserFlash(job, os);
+        if (seed) m->setUserFlash(seed->data(), seed->size());
         if (cancel_) return;
         std::string why;
         if (!coldBoot(*m, true, why) && !cancel_) { fail("The synth's OS stopped while booting: " + why); return; }
         if (cancel_) return;
     }
-    m->seedUserFlash = nullptr;          // refers to this job
     // Panel ids of the +/Yes (OS button 1) and -/No (OS button 0) buttons, from the image's own table.
     uint8_t raw[2] = {0, 0}; bool found[2] = {false, false};
     for (uint32_t i = 0; i < profile::kButtonMapLen; ++i) {

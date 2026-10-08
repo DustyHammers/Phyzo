@@ -525,13 +525,6 @@ void Machine::saveStateInto(std::vector<uint8_t>& out) {
 }
 
 bool Machine::loadState(const std::vector<uint8_t>& data, std::string& err) {
-    bool userFlash = false;
-    if (!loadSections(data, err, userFlash)) return false;
-    if (!userFlash && seedUserFlash) seedUserFlash(*this);      // a state saved before v0.8.3
-    return true;
-}
-
-bool Machine::loadSections(const std::vector<uint8_t>& data, std::string& err, bool& userFlash) {
     CpuLock cpu(*this);
     StateReader r(data.data(), data.size());
     char magic[4] = {};
@@ -549,7 +542,6 @@ bool Machine::loadSections(const std::vector<uint8_t>& data, std::string& err, b
             else s.raw(&flash_[kUserFlashBase], kUserFlashSize);
             if (!s.ok()) { err = "machine state section UFLS is damaged"; return false; }
             flashServiceCalls = calls; flashServiceBytes = bytes; flashServiceRefused = refused;
-            userFlash = true;
             continue;
         }
         if (tag == "MACH") {

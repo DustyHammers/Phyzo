@@ -40,8 +40,10 @@ public:
     void setState(const std::vector<uint8_t>& blob); // restores now, or as soon as the ROMs are known
     // Factory user flash (v0.8.3): what the OS's own factory restore writes, made once per OS image in a hidden
     // machine (userflash::factoryRestore) and cached in `cacheDir` by the OS image's MD5 (empty: this process only).
-    // A new machine gets it before it boots (a new unit with factory presets); a state saved before v0.8.3 (no user
-    // flash) gets it after it loads. Off by default: machines then start with erased user flash, as before v0.8.3.
+    // A new machine gets it before it boots (a new unit with factory presets); a restored state keeps its own (one
+    // saved before v0.8.3 has none: it loads exactly as it did then, erased). Off by default: machines then start with
+    // erased user flash, as before v0.8.3. With it the OS indexes its user memory at boot (about 0.2 s longer), so the
+    // audio is not byte-identical to an erased machine's (LFO, arp and random timing); presets and sounds are the same.
     // Message thread, before setRoms.
     void setFactoryUserFlash(bool on, const std::string& cacheDir);
     using UserFlash = std::shared_ptr<const std::vector<uint8_t>>;

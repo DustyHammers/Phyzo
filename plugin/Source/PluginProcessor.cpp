@@ -25,7 +25,7 @@ PhyzoProcessor::PhyzoProcessor()
     events_.reserve(4096);
     port_.ed = &editorPort_;
     // The factory user flash (what the OS's own factory restore writes): made once per OS image from the user's own
-    // OS, cached in cache/ (never shipped). New instances start from it; old projects get it (Engine).
+    // OS, cached in cache/ (never shipped). New instances start from it (Engine).
     engine_.setFactoryUserFlash(true, dataFolder_.getChildFile("cache").getFullPathName().toStdString());
     scanRoms();
     applyMidiSettings();

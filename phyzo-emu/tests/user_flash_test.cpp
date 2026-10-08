@@ -1,6 +1,6 @@
 // User flash test (no ROM data; v0.8.3): the boot ROM's flash-write service (vector slot 251) driven by small 68k
 // programs of our own, the user flash in the machine state, seeding, the factory-restore sequence against a scripted
-// stand-in for the OS, the factory cache file, and how the engine seeds new machines, old states and restarts.
+// stand-in for the OS, the factory cache file, and how the engine seeds new machines (never restored ones) and restarts.
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -175,32 +175,22 @@ void testState() {
     // Round trip with the section: byte-identical, user flash and counters included.
     {
         Machine b; CHECK(b.init(serviceOs(), cfg, err));
-        int seeded = 0;
-        b.seedUserFlash = [&](Machine&) { ++seeded; };
         CHECK(b.loadState(saved, err));
-        CHECK(seeded == 0);                                      // the state has its own user flash
         CHECK(b.saveState() == saved);
         CHECK(std::memcmp(b.userFlash(), a.userFlash(), Machine::kUserFlashSize) == 0);
         CHECK(b.flashServiceCalls == 1 && b.flashServiceBytes == 0x10000);
     }
-    // Without the section: loads as before, then the seeding hook gets the loaded machine.
+    // Without the section (saved before v0.8.3): loads exactly as before; the user flash stays erased.
     {
         const std::vector<uint8_t> old = withoutSection(saved, "UFLS");
         CHECK(old.size() + 12 + 8 * 4 + Machine::kUserFlashSize == saved.size());
         Machine b; CHECK(b.init(serviceOs(), cfg, err));
-        int seeded = 0;
-        std::vector<uint8_t> seed(Machine::kUserFlashSize);
-        for (size_t i = 0; i < seed.size(); ++i) seed[i] = uint8_t(i ^ 0x5A);
-        b.seedUserFlash = [&](Machine& m) { ++seeded; CHECK(&m == &b); CHECK(m.cycles() == a.cycles()); m.setUserFlash(seed.data(), seed.size()); };
         CHECK(b.loadState(old, err));
-        CHECK(seeded == 1);
-        CHECK(std::memcmp(b.userFlash(), seed.data(), seed.size()) == 0);
+        CHECK(b.cycles() == a.cycles());
         CHECK(withoutSection(b.saveState(), "UFLS") == old);     // everything else exactly as saved
-        // No hook: the user flash stays erased.
-        Machine c; CHECK(c.init(serviceOs(), cfg, err));
-        CHECK(c.loadState(old, err));
-        const auto uf = flashOf(c, Machine::kUserFlashBase);
+        const auto uf = flashOf(b, Machine::kUserFlashBase);
         CHECK(std::all_of(uf.begin(), uf.end(), [](uint8_t v) { return v == 0xFF; }));
+        CHECK(b.flashServiceCalls == 0 && b.flashServiceBytes == 0);
     }
     // A damaged user flash section is refused.
     {
@@ -384,6 +374,20 @@ std::vector<uint8_t> oldBlob(const std::vector<uint8_t>& blob) {
     return w.bytes;
 }
 
+// The engine blob with its machine state cut in half (a state that cannot be restored).
+std::vector<uint8_t> damagedBlob(const std::vector<uint8_t>& blob) {
+    StateReader r(blob.data(), blob.size());
+    char magic[4]; r.raw(magic, 4);
+    const uint32_t version = r.get<uint32_t>();
+    std::string os, wave; std::vector<uint8_t> machine;
+    r.str(os); r.str(wave); r.vec(machine);
+    CHECK(r.ok());
+    machine.resize(machine.size() / 2);
+    StateWriter w;
+    w.raw(magic, 4); w.put(version); w.str(os); w.str(wave); w.vec(machine);
+    return w.bytes;
+}
+
 void testEngine(const fs::path& dir) {
     {
         const OsImage os = image(kWriteThenRestart, sizeof kWriteThenRestart / 2);
@@ -429,7 +433,7 @@ void testEngine(const fs::path& dir) {
         CHECK(waitRunning(e));
         CHECK(erased(userFlashOf(e)));
     }
-    // A project saved before v0.8.3: restored as saved, then given the factory user flash.
+    // A project saved before v0.8.3: restored exactly as saved, without factory user flash (erased, as in v0.8.2).
     {
         const std::vector<uint8_t> old = oldBlob(offState);
         Engine ref;
@@ -441,14 +445,8 @@ void testEngine(const fs::path& dir) {
         e.setState(old);
         e.setRoms(osPath, wavePath, "os-factory", "wave");
         CHECK(waitRunning(e));
-        CHECK(userFlashOf(e) == *factory);
-        CHECK(withoutSection(e.machineStateForTest(), "UFLS") == withoutSection(ref.machineStateForTest(), "UFLS"));
-        // Factory off: it stays erased.
-        Engine f;
-        f.setState(old);
-        f.setRoms(osPath, wavePath, "os-factory", "wave");
-        CHECK(waitRunning(f));
-        CHECK(erased(userFlashOf(f)));
+        CHECK(erased(userFlashOf(e)));
+        CHECK(e.machineStateForTest() == ref.machineStateForTest());
     }
     CHECK(Engine::factoryRunsForTest() == runs);                 // no hidden machine was needed
     // The OS writes its flash and restarts itself: the new machine boots with that user flash, not the factory's.
@@ -500,23 +498,24 @@ void testEngine(const fs::path& dir) {
         CHECK(Engine::factoryRunsForTest() == runs + 1);
         CHECK(!fs::exists(userflash::cachePath((dir / "cache3").string(), md5)));
     }
-    // While a project is restored (here, an old one whose factory user flash is being made first), the host still
-    // gets the project's state, never an empty one.
+    // Until the machine runs, the host gets the project's state, never an empty one. Here the project's machine state
+    // is damaged, so the synth starts fresh, after making the factory user flash first (a long wait).
     {
         const std::string md5 = "0f1e2d3c4b5a69788796a5b4c3d2e1f0";
         Engine off;
         off.setRoms(osPath, wavePath, md5, "wave");
         CHECK(waitRunning(off));
-        const std::vector<uint8_t> old = oldBlob(off.getState());
+        const std::vector<uint8_t> bad = damagedBlob(off.getState());
         Engine e;
         e.setFactoryUserFlash(true, std::string());
-        e.setState(old);
+        e.setState(bad);
         e.setRoms(osPath, wavePath, md5, "wave");
         CHECK(e.state() == Engine::State::Booting);
-        CHECK(e.getState() == old);
+        CHECK(e.getState() == bad);
         CHECK(waitRunning(e));
         CHECK(Engine::factoryRunsForTest() == runs + 2);
-        CHECK(e.getState() != old);                              // running: its own state again
+        CHECK(e.message().find("could not be made") != std::string::npos);   // this OS has no factory restore
+        CHECK(e.getState() != bad);                              // running: its own state again
     }
 }
 }  // namespace
