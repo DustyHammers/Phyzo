@@ -72,17 +72,20 @@ stored preset.
 
 ## The LIBRARY area (approved mockup, with entries across the rows as on the PRESETS page)
 
-- **Legends:**
-  - row 1: LIBRARY (area), after REVERB;
-  - row 2: SOURCES and PRESETS (sections);
-  - row 3: SAVE, IMPORT, EXPORT B1, EXPORT B2 and FOLDER (`<legend action="library" value="SAVE">` and so on).
+- **Five controls** (`<legend action="library" value="…">`; owner's revision): **LIBRARY**, **SAVE**, **IMPORT**,
+  **EXPORT** and **FOLDER**. There are no section legends.
+  - **LIBRARY** opens the source list. Pressed again while a source's presets are showing, it goes back to the list.
+    If the editor unit is closed, it opens it on the library list. It is `lit` while the editor shows the library.
+  - **SAVE**, **IMPORT**, **EXPORT** and **FOLDER** work from any editor page (and with the editor unit closed). Their
+    messages show on row 4 for 3 seconds on whatever page is showing.
+  - Clicking a source opens its presets.
 - **Behaviour:** PAGE 1-9, PREV and NEXT work as in the other areas.
 - **Layout:** eight entries per page in two columns of 25, filled across the rows (01 02 / 03 04 / …) as on the
   PRESETS page. A bank is 4 pages.
-- **SOURCES:** each source's title at the left of its half and its preset count at the right (the count ends 2 cells
-  before the next half). While a source is being read, the count shows its progress (`12/32`); the factory rows show
-  it while their files are made. Clicking a source opens it in PRESETS.
-- **PRESETS:** `nn  name`, numbered in file order.
+- **The source list:** each source's title at the left of its half and its preset count at the right (the count ends
+  2 cells before the next half). While a source is being read, the count shows its progress (`12/32`); the factory
+  rows show it while their files are made. Clicking a source opens its presets.
+- **A source's presets:** `nn  name`, numbered in file order.
   - **Click:** sends that preset's stored single-preset message into the running machine's MIDI input, and nothing
     else (no program change, no write to stored memory). The OS puts it in Compare.
   - **Mark:** the clicked entry blinks, as the PRESETS area marks the current preset.
@@ -105,7 +108,9 @@ stored preset.
   - If the Compare LED is lit (unsaved edits, or a library preset in Compare), nothing is written and
     `UNSAVED EDITS  SAVE ON THE PANEL FIRST` shows.
   - Otherwise a clone dumps the current preset (panel Dump on `P nn`), and that message is written.
-- **EXPORT B1 / B2:** a clone dumps `bAn1` / `bAn2`, so the export includes every preset saved on the panel. The clone
+- **EXPORT:** a native menu with "Bank 1 (presets 1-32)" and "Bank 2 (presets 33-64)", like the editor's value lists.
+  Dismissing it does nothing. For the chosen bank, a clone dumps `bAn1` / `bAn2`, so the export includes every preset
+  saved on the panel. The clone
   first gets a program change to `P 64`, so `bAn1` and `bAn2` are the next two steps of the Dump list (from `P 01` it
   would be 64 steps, about 18 seconds). A save dialog follows; the default name is `Phyzo Bank 1.syx` /
   `Phyzo Bank 2.syx`.
@@ -120,18 +125,19 @@ stored preset.
 
 ## Skin
 
-The skin's editor document needs the new legends; the art has room for LIBRARY before ◀ PREV. Place them where the
-art has the legend text:
+The five controls live in the skin's **main (rack) document** as empty legends: invisible click areas over lettering
+baked into the skin's art. Place each over its lettering:
 
 ```
-<legend action="area" value="LIBRARY" style="left: …; top: 55dp; width: …;">LIBRARY</legend>
-<legend action="section" value="SOURCES" style="left: …; top: 73dp; width: …;">SOURCES</legend>
-<legend action="section" value="PRESETS" style="left: …; top: 73dp; width: …;">PRESETS</legend>
-<legend action="library" value="SAVE" style="left: …; top: 91dp; width: …;">SAVE</legend>
-<legend action="library" value="IMPORT" style="…">IMPORT</legend>
-<legend action="library" value="EXPORT B1" style="…">EXPORT B1</legend>
-<legend action="library" value="EXPORT B2" style="…">EXPORT B2</legend>
-<legend action="library" value="FOLDER" style="…">FOLDER</legend>
+<legend action="library" value="LIBRARY" style="position: absolute; left: …; top: …; width: …; height: …;"/>
+<legend action="library" value="SAVE" style="…"/>
+<legend action="library" value="IMPORT" style="…"/>
+<legend action="library" value="EXPORT" style="…"/>
+<legend action="library" value="FOLDER" style="…"/>
 ```
 
-The `library` legends are `avail` in the LIBRARY area only and are never `lit`.
+- Clicks, `lit` and `avail` work there as in the editor document, also while the editor unit is closed.
+- All five are `avail` once there is a library (the ROMs found), on any page; LIBRARY needs a skin with an editor
+  unit.
+- LIBRARY is `lit` while the editor shows the library; the other four are actions and are never `lit`.
+- The same legends also work in the editor document.

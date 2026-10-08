@@ -117,6 +117,9 @@ owner step by step through anything they must do by hand on github.com or on the
     shipped.
   - SAVE is refused while the Compare LED (0x16) is lit. New files are never overwritten. Entries go across the rows,
     as on the PRESETS page.
+  - Five controls, `<legend action="library">` LIBRARY, SAVE, IMPORT, EXPORT (a menu of the two banks), FOLDER: empty
+    legends in the main rack document (lit/avail also with the editor unit closed), from any editor page; LIBRARY
+    opens the unit on the list and goes back to it from a source's presets.
 - Real-time rules for `engine.*`: the audio thread never waits on other threads. `getState` asks the audio thread
   for a snapshot at a block boundary (`Machine::saveStateInto`, preallocated); panel controls go through a
   lock-free latest-value slot per cc, sent at most once per 10 ms each and only while the panel link keeps up;

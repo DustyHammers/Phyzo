@@ -164,22 +164,27 @@ only when it starts), so add a new Phyzo to save presets.
 A new Phyzo takes about 0.2 s longer to start than in 0.8.2, because the synth indexes its user memory, as a new unit
 does. So LFO, arpeggiator and random timings differ from 0.8.2 renders; every preset and sound is identical.
 
-**Preset library** (in the editor unit, the LIBRARY area; see `docs/editor/LIBRARY.md`). The library is the `.syx`
-files in **Documents > Phyzo > Library** (any subfolders).
-- **SOURCES:** lists the factory banks, your bank files and SINGLES (every file with one preset). Click one to see its
-  presets.
-- **PRESETS:** click a preset to hear it. It plays in **Compare**, as a preset sent to the synth over MIDI does, and
-  nothing in the synth's memory changes. Press **Save** on the panel to keep it in a slot.
-- **SAVE:** writes the current stored preset to `Library/Singles/<name>.syx`. It refuses while the Compare LED is lit
-  (save on the panel first).
-- **EXPORT B1 / B2:** writes a whole bank, including your panel saves, to a file you choose.
-- **IMPORT:** copies `.syx` files into the library.
-- **FOLDER:** opens the Library folder.
+**Preset library** (five controls on the rack: LIBRARY, SAVE, IMPORT, EXPORT, FOLDER; see `docs/editor/LIBRARY.md`).
+The library is the `.syx` files in **Documents > Phyzo > Library** (any subfolders).
+- **LIBRARY:** shows the list of sources in the editor unit (opening the unit if it is closed): the factory banks, your
+  bank files and SINGLES (every file with one preset). Click a source to see its presets; press LIBRARY again to go
+  back to the list.
+- **A preset:** click it to hear it. It plays in **Compare**, as a preset sent to the synth over MIDI does, and nothing
+  in the synth's memory changes. Press **Save** on the panel to keep it in a slot.
+- **SAVE, IMPORT, EXPORT and FOLDER** work from any editor page; their messages show on the glass's last row for
+  3 seconds.
+  - **SAVE:** writes the current stored preset to `Library/Singles/<name>.syx`. It refuses while the Compare LED is lit
+    (save on the panel first).
+  - **EXPORT:** a menu, Bank 1 (presets 1-32) or Bank 2 (presets 33-64); writes that bank, including your panel saves,
+    to a file you choose.
+  - **IMPORT:** copies `.syx` files into the library.
+  - **FOLDER:** opens the Library folder.
 - **The factory bank files:** the first time the area opens, Phyzo makes them once from your own OS (about 2 minutes,
   reading both banks included; the factory rows show the progress) in `Library/Factory/`. They're made from your OS, so don't share them.
 - **Reading new files:** a new or changed file is read once by a hidden copy of the synth (a bank takes about half a
   minute); the result is kept in `cache/library/`.
-- **Skin:** your skin's editor document needs the LIBRARY legends (`docs/editor/LIBRARY.md`, "Skin").
+- **Skin:** your skin's main document needs the five controls as empty legends over the art's lettering
+  (`docs/editor/LIBRARY.md`, "Skin").
 
 The first time Phyzo starts with your OS, it makes the factory presets once from the OS itself (a few extra seconds
 while it boots) and keeps them in **Documents > Phyzo > cache**. That file is made from your
