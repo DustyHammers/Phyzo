@@ -153,10 +153,12 @@ void testService() {
 
 // A machine state without the user flash section (as saved before v0.8.3).
 std::vector<uint8_t> withoutSection(const std::vector<uint8_t>& st, const char* drop) {
+    if (st.size() < 8) return st;
     std::vector<uint8_t> out(st.begin(), st.begin() + 8);         // "PHZM", version
     size_t p = 8;
     while (p + 12 <= st.size()) {
         uint64_t len; std::memcpy(&len, &st[p + 4], 8);
+        if (len > st.size() - p - 12) break;
         if (std::memcmp(&st[p], drop, 4) != 0) out.insert(out.end(), st.begin() + long(p), st.begin() + long(p + 12 + len));
         p += 12 + size_t(len);
     }
