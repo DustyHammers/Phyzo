@@ -22,8 +22,8 @@ stored preset.
 | Single-preset dump | 3,097 bytes: `F0 0F 11 01 <dev> 02 17 7F 7F ...`. The slot is not in the message. |
 | Bank dump | One 102,420-byte message: `F0 0F 11 01 <dev> 0D <bank> ...`, where byte 6 (counting F0 as byte 0) is 0 for Bank 1 (presets 1-32) and 1 for Bank 2 (33-64). |
 | Bank received | Overwrites only its own 32 stored presets. |
-| Panel Dump list | Press Dump (0x0C); +/Yes (0x0D) and -/No (0x0E) then step through `P 01` … `P 64`, `bAn1`, `bAn2`; pressing Dump again sends. The list starts at the current preset. |
-| Split | A preset dumped after receiving a bank file equals the same preset dumped from a fresh factory machine. |
+| Panel Dump list | Press Dump (0x0C); +/Yes (0x0D) and -/No (0x0E) then step through `P 01` … `P 64`, `bAn1`, `bAn2`; pressing Dump again sends. The list starts at the current preset. After a dump the display shows `donE` for a while: a Dump pressed then only clears `donE` and enters no list (+/Yes then does nothing at `P 64`). Once the display shows `P nn` again, Dump enters the list. |
+| Split | A preset split from a bank (received, then dumped from the panel) differs from the running machine's own dump of the same preset at byte 3090 (04 vs 00) and in the checksum: the OS sets that byte once it has received a bank or run factory restore since boot. Verified to have no effect: the edit buffer, all 4 sounds, a note's audio and the stored preset after Save are identical. The library keeps every message exactly as the OS sends it. |
 | Boot condition | A machine booted with the factory user memory (as v0.8.3 boots) dumps the factory presets with one data byte different from a machine booted blank and then factory-restored. Hidden machines boot the v0.8.3 way. |
 
 ## Hidden machines (`phyzo-emu/src/library/hidden_machine.*`)
@@ -37,11 +37,12 @@ stored preset.
   - the editor's partial reads for names (type 7, offset 8, 16 bytes; #0 is the edit buffer, 0x40 + n is stored
     preset n).
 - **Waiting:** every wait is on the OS (its display, its MIDI output, its answers), bounded by a limit, never a fixed
-  delay.
+  delay. Before every Dump that enters the Dump list, the machine waits until the display shows `P nn` (not `donE`).
 - **Fresh machines:** boot with the factory user memory seeded before boot (Step 1). The first boot's state is kept,
   and later fresh machines are restored from it.
 - **Clones:** restore the running machine's state, taken the same way as for the host (a snapshot at a block
-  boundary). The running machine is never paused, pressed or read for a clone.
+  boundary). The running machine is never paused, pressed or read for a clone. A clone shows what the panel showed
+  (for example `donE` right after a panel Dump), so every clone job first waits until its display shows `P nn`.
 - **One job at a time:** in the whole process (instances take turns). Jobs are queued and can be cancelled, and they
   stop when the plugin closes. SAVE, EXPORT and IMPORT go to the front of the queue.
 
@@ -97,15 +98,17 @@ stored preset.
   SAVED  Singles/Beta Arp.syx
   EXPORTED BANK 1
   Bad.syx  NO PRESET OR BANK IN THIS FILE
-  MAKING FACTORY BANKS (ONCE)  ABOUT A MINUTE
+  MAKING FACTORY BANKS (ONCE)  ABOUT 2 MINUTES
   IMPORTED 2 FILES
   ```
 - **SAVE:** saves the current stored preset to `Library/Singles/<name>.syx`.
   - If the Compare LED is lit (unsaved edits, or a library preset in Compare), nothing is written and
     `UNSAVED EDITS  SAVE ON THE PANEL FIRST` shows.
   - Otherwise a clone dumps the current preset (panel Dump on `P nn`), and that message is written.
-- **EXPORT B1 / B2:** a clone dumps `bAn1` / `bAn2`, so the export includes every preset saved on the panel. A save
-  dialog follows; the default name is `Phyzo Bank 1.syx` / `Phyzo Bank 2.syx`.
+- **EXPORT B1 / B2:** a clone dumps `bAn1` / `bAn2`, so the export includes every preset saved on the panel. The clone
+  first gets a program change to `P 64`, so `bAn1` and `bAn2` are the next two steps of the Dump list (from `P 01` it
+  would be 64 steps, about 18 seconds). A save dialog follows; the default name is `Phyzo Bank 1.syx` /
+  `Phyzo Bank 2.syx`.
 - **IMPORT:** an open dialog for `.syx` files. Each file is copied into `Library/` (single-preset files into
   `Library/Singles/`), never overwriting, then read.
 - **FOLDER:** opens `Library/` in Finder (or Explorer).

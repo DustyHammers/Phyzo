@@ -175,8 +175,8 @@ files in **Documents > Phyzo > Library** (any subfolders).
 - **EXPORT B1 / B2:** writes a whole bank, including your panel saves, to a file you choose.
 - **IMPORT:** copies `.syx` files into the library.
 - **FOLDER:** opens the Library folder.
-- **The factory bank files:** the first time the area opens, Phyzo makes them once from your own OS (about a minute;
-  the factory rows show the progress) in `Library/Factory/`. They're made from your OS, so don't share them.
+- **The factory bank files:** the first time the area opens, Phyzo makes them once from your own OS (about 2 minutes,
+  reading both banks included; the factory rows show the progress) in `Library/Factory/`. They're made from your OS, so don't share them.
 - **Reading new files:** a new or changed file is read once by a hidden copy of the synth (a bank takes about half a
   minute); the result is kept in `cache/library/`.
 - **Skin:** your skin's editor document needs the LIBRARY legends (`docs/editor/LIBRARY.md`, "Skin").
