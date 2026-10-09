@@ -88,6 +88,10 @@ An analog panel control (cc 0-25, see `phyzo-emu/docs/PANEL_CONTROLS.md`).
   keeps its own position, stored by its `id` in the project. Give every knob a unique `id`. A knob seen for the
   first time starts at the value last sent for its cc (the synth's fresh positions in a new instance).
 - When the synth boots it is told, for each cc, the value last sent for that cc.
+- Right-click on a knob (cc 0-22) opens the menu with MIDI learn's items for its panel control on top
+  (docs/MIDI_LEARN.md); stacked knobs are one control. A knob a learned controller moves shows the new position as
+  `panel.setKnob` would (the visible knob of that cc; positions saved; `panel.onKnob` is called), but nothing is
+  sent again. The wheels and pressure (cc 23-25) are never learnable.
 
 ### `<pbutton raw="0xNN" led="0xNN">`
 
@@ -97,7 +101,8 @@ A front-panel button by its panel id. `led` is optional.
   `pressed` while down.
 - Alt/Option-click: latching hold. It sends `81 raw` and keeps the button held (class `held`) until it is
   clicked again. Esc releases all held buttons.
-- Right-click never presses (it opens the menu).
+- Right-click never presses (it opens the menu, with MIDI learn's items for this panel button on top,
+  docs/MIDI_LEARN.md).
 - With `led`: class `lit` follows that LED (see LEDs).
 
 ### `<led code="0xNN">` and `<led source="audioclip">`

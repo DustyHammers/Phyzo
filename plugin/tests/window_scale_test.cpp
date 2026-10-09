@@ -53,10 +53,13 @@ juce::MemoryBlock projectState(int version, float scale, bool legacy) {
     return dest;
 }
 
+// What follows the editor-open byte since version 6: the MIDI learn bindings (count, then 8 bytes each).
+size_t learnBytes(juce::AudioProcessor& p) { return 4 + 8 * static_cast<PhyzoProcessor&>(p).learn().bindings().size(); }
+
 // The scale part of what a processor saves now: float, then the old-scale flag, then the editor-open byte.
 std::pair<float, bool> savedScale(juce::AudioProcessor& p) {
     const juce::MemoryBlock b = stateOf(p);
-    juce::MemoryInputStream in(static_cast<const char*>(b.getData()) + b.getSize() - 6, 5, false);
+    juce::MemoryInputStream in(static_cast<const char*>(b.getData()) + b.getSize() - 6 - learnBytes(p), 5, false);
     const float s = in.readFloat();
     return {s, in.readByte() != 0};
 }
@@ -199,7 +202,7 @@ int main(int argc, char** argv) {
         CHECK(size == juce::Point<int>(1346, winscale::windowLength(1242, 1.0f, true)));
         {
             juce::MemoryBlock st = stateOf(p);
-            CHECK(st.getSize() > 0 && static_cast<const char*>(st.getData())[st.getSize() - 1] == 1);
+            CHECK(st.getSize() > 0 && static_cast<const char*>(st.getData())[st.getSize() - 1 - learnBytes(p)] == 1);
         }
         p.editorScale = 4.0f / 3.0f;
         CHECK(openEditor(p) == juce::Point<int>(1795, 1242));                          // full size: 1 point per dp

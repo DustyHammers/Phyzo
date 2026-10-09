@@ -38,7 +38,11 @@ public:
     void setEditorVisible(bool on);
 
     std::function<void(bool ok, const juce::String& error)> onLoaded;
-    std::function<void(const juce::MouseEvent&)> onRightClick;
+    // Right-click outside the editor unit's values: the main menu, with the panel control under the mouse (MIDI
+    // learn: a knob's cc, 0x100 | a panel button's id; -1: none or not learnable).
+    std::function<void(const juce::MouseEvent&, int control)> onRightClick;
+    // Esc: true if the plugin used it (a MIDI learn cancelled); otherwise Esc releases the held panel buttons.
+    std::function<bool()> onEscape;
     // Right-click on a value of the editor unit (its reference): the value's list. Returns false to show the main
     // menu instead.
     std::function<bool(int ref)> onEditorValueMenu;
@@ -98,6 +102,8 @@ private:
     // counter), input arrived, or the skin's next wake time came, and never while the window cannot be seen.
     std::atomic<bool> frameWanted_{true};
     std::atomic<bool> hasEditor_{false}, editorVisible_{false};
+    std::atomic<bool> viewReady_{false};                   // the GL thread has a skin view (it answers hit tests)
+    uint32_t lastLearnSerial_ = 0;                         // MIDI learn's knob moves seen (a frame shows them)
     uint32_t lastEditorSerial_ = 0;
     std::atomic<double> nextWake_{0};
     std::atomic<int> wakeSource_{0};                       // skin::SkinView::Wake of nextWake_

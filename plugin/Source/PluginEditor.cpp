@@ -55,7 +55,12 @@ void BuiltinView::PanelButton::paint(juce::Graphics& g) {
 }
 
 void BuiltinView::PanelButton::mouseDown(const juce::MouseEvent& e) {
-    if (!isEnabled() || e.mods.isPopupMenu()) return;
+    if (e.mods.isPopupMenu()) {                      // the menu, with MIDI learn's items for this button
+        if (auto* v = dynamic_cast<BuiltinView*>(getParentComponent()); v && v->onRightClick)
+            v->onRightClick(e.getEventRelativeTo(v), v->learnControl(id));
+        return;
+    }
+    if (!isEnabled()) return;
     down = true; repaint();
     proc.engine().pressButton(id, true);
 }
@@ -77,6 +82,7 @@ BuiltinView::BuiltinView(PhyzoProcessor& p)
         debugToggle.setColour(id, kRed);
     debugToggle.onClick = [this] { proc.showDebug = debugToggle.getToggleState(); repaint(); };
     addAndMakeVisible(debugToggle);
+    setWantsKeyboardFocus(true);                     // Esc cancels a MIDI learn
     setSize(kWidth, kHeight);
     timerCallback();
     startTimerHz(15);
@@ -95,8 +101,17 @@ static bool inCorner(const juce::Component& c, const juce::MouseEvent& e) {
     return e.x >= c.getWidth() - kCorner && e.y >= c.getHeight() - kCorner;
 }
 
+int BuiltinView::learnControl(int osButton) const {
+    const int raw = osButton == 0 ? 0x0E : 0x0D;     // the rack skin's -/No and +/Yes
+    return proc.engine().osButtonRaw(osButton) == raw ? midilearn::button(raw) : -1;
+}
+
+bool BuiltinView::keyPressed(const juce::KeyPress& k) {
+    return k == juce::KeyPress::escapeKey && onEscape && onEscape();
+}
+
 void BuiltinView::mouseDown(const juce::MouseEvent& e) {
-    if (e.mods.isPopupMenu()) { if (onRightClick) onRightClick(e); return; }
+    if (e.mods.isPopupMenu()) { if (onRightClick) onRightClick(e, -1); return; }
     if (onCornerResize && inCorner(*this, e)) { cornerDrag_ = true; cornerStart_ = e.getScreenPosition(); onCornerResize(0, {}); }
 }
 void BuiltinView::mouseDrag(const juce::MouseEvent& e) {
@@ -109,9 +124,9 @@ void BuiltinView::mouseMove(const juce::MouseEvent& e) {
     setMouseCursor(inCorner(*this, e) ? juce::MouseCursor::BottomRightCornerResizeCursor : juce::MouseCursor::NormalCursor);
 }
 
-void BuiltinView::setNotice(const juce::String& text) {
+void BuiltinView::setNotice(const juce::String& text, int seconds) {
     notice_ = text;
-    noticeUntil_ = juce::Time::getMillisecondCounter() + 15000;
+    noticeUntil_ = juce::Time::getMillisecondCounter() + juce::uint32(seconds * 1000);
     repaint();
 }
 
@@ -328,7 +343,8 @@ void PhyzoEditor::showSkin(const juce::String& name, const juce::String& notice)
     builtin_.reset();
     if (!rml_) {
         rml_ = std::make_unique<RmlSkinComponent>(proc);
-        rml_->onRightClick = [this](const juce::MouseEvent& e) { showMenu(e); };
+        rml_->onRightClick = [this](const juce::MouseEvent& e, int control) { showMenu(e, control); };
+        rml_->onEscape = [this] { return proc.cancelLearn(); };
         rml_->onCornerResize = [this](int phase, juce::Point<int> d) { cornerResize(phase, d); };
         rml_->onEditorValueMenu = [this](int ref) { return showValueMenu(ref); };
         rml_->onEditorKey = [this](const juce::KeyPress& k) { return editorKey(k); };
@@ -353,7 +369,8 @@ void PhyzoEditor::showBuiltIn(const juce::String& notice) {
     proc.setEditorActive(false);
     if (!builtin_) {
         builtin_ = std::make_unique<BuiltinView>(proc);
-        builtin_->onRightClick = [this](const juce::MouseEvent& e) { showMenu(e); };
+        builtin_->onRightClick = [this](const juce::MouseEvent& e, int control) { showMenu(e, control); };
+        builtin_->onEscape = [this] { return proc.cancelLearn(); };
         builtin_->onCornerResize = [this](int phase, juce::Point<int> d) { cornerResize(phase, d); };
         addAndMakeVisible(*builtin_);
     }
@@ -527,10 +544,78 @@ bool PhyzoEditor::editorKey(const juce::KeyPress& k) {
     return c.key(name);
 }
 
-void PhyzoEditor::showMenu(const juce::MouseEvent&) {
+void PhyzoEditor::showLearnMessage(const juce::String& text) {
+    if (rml_) rml_->showMessage(text, 3);
+    else if (builtin_) builtin_->setNotice(text, 3);
+}
+
+// MIDI learn (approved mockup): the control and its binding, MIDI learn, Set CC (two clicks, no typing), Channel,
+// Forget; then the usual menu.
+void PhyzoEditor::addLearnItems(juce::PopupMenu& menu, int control) {
+    midilearn::Learn& learn = proc.learn();
+    const midilearn::PerfLabels labels = proc.perfLabels();
+    midilearn::Binding b;
+    const bool bound = learn.bindingOf(control, b);
+    menu.addSectionHeader(juce::String::fromUTF8(midilearn::header(control, bound ? &b : nullptr, labels).c_str()));
+    menu.addItem("MIDI learn", true, learn.armed() == control, [this, control] { proc.armLearn(control); });
+    // Set CC: CC 0-119 in four groups; the current one ticked, the OS's own use and another control's binding shown.
+    const std::vector<midilearn::Binding> all = learn.bindings();
+    const int channel = bound ? b.channel : 0;
+    auto shortLabel = [&](int c) {                   // a perf knob: the skin's letter (if any); else its name
+        for (int i = 0; i < 5; ++i)
+            if (midilearn::kPerfCc[i] == c && !juce::String(labels[size_t(i)]).trim().isEmpty()) return juce::String(labels[size_t(i)]).trim();
+        return juce::String::fromUTF8(midilearn::controlName(c, labels).c_str());
+    };
+    juce::PopupMenu setCc;
+    const int groups[4][2] = {{0, 31}, {32, 63}, {64, 95}, {96, midilearn::kMaxCc}};
+    for (const auto& g : groups) {
+        juce::PopupMenu sub;
+        bool current = false;
+        for (int n = g[0]; n <= g[1]; ++n) {
+            juce::String label = "CC " + juce::String(n);
+            const std::string os = midilearn::osUse(n, labels);
+            if (!os.empty()) label << " (" << juce::String::fromUTF8(os.c_str()) << ")";
+            for (const midilearn::Binding& x : all)
+                if (x.control != control && !x.note && x.number == n && (channel == 0 || x.channel == 0 || x.channel == channel)) {
+                    label << juce::String::fromUTF8(" \xe2\x86\x92 ") << shortLabel(x.control);
+                    break;
+                }
+            const bool tick = bound && !b.note && b.number == n;
+            current = current || tick;
+            sub.addItem(label, true, tick, [this, control, n] { proc.setLearnCc(control, n); });
+        }
+        setCc.addSubMenu("CC " + juce::String(g[0]) + juce::String::fromUTF8("\xe2\x80\x93") + juce::String(g[1]), sub, true, nullptr, current);
+    }
+    menu.addSubMenu("Set CC", setCc);
+    juce::PopupMenu ch;
+    ch.addItem("Any", bound, bound && b.channel == 0, [this, control] { proc.setLearnChannel(control, 0); });
+    for (int c = 1; c <= 16; ++c) ch.addItem(juce::String(c), bound, bound && b.channel == c, [this, control, c] { proc.setLearnChannel(control, c); });
+    menu.addSubMenu("Channel", ch, bound);
+    if (bound)
+        menu.addItem(juce::String(b.note ? "Forget note " : "Forget CC ") + juce::String(b.number), [this, control] { proc.forgetLearn(control); });
+    menu.addSeparator();
+}
+
+// MIDI > MIDI learn: every binding (choosing one forgets it), then the defaults for new instances and Forget all.
+juce::PopupMenu PhyzoEditor::learnListMenu() {
+    juce::PopupMenu m;
+    const midilearn::PerfLabels labels = proc.perfLabels();
+    const std::vector<midilearn::Binding> all = proc.learn().bindings();
+    for (const midilearn::Binding& b : all)
+        m.addItem(juce::String::fromUTF8(midilearn::listEntry(b, labels).c_str()), [this, c = b.control] { proc.forgetLearn(c); });
+    if (all.empty()) m.addItem("No bindings", false, false, [] {});
+    m.addSeparator();
+    m.addItem("Save as default for new instances", [this] { proc.saveLearnDefaults(); });
+    m.addItem("Clear default", SkinSettings::midiLearnDefaults().isNotEmpty(), false, [this] { proc.clearLearnDefaults(); });
+    m.addItem("Forget all", !all.empty(), false, [this] { proc.forgetAllLearn(); });
+    return m;
+}
+
+void PhyzoEditor::showMenu(const juce::MouseEvent&, int control) {
     const juce::StringArray names = skinNames();
     const bool fileSkin = rml_ != nullptr;
     juce::PopupMenu skins, zoom, dev, menu;
+    if (midilearn::learnable(control)) addLearnItems(menu, control);
     skins.addItem(SkinSettings::kBuiltIn, true, current_ == SkinSettings::kBuiltIn, [this] {
         SkinSettings::setSkin(SkinSettings::kBuiltIn);
         showSkin(SkinSettings::kBuiltIn);
@@ -568,6 +653,7 @@ void PhyzoEditor::showMenu(const juce::MouseEvent&) {
         SkinSettings::setMidiToHost(!SkinSettings::midiToHost());
         PhyzoProcessor::applyMidiSettingsToAll();
     });
+    midi.addSubMenu("MIDI learn", learnListMenu());
     menu.addSubMenu("Skin", skins);
     menu.addItem("Reload skin    F5", fileSkin, false, [this] { if (rml_) rml_->reload(); });
     menu.addSubMenu("Zoom", zoom);

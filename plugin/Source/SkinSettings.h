@@ -47,6 +47,16 @@ inline void setVirtualMidiPort(bool on) { set("midiVirtualPort", on ? 1 : 0); }
 inline bool midiToHost() { return get("midiToHost").getIntValue() != 0; }
 inline void setMidiToHost(bool on) { set("midiToHost", on ? 1 : 0); }
 
+// MIDI learn's default bindings (docs/MIDI_LEARN.md): what a new instance, or a project from before v0.8.4, starts with.
+// Compact text (midilearn::Learn::toText); empty unless saved with MIDI > MIDI learn > Save as default.
+inline juce::String midiLearnDefaults() { return get("midiLearnDefaults"); }
+inline void setMidiLearnDefaults(const juce::String& text) { set("midiLearnDefaults", text); }
+inline void clearMidiLearnDefaults() {
+    juce::PropertiesFile f(options());
+    f.removeValue("midiLearnDefaults");
+    f.saveIfNeeded();
+}
+
 // Developer > Write skin log (default off): ~/Documents/Phyzo/skin-log.txt is written only while this is on. Kept in
 // memory after the first read (the log is written from the GL thread), shared by all instances in the process.
 inline std::atomic<int> skinLogCache{-1};

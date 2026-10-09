@@ -16,6 +16,7 @@
 #include "editor/editor_controller.h"
 #include "engine.h"
 #include "library/service.h"
+#include "midi_learn.h"
 #include "rom_id.h"
 #include "skin_port.h"
 #include "VirtualMidiPort.h"
@@ -26,7 +27,7 @@ public:
     ~PhyzoProcessor() override;
 
     void prepareToPlay(double sampleRate, int samplesPerBlock) override;
-    void releaseResources() override {}
+    void releaseResources() override { learn_.releaseHeld(); }   // a learned button held: released first
     bool isBusesLayoutSupported(const BusesLayout& layouts) const override;
     using AudioProcessor::processBlock;
     void processBlock(juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
@@ -76,6 +77,21 @@ public:
     editor::Controller& editorController() { return editor_; }
     void loadWaveNames(const juce::File& skinFolder);    // the optional wave-name file of the skin
     static constexpr const char* kWaveNamesFile = "waves.txt";
+
+    // ---- MIDI learn (F-55, docs/MIDI_LEARN.md), message thread. A controller is a second front panel: learned CCs
+    // (or notes, for buttons) from the host's MIDI drive panel controls through the same calls as the mouse. The
+    // bindings are plugin settings (saved with the project, defaults in Phyzo.settings), never synth or host parameters.
+    midilearn::Learn& learn() { return learn_; }
+    midilearn::PerfLabels perfLabels() const { std::lock_guard<std::mutex> lk(labelsMtx_); return perfLabels_; }
+    void armLearn(int control);                      // MIDI learn: arms it, or cancels if it was armed
+    bool cancelLearn();                              // Esc: true if a learn was armed (and is now cancelled)
+    void setLearnCc(int control, int cc);            // Set CC (two clicks): on its channel, Any if it had none
+    void setLearnChannel(int control, int channel);  // 0 = Any, 1-16
+    void forgetLearn(int control);
+    void forgetAllLearn();
+    void saveLearnDefaults();                        // for new instances and older projects
+    void clearLearnDefaults();
+    static std::vector<midilearn::Binding> learnDefaults();
     struct Meter {                                   // CPU per block, written by the audio thread
         std::atomic<float> avg{0}, peak{0}, last{0}, lastMs{0}, blockMs{0};
         std::atomic<int> blockSize{0};
@@ -96,7 +112,12 @@ private:
     class Port : public skin::PanelPort {
     public:
         explicit Port(Engine& e) : engine(e) {}
-        void sendControl(int cc, int raw) override { engine.setControl(cc, raw); }
+        void sendControl(int cc, int raw) override {
+            int dropped;
+            if (learn) learn->takeKnobMove(cc, dropped);   // the mouse (or Lua) moved it after the controller
+            engine.setControl(cc, raw);
+        }
+        bool takeLearnedKnob(int cc, int& raw) override { return learn && learn->takeKnobMove(cc, raw); }
         int controlPosition(int cc) override { return engine.controlPosition(cc); }
         void sendButton(int raw, bool down) override { engine.pressRaw(raw, down); }
         skin::LedReport led(int code) override {
@@ -116,6 +137,7 @@ private:
         }
         void setKnobPosition(const std::string& id, int raw) override { std::lock_guard<std::mutex> lk(mtx); knobs[id] = raw; }
         Engine& engine;
+        midilearn::Learn* learn = nullptr;
         std::mutex mtx;
         std::map<std::string, int> knobs;
     };
@@ -165,6 +187,7 @@ private:
             proc.postToEditor([noise, lfo, filterKbd](editor::Controller& c) { c.setFollowExtraLeds(noise, lfo, filterKbd); });
         }
         void editorKnobLabels(const std::array<std::string, 5>& labels) override {
+            { std::lock_guard<std::mutex> lk(proc.labelsMtx_); proc.perfLabels_ = labels; }   // MIDI learn's names
             proc.postToEditor([labels](editor::Controller& c) { c.setKnobLabels(labels); });
         }
         void editorFollowLeds(const std::array<int, 4>& s, const std::array<int, 2>& o, const std::array<int, 3>& e) override {
@@ -205,6 +228,17 @@ private:
     void runEditorQueue();                           // the skin's editor calls (message thread)
     void serviceLibrary();                           // timer: an exported bank waiting for its save dialog
     void libraryNotice(const std::string& text) { libraryNotices_.push_back(text); }
+    // MIDI learn: what the audio thread heard (timer); a message on the editor's row 4 (unit open) or the window's
+    // banner (unit closed), 3 s.
+    void serviceLearn();
+    void learnMessage(const std::string& text);
+    // The engine as the learned messages drive it: the mouse's calls (lock-free, the audio thread included).
+    struct LearnPanel : midilearn::Panel {
+        explicit LearnPanel(Engine& e) : engine(e) {}
+        void control(int cc, int raw) override { engine.setControl(cc, raw); }
+        void button(int raw, bool down) override { engine.pressRaw(raw, down); }
+        Engine& engine;
+    };
 
     // Skin threads hand their editor calls to the message thread through this queue.
     void postToEditor(std::function<void(editor::Controller&)> f);
@@ -217,6 +251,11 @@ private:
     static void virtualBytes(void* self, const uint8_t* bytes, size_t n) { static_cast<PhyzoProcessor*>(self)->engine_.virtualMidiIn(bytes, n); }
 
     Engine engine_;
+    LearnPanel learnPanel_{engine_};
+    midilearn::Learn learn_{learnPanel_};
+    double learnClockMs_ = 0;                        // audio thread: the one-edge warning's clock
+    mutable std::mutex labelsMtx_;
+    midilearn::PerfLabels perfLabels_;               // the skin's perf knob letters (editor.knobLabels)
     Port port_{engine_};
     VirtualMidiPort vport_{engine_.virtualMidiOut(), &PhyzoProcessor::virtualBytes, this};   // after engine_: closed first
     EditorLink editorLink_{engine_};

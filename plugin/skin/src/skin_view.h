@@ -93,6 +93,9 @@ public:
 
     // The editor value (its reference) at a point in physical pixels, -1 if none: the plugin's right-click list.
     int editorValueAt(int x, int y);
+    // The panel control at a point in physical pixels (MIDI learn's right-click): a knob element's cc (knob = true) or
+    // a pbutton's panel id; false if none.
+    bool panelControlAt(int x, int y, bool& knob, int& id);
 
     void setDebuggerVisible(bool on);
     bool debuggerVisible() const { return debugger_; }
@@ -135,6 +138,9 @@ public:
     void setHeld(int raw, bool held);
     void setMousePressed(PButtonElement* b) { mousePressed_ = b; }
     void setKnob(int cc, int raw);             // panel.setKnob
+    // A learned control moved the cc (the engine has it already): its visible knobs show it as panel.setKnob shows it
+    // (their positions saved), and Lua hears it, but nothing is sent again.
+    void controlMoved(int cc, int raw);
     int ledState(int code);                    // panel.led: 0 off, 1 on, 2 flash (beat flash counts as flash)
     bool ledLit(int code) const;
     std::array<uint8_t, 4> displayBytes() const { return segs_; }

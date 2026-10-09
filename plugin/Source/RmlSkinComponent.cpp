@@ -108,9 +108,11 @@ void RmlSkinComponent::timerCallback() {
     logRates(now);
     if (!visibleOnScreen()) return;
     const uint32_t serial = proc_.engine().uiSerial(), editorSerial = proc_.editorSerial();
+    const uint32_t learnSerial = proc_.learn().knobMoveSerial();
     int why = -1;
     if (frameWanted_.exchange(false)) why = kWhyInput;
-    else if (serial != lastSerial_ || editorSerial != lastEditorSerial_) why = kWhyPanel;   // the panel or the editor's glass
+    else if (serial != lastSerial_ || editorSerial != lastEditorSerial_ || learnSerial != lastLearnSerial_)
+        why = kWhyPanel;                               // the panel, the editor's glass, or a knob a controller moved
     else if (now >= nextWake_.load()) {
         switch (skin::SkinView::Wake(wakeSource_.load())) {
             case skin::SkinView::Wake::Flash: why = kWhyFlash; break;
@@ -122,6 +124,7 @@ void RmlSkinComponent::timerCallback() {
     if (why >= 0) {
         lastSerial_ = serial;
         lastEditorSerial_ = editorSerial;
+        lastLearnSerial_ = learnSerial;
         ++why_[why];
         gl_.triggerRepaint();
     }
@@ -195,6 +198,7 @@ void RmlSkinComponent::newOpenGLContextCreated() {
     view_ = std::make_unique<skin::SkinView>(proc_.panelPort(), info, renderer_->rml());
     view_->onLog = &RmlSkinComponent::writeLog;
     view_->onLogUser = this;
+    viewReady_ = true;
 }
 
 void RmlSkinComponent::renderOpenGL() {
@@ -228,6 +232,7 @@ void RmlSkinComponent::renderOpenGL() {
 }
 
 void RmlSkinComponent::openGLContextClosing() {
+    viewReady_ = false;
     std::lock_guard<std::recursive_mutex> lk(skin::skinLock());
     view_.reset();
     renderer_.reset();
@@ -283,15 +288,23 @@ void RmlSkinComponent::mouseDown(const juce::MouseEvent& e) {
     const int bannerBottom = (persistent_.isNotEmpty() ? 64 : 0) + (message_.isNotEmpty() ? 64 : 0);
     if (message_.isNotEmpty() && e.position.y < bannerBottom && e.position.y >= bannerBottom - 64) { showMessage({}); return; }   // click hides it
     if (e.mods.isPopupMenu()) {                                                   // right-click never presses
-        if (!editorVisible_.load() || !onEditorValueMenu) { if (onRightClick) onRightClick(e); return; }
-        // On the editor unit: ask the view (GL thread) which value is under the mouse, then show its list or the menu.
+        if (!viewReady_.load()) { if (onRightClick) onRightClick(e, -1); return; }
+        // Ask the view (GL thread) what is under the mouse: an editor value (its list), else a panel control (the
+        // menu with MIDI learn's items for it), else the plain menu.
         const int x = toPx(e.position.x), y = toPx(e.position.y);
-        post([this, x, y, sp = juce::Component::SafePointer<RmlSkinComponent>(this), ev = e] {
-            const int ref = view_->editorValueAt(x, y);
-            juce::MessageManager::callAsync([sp, ref, ev] {
+        const bool values = editorVisible_.load() && onEditorValueMenu;
+        post([this, x, y, values, sp = juce::Component::SafePointer<RmlSkinComponent>(this), ev = e] {
+            const int ref = values ? view_->editorValueAt(x, y) : -1;
+            bool knob = false;
+            int id = -1, control = -1;
+            if (ref < 0 && view_->panelControlAt(x, y, knob, id)) {
+                if (knob) control = midilearn::isKnob(id) ? midilearn::knob(id) : -1;   // wheels and pressure: never
+                else control = id >= 0 && id <= 0x7F ? midilearn::button(id) : -1;
+            }
+            juce::MessageManager::callAsync([sp, ref, control, ev] {
                 if (!sp) return;
                 if (ref >= 0 && sp->onEditorValueMenu && sp->onEditorValueMenu(ref)) return;
-                if (sp->onRightClick) sp->onRightClick(ev);
+                if (sp->onRightClick) sp->onRightClick(ev, control);
             });
         });
         return;
@@ -328,6 +341,10 @@ void RmlSkinComponent::mouseWheelMove(const juce::MouseEvent& e, const juce::Mou
 bool RmlSkinComponent::keyPressed(const juce::KeyPress& k) {
     if (k.getKeyCode() == juce::KeyPress::F5Key) { reload(); return true; }
     if (editorVisible_.load() && onEditorKey && onEditorKey(k)) return true;
-    if (k == juce::KeyPress::escapeKey) { post([this] { view_->releaseHeldButtons(); }); return true; }
+    if (k == juce::KeyPress::escapeKey) {
+        if (onEscape && onEscape()) return true;      // a MIDI learn cancelled
+        post([this] { view_->releaseHeldButtons(); });
+        return true;
+    }
     return false;
 }
