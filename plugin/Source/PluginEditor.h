@@ -60,6 +60,9 @@ public:
     // Tests: the usable screen area the window must fit (F-32); empty: the display the window is on.
     static juce::Rectangle<int> screenAreaForTest;
     float maxScale() const;                          // the largest scale that fits the screen (50-200 %)
+    // The preset library's controls (message thread): LIBRARY with the editor unit closed opens it; EXPORT's menu.
+    void openEditorUnit();
+    void showExportMenu();
 
 private:
     juce::StringArray skinNames() const;             // discovered file skins

@@ -21,14 +21,13 @@ namespace edfields {
 constexpr uint32_t kPresetSize = 414;
 constexpr uint32_t kArpBlock = 350, kArpBlockSize = 64;   // the preset's arp block (preset offsets 350-413)
 constexpr uint32_t kLiveArp = 0x0BE093D0;                  // the live arp state in RAM (raw-memory read)
-constexpr int kArpPresets = 121;
 constexpr uint32_t kArpRecordBody = 24;                    // an arp preset record's body: record offsets 24-87
 // Live bytes kept when an arp preset is loaded: held, keyboard, both key-range pairs.
 constexpr uint32_t kKeptOnLoad[] = {0x01, 0x02, 0x14, 0x15, 0x16, 0x17};
-constexpr int64_t kNone16 = 0xFFFF;                         // feel off, no pattern
+constexpr int64_t kNone16 = 0xFFFF;                         // feel off, no pattern, no riff
 // The OS's arp variables in RAM (raw-memory reads)
 constexpr uint32_t kArpControlVar = 0x0BE01877;            // the arp control the panel shows: 0 Tempo, 1 Range, 2 PrSt ...
-constexpr uint32_t kCurrentArpPreset = 0x0BE01880;         // 32-bit: -1 = the preset's own settings, else 0-120
+constexpr uint32_t kCurrentArpPreset = 0x0BE01880;         // 32-bit: -1 = the preset's own settings, else the arp preset
 constexpr uint32_t kArpFlags = 0x0BE018BA;                 // 2 bytes: arp on, keyboard
 // The OS's panel mode: 0x01 normal, 0x02 sound, 0x05 effects, 0x0C the arp menu (Arp Mode, Tempo, Range). The
 // arp-control variable keeps its value in every mode (it reads 2 in normal mode), so -/No and +/Yes are pressed only
@@ -57,19 +56,21 @@ enum class Kind {
     Duration,     // stored 1-255, shown raw x 100 / 256
     Resolution,   // 4-byte tick count, shown by the OS's name
     Tempo,        // 4-byte number, the OS's tempo format
-    Feel,         // 16-bit, 0xFFFF = OFF (domain -1), else the number
+    Feel,         // 16-bit, 0xFFFF = OFF (domain -1), else the number (and the feel's name, `nameType`)
     RuntimeFlag,  // the OS's arp on / keyboard flag (shown 0 / 1), switched by its panel button
-    Pattern,      // 16-bit arp pattern number, 0xFFFF = none, shown by its name (display only)
+    Pattern,      // 16-bit number of an OS object (a note pattern or a riff, `nameType`), 0xFFFF = none, shown by its
+                  // name (display only)
     Text,         // characters (display only)
     Signed16,     // 16-bit signed number (display only)
-    PresetAction  // the OS's current arp preset: -1 = " Snd" (the preset's own settings), else 0-120
+    PresetAction  // the OS's current arp preset: -1 = " Snd" (the preset's own settings), else its number (from 0, as
+                  // the OS counts); the arp presets end where the OS stops answering their name reads
 };
 
 struct Field {
     std::string label;
     char area = 'm';                                 // 'm' COMMON, 'a' ARP
     std::string section;                             // COMMON: SLOTS or KNOBS
-    int page = 0;                                    // ARP: page 0 or 1
+    int span = 1;                                    // ARP: the grid columns it takes (1 or 2)
     int slot = -1;                                   // COMMON SLOTS: the sound slot 0-3
     uint32_t offset = 0;                             // preset offset
     int size = 1;
@@ -82,6 +83,8 @@ struct Field {
     int arpControl = -1;                             // ARP: the OS's arp-control number (0 Tempo, 1 Range, 2 PrSt ...)
     int button = -1;                                 // ARP on/off and keyboard: the panel button that switches it
     int flag = -1;                                   // RuntimeFlag: 0 arp on, 1 keyboard
+    int nameType = -1;                               // Pattern, Feel: the OS object type of the named number (9 note
+                                                     // pattern, 10 feel, 11 riff), read with a partial read at offset 8
     bool editable = false;
     bool live() const {
         return area == 'a' && kind != Kind::RuntimeFlag && kind != Kind::PresetAction && offset >= kArpBlock &&
@@ -92,8 +95,10 @@ struct Field {
 // COMMON: the four sound slots (mode, oscillators, key range), the five performance-knob values (labels from the
 // skin, perf1-perf5). (The insert modulation is on INSERT > MOD, docs/editor/EFFECTS_EDITOR_SPEC.md.)
 std::vector<Field> commonFields(const std::array<std::string, 5>& knobLabels);
-// ARP: page 0 the switches, intervals, ranges, notes and numbers; page 1 resolution, tempo, feel, the arp preset
-// field, the pattern and the arp settings name.
+// ARP, in page order (owner-approved mockup, v0.8.3.5): the arp controls in the order the panel's Arp Mode button
+// steps through them (PrSt, nrES, ndur, FEEL, the intervals, Lo n, Hi n, tch, CEnt, ntLt, HELd), with the pattern and
+// the riff right after the preset's row; then arp on/off, keyboard, tempo, range up and down, and the arp settings
+// name. The arp preset, the pattern, the riff and the feel take two grid columns.
 std::vector<Field> arpFields(const edtables::ArpText& t);
 
 // The stored value (big-endian; signed for OctaveDown and Signed16) from `bytes`, which hold the object from offset
@@ -103,7 +108,7 @@ void store(const Field& f, int64_t raw, uint8_t* bytes, size_t size, uint32_t ba
 int64_t toDomain(const Field& f, int64_t raw);      // Resolution: -1 for a tick count not in the table
 int64_t toRaw(const Field& f, int64_t d);
 std::string format(const Field& f, int64_t d, const edtables::ArpText& t);
-// The text shown for the arp preset n (0-120) through the OS's format.
+// The text shown for the arp preset n through the OS's format, with the OS's own number (the OS counts from 0).
 std::string arpPresetLabel(const edtables::ArpText& t, int n);
 
 }  // namespace edfields

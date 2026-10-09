@@ -568,6 +568,10 @@ void legendState(const EditorState& s, const std::string& action, const std::str
     else if (action == "toggle_follow") { avail = true; lit = s.follow; }
     else if (action == "indicator") { lit = (value == "DATA" && s.data) || (value == "EDITED" && s.edited); }
     else if (action == "label") { lit = s.pages > 0; }
+    else if (action == "library") {                  // LIBRARY, SAVE, IMPORT, EXPORT, FOLDER: from any page
+        avail = s.areas.count("LIBRARY") != 0;
+        lit = avail && value == "LIBRARY" && s.open && s.area == "LIBRARY";   // the actions are never lit
+    }
 }
 
 void SkinView::setEditorVisible(bool on) {
@@ -582,33 +586,40 @@ void SkinView::setEditorVisible(bool on) {
     });
 }
 
+// The editor unit's glass and legends while it is shown; legends in the main document (the library controls) always.
 bool SkinView::applyEditor() {
     EditorPort* ep = port_.editor();
-    if (!editorDoc_ || !editorVisible_ || !ep) { editorFocus_ = false; return false; }
+    const bool unit = editorDoc_ && editorVisible_;
+    bool mainLegends = false;
+    for (LegendElement* l : legends_) mainLegends = mainLegends || l->GetOwnerDocument() != editorDoc_;
+    if (!ep || (!unit && !mainLegends)) { editorFocus_ = false; return false; }
     const uint32_t serial = ep->editorSerial();
     auto blinkPhase = [&] { return (int(std::floor(now_ * 2 * kFlashHz)) & 1) != 0; };
     if (editorApplied_ && serial == editorSerial_ && (editorFocus_ && blinkPhase()) == editorBlinkOff_) return false;
     EditorState st;
     ep->editorState(st);
-    editorFocus_ = st.focusRow >= 0 && st.focusLen > 0;
-    spans_ = st.spans;
+    editorFocus_ = unit && st.focusRow >= 0 && st.focusLen > 0;
+    spans_ = unit ? st.spans : std::vector<EditorSpan>();
     const bool blinkOff = editorFocus_ && blinkPhase();
     const bool changedState = !editorApplied_ || serial != editorSerial_;
     editorApplied_ = true;
     editorSerial_ = serial;
     editorBlinkOff_ = blinkOff;
     for (VfdRowElement* r : rows_) {
+        if (!unit) break;
         const int row = r->row();
         r->setRow(st.rows[size_t(row)], st.underline[size_t(row)], st.dot[size_t(row)], st.focusRow == row ? st.focusCol : 0,
                   st.focusRow == row ? st.focusLen : 0, blinkOff);
     }
     for (LegendElement* l : legends_) {
+        if (!unit && l->GetOwnerDocument() == editorDoc_) continue;   // hidden with the unit
         bool lit, avail;
         legendState(st, l->action(), l->value(), lit, avail);
+        if (l->action() == "library" && l->value() == "LIBRARY" && !editorDoc_) avail = lit = false;   // no unit to open
         if (l->IsClassSet("lit") != lit) l->SetClass("lit", lit);
         if (l->IsClassSet("avail") != avail) l->SetClass("avail", avail);
     }
-    if (changedState) callLua(onEditorFns, {});
+    if (changedState && unit) callLua(onEditorFns, {});
     return true;
 }
 

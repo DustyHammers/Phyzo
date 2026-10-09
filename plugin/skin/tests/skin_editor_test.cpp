@@ -30,8 +30,8 @@ struct FakeLink : editor::Link {
             edproto::Address a;
             a.type = m[6]; a.number = uint16_t(edproto::get14(&m[7])); a.subtype = m[9];
             a.subnumber = uint16_t(edproto::get14(&m[10])); a.offset = edproto::get32(&m[12]); a.length = edproto::get32(&m[17]);
-            std::string name = a.number >= edproto::kStoredPreset ? "Preset " + std::string(a.number - 0x100 < 9 ? "0" : "") +
-                                                                        std::to_string(a.number - 0x100 + 1)
+            const int n = a.number - edproto::kStoredPreset;   // stored preset n
+            std::string name = a.number >= edproto::kStoredPreset ? "Preset " + std::string(n < 9 ? "0" : "") + std::to_string(n + 1)
                                                                   : current;
             name.resize(16, ' ');
             Bytes r = edproto::partialWrite(a, Bytes(name.begin(), name.end()));

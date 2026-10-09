@@ -233,11 +233,19 @@ std::vector<Row> stageRows(const std::vector<Item>& items, std::vector<Item>& re
 
 std::vector<Row> gridRows(const std::vector<Item>& items) {
     std::vector<Row> rows;
-    for (size_t i = 0; i < items.size(); i += 4) {
-        Row r;
-        r.kind = RowKind::Grid;
-        r.items.assign(items.begin() + long(i), items.begin() + long(std::min(items.size(), i + 4)));
-        rows.push_back(r);
+    int slot = 4;
+    for (Item x : items) {
+        x.span = x.span == 2 ? 2 : 1;
+        if (x.span == 2 && slot % 2) ++slot;         // a whole half
+        if (slot + x.span > 4) {
+            Row r;
+            r.kind = RowKind::Grid;
+            rows.push_back(r);
+            slot = 0;
+        }
+        x.col = slot;
+        slot += x.span;
+        rows.back().items.push_back(x);
     }
     return rows;
 }
@@ -308,7 +316,16 @@ Screen render(const Page& page) {
         case RowKind::Grid:
             for (size_t k = 0; k < r.items.size() && k < 4; ++k) {
                 const Item& x = r.items[k];
-                const int col = int(k) * 12 + int(k > 1 ? 2 : 0);   // the halves' gap after the second code
+                const int slot = x.col >= 0 && x.col < 4 ? x.col : int(k);
+                const int col = slot * 12 + int(slot > 1 ? 2 : 0);   // the halves' gap after the second code
+                if (x.span == 2 && slot % 2 == 0) {  // a whole half: the name in full, the value up to the half's end
+                    const std::string name = upper(trim(x.name)).substr(0, size_t(kHalf - 8));
+                    const int at = col + std::max(5, int(name.size()) + 1);
+                    const int end = slot == 0 ? kHalf : kCols;   // up to the half's last cell (24 / 49), never the gap (25)
+                    put(s, row, col, name, int(name.size()), false, false, -1);
+                    put(s, row, at, x.value, end - at, false, x.ref >= 0, x.ref);
+                    continue;
+                }
                 put(s, row, col, upper(trim(x.name)).substr(0, 4), 4, false, false, -1);
                 put(s, row, col + 5, x.value, 7, false, x.ref >= 0, x.ref);
             }

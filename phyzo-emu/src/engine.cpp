@@ -10,9 +10,17 @@
 #include "os_image.h"
 #include "os_profile.h"
 #include "state_io.h"
+#include "user_flash.h"
+#include <map>
 
 namespace {
 constexpr uint32_t kEngineStateVersion = 1;
+
+// The factory user flash per OS image MD5, shared by every engine in the process (null: it could not be made).
+std::mutex g_factoryMtx;
+std::map<std::string, Engine::UserFlash> g_factory;
+std::mutex g_factoryMakeMtx;                        // one hidden machine at a time
+std::atomic<uint64_t> g_factoryRuns{0};
 
 struct Blob { std::string osMd5, waveMd5; std::vector<uint8_t> machine; };
 
@@ -83,7 +91,8 @@ void Engine::setRoms(const std::string& osPath, const std::string& wavePath, con
 
 std::vector<uint8_t> Engine::getState() {
     std::lock_guard<std::mutex> gl(getStateMtx_);
-    if (state_.load() != State::Running) return pendingState_;
+    if (state_.load() != State::Running)             // still restoring (or stopped): the state it restores
+        return jobState_.empty() ? pendingState_ : packBlob({osMd5_, waveMd5_, jobState_});
     auto nowMs = [] { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); };
     // Audio running: ask the audio thread for a snapshot at its next block boundary.
     if (nowMs() - lastProcessMs_.load() < 200) {
@@ -101,7 +110,7 @@ std::vector<uint8_t> Engine::getState() {
     // Audio not running (stopped host, offline): save directly.
     std::lock_guard<std::mutex> lk(mtx_);
     if (live_ && state_.load() == State::Running) return packBlob({osMd5_, waveMd5_, live_->saveState()});
-    return pendingState_;
+    return jobState_.empty() ? pendingState_ : packBlob({osMd5_, waveMd5_, jobState_});
 }
 
 void Engine::setState(const std::vector<uint8_t>& blob) {
@@ -230,7 +239,34 @@ void Engine::publishPositions(const Machine& m) {
 }
 
 void Engine::service() {
-    if (rebootRequested_.exchange(false)) startJob({});
+    if (!rebootRequested_.exchange(false)) return;
+    // The OS restarted itself: boot again with the user flash it had (flash keeps its contents through a restart).
+    UserFlash keep;
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        if (live_) keep = std::make_shared<const std::vector<uint8_t>>(live_->userFlash(), live_->userFlash() + Machine::kUserFlashSize);
+    }
+    startJob({}, keep);
+}
+
+void Engine::setFactoryUserFlash(bool on, const std::string& cacheDir) { factoryOn_ = on; factoryDir_ = cacheDir; }
+
+void Engine::setFactoryUserFlashForTest(const std::string& osMd5, UserFlash data) {
+    std::lock_guard<std::mutex> lk(g_factoryMtx);
+    g_factory[osMd5] = std::move(data);
+}
+uint64_t Engine::factoryRunsForTest() { return g_factoryRuns.load(); }
+
+Engine::UserFlash Engine::factoryUserFlashFor(const std::string& osMd5) {
+    std::lock_guard<std::mutex> lk(g_factoryMtx);
+    const auto it = g_factory.find(osMd5);
+    return it == g_factory.end() ? nullptr : it->second;
+}
+
+std::vector<uint8_t> Engine::machineState() {
+    if (state_.load() != State::Running) return {};
+    Blob b;
+    return unpackBlob(getState(), b) ? std::move(b.machine) : std::vector<uint8_t>();
 }
 
 std::string Engine::message() const { std::lock_guard<std::mutex> lk(msgMtx_); return message_; }
@@ -249,11 +285,13 @@ void Engine::stopJob() {
     cancel_ = false;
 }
 
-void Engine::startJob(std::vector<uint8_t> state) {
+void Engine::startJob(std::vector<uint8_t> state, UserFlash keep) {
     stopJob();
+    { std::lock_guard<std::mutex> gl(getStateMtx_); jobState_ = state; }
     const uint64_t gen = ++generation_;
     state_ = State::Booting;
-    worker_ = std::thread(&Engine::runJob, this, osPath_, wavePath_, std::move(state), gen);
+    Job job{osPath_, wavePath_, osMd5_, factoryOn_, factoryDir_, std::move(keep)};
+    worker_ = std::thread(&Engine::runJob, this, std::move(job), std::move(state), gen);
 }
 
 void Engine::fail(const std::string& reason) {
@@ -261,13 +299,87 @@ void Engine::fail(const std::string& reason) {
     state_ = State::Stopped;
 }
 
-void Engine::runJob(std::string osPath, std::string wavePath, std::vector<uint8_t> state, uint64_t generation) {
+// Cold boot to the preset display, then let it settle. False if the OS stopped (err says why) or on cancel.
+bool Engine::coldBoot(Machine& m, bool publish, std::string& err) {
+    const uint64_t limit = m.cyclesFromMs(kBootLimitMs);
+    bool shown = false;
+    while (!cancel_ && m.cycles() < limit && !shown) {
+        Machine::Stop st = m.runUntil(m.cycles() + m.cyclesFromMs(20), [&] { return m.panel.text() == kBootDisplay; });
+        m.audio.clear(); m.wet.clear();
+        if (publish) publishDisplay(m);
+        if (st == Machine::Stop::Trap || st == Machine::Stop::HardStall) {
+            err = st == Machine::Stop::Trap ? m.trapReason : std::string("error loop");
+            return false;
+        }
+        shown = st == Machine::Stop::Predicate;
+    }
+    const uint64_t settleEnd = m.cycles() + m.cyclesFromMs(kSettleMs);
+    while (!cancel_ && m.cycles() < settleEnd) {
+        m.runUntil(std::min(settleEnd, m.cycles() + m.cyclesFromMs(20)));
+        m.audio.clear(); m.wet.clear();
+        if (publish) publishDisplay(m);
+    }
+    if (!shown && !cancel_) err = std::string("the display did not show ") + kBootDisplay;
+    return !cancel_;
+}
+
+// The factory user flash for this OS image: from this process, else from the cache file, else made once in a hidden
+// machine (a freshly booted machine running the OS's own factory restore) and cached. Null if it cannot be made.
+Engine::UserFlash Engine::factoryUserFlash(const Job& job, const OsImage& os) {
+    auto known = [&](UserFlash& f) {
+        std::lock_guard<std::mutex> lk(g_factoryMtx);
+        auto it = g_factory.find(job.osMd5);
+        if (it == g_factory.end()) return false;
+        f = it->second;
+        return true;
+    };
+    UserFlash f;
+    if (known(f)) return f;
+    std::unique_lock<std::mutex> make(g_factoryMakeMtx, std::defer_lock);
+    while (!make.try_lock()) {                       // another engine is making it: wait (cancellable)
+        if (cancel_) return nullptr;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    if (known(f)) return f;
+    auto keep = [&](UserFlash v) { std::lock_guard<std::mutex> lk(g_factoryMtx); g_factory[job.osMd5] = v; return v; };
+    const std::string path = job.factoryDir.empty() ? std::string() : userflash::cachePath(job.factoryDir, job.osMd5);
+    std::vector<uint8_t> data;
+    if (!path.empty() && userflash::readCache(path, job.osMd5, data))
+        return keep(std::make_shared<const std::vector<uint8_t>>(std::move(data)));
+
+    const std::string making = "Making the factory presets from your OS (only the first time).", before = message();
+    setMessage(making);
+    ++g_factoryRuns;
+    std::string err;
+    auto h = std::make_unique<Machine>();
+    Machine::Config cfg;
+    bool ok = h->init(os, cfg, err) && h->loadWaveMemory(job.wavePath, err);
+    if (ok) {
+        h->panel.keepLog = false;
+        ok = coldBoot(*h, false, err) && err.empty();
+    }
+    if (ok) {
+        userflash::MachinePanel panel(*h, &cancel_);
+        ok = userflash::factoryRestore(panel, err);
+    }
+    if (cancel_) return nullptr;                     // not made, not known: the next job tries again
+    if (!ok) {
+        setMessage("The factory presets could not be made (" + err + "), so the synth starts with empty user memory.");
+        return keep(nullptr);
+    }
+    f = std::make_shared<const std::vector<uint8_t>>(h->userFlash(), h->userFlash() + Machine::kUserFlashSize);
+    if (!path.empty()) userflash::writeCache(path, job.osMd5, *f);
+    if (message() == making) setMessage(before);
+    return keep(f);
+}
+
+void Engine::runJob(Job job, std::vector<uint8_t> state, uint64_t generation) {
     OsImage os; std::string err;
-    if (!os.load(osPath, err)) { fail("Cannot read the OS image: " + err); return; }
+    if (!os.load(job.osPath, err)) { fail("Cannot read the OS image: " + err); return; }
     auto make = [&](std::unique_ptr<Machine>& m) {
         m = std::make_unique<Machine>();
         Machine::Config cfg;
-        if (!m->init(os, cfg, err) || !m->loadWaveMemory(wavePath, err)) return false;
+        if (!m->init(os, cfg, err) || !m->loadWaveMemory(job.wavePath, err)) return false;
         m->panel.keepLog = false;
         attachLeds(*m);
         { std::lock_guard<std::mutex> lk(controlsMtx_); m->panel.controls = controls_; }   // answered to the OS's F4
@@ -286,25 +398,19 @@ void Engine::runJob(std::string osPath, std::string wavePath, std::vector<uint8_
             if (!make(m)) { fail("The emulator could not start: " + err); return; }
         }
     }
-    if (!restored) {                     // cold boot to the preset display, then let it settle
-        const uint64_t limit = m->cyclesFromMs(kBootLimitMs);
-        bool shown = false;
-        while (!cancel_ && m->cycles() < limit && !shown) {
-            Machine::Stop st = m->runUntil(m->cycles() + m->cyclesFromMs(20), [&] { return m->panel.text() == kBootDisplay; });
-            m->audio.clear(); m->wet.clear();
-            publishDisplay(*m);
-            if (st == Machine::Stop::Trap || st == Machine::Stop::HardStall) { fail("The synth's OS stopped while booting: " + (st == Machine::Stop::Trap ? m->trapReason : std::string("error loop"))); return; }
-            shown = st == Machine::Stop::Predicate;
-        }
-        const uint64_t settleEnd = m->cycles() + m->cyclesFromMs(kSettleMs);
-        while (!cancel_ && m->cycles() < settleEnd) {
-            m->runUntil(std::min(settleEnd, m->cycles() + m->cyclesFromMs(20)));
-            m->audio.clear(); m->wet.clear();
-            publishDisplay(*m);
-        }
+    if (cancel_) return;
+    // A restored state keeps its own user flash (a state saved before v0.8.3 has none and stays erased, as then: its
+    // OS read the flash-write service pointer at boot, when it was null, so that machine never saves). A new machine
+    // gets the user flash before it boots: after an OS restart the one it had, else the factory's.
+    if (!restored) {                     // seed the user flash, cold boot to the preset display, then let it settle
+        UserFlash seed = job.keep;
+        if (!seed && job.factoryOn) seed = factoryUserFlash(job, os);
+        if (seed) m->setUserFlash(seed->data(), seed->size());
+        if (cancel_) return;
+        std::string why;
+        if (!coldBoot(*m, true, why) && !cancel_) { fail("The synth's OS stopped while booting: " + why); return; }
         if (cancel_) return;
     }
-    if (cancel_) return;
     // Panel ids of the +/Yes (OS button 1) and -/No (OS button 0) buttons, from the image's own table.
     uint8_t raw[2] = {0, 0}; bool found[2] = {false, false};
     for (uint32_t i = 0; i < profile::kButtonMapLen; ++i) {

@@ -150,7 +150,45 @@ The **Built-in** skin shows:
   44.1 kHz to the host rate) and **queue** (passing knob, button and MIDI events to the synth).
 
 Play Phyzo from a MIDI track. Everything the synth does (including the selected preset, any edits made over
-MIDI and the knob positions) is saved with the REAPER project and restored when you open it.
+MIDI, the knob positions and the presets you saved on the panel) is saved with the REAPER project and restored when
+you open it.
+
+**Saving presets** on the synth's panel works as on the hardware: the saved presets go to the synth's user memory,
+which Phyzo keeps with the project (each project, and each Phyzo in it, has its own). A new Phyzo starts with the
+factory presets only, like a new unit. **Factory restore** on the panel works too (hold Save, press Compare; the display
+asks `rSt?`; press +/Yes; after a moment the first preset shows again): it puts the factory presets back in that Phyzo.
+Sending the synth a bank dump over MIDI replaces its stored presets, as on the hardware. Projects saved with a
+version before 0.8.3 open exactly as they did then; their synth can't save presets on the panel (it checks for that
+only when it starts), so add a new Phyzo to save presets.
+
+A new Phyzo takes about 0.2 s longer to start than in 0.8.2, because the synth indexes its user memory, as a new unit
+does. So LFO, arpeggiator and random timings differ from 0.8.2 renders; every preset and sound is identical.
+
+**Preset library** (five controls on the rack: LIBRARY, SAVE, IMPORT, EXPORT, FOLDER; see `docs/editor/LIBRARY.md`).
+The library is the `.syx` files in **Documents > Phyzo > Library** (any subfolders).
+- **LIBRARY:** shows the list of sources in the editor unit (opening the unit if it is closed): the factory banks, your
+  bank files and SINGLES (every file with one preset). Click a source to see its presets; press LIBRARY again to go
+  back to the list.
+- **A preset:** click it to hear it. It plays in **Compare**, as a preset sent to the synth over MIDI does, and nothing
+  in the synth's memory changes. Press **Save** on the panel to keep it in a slot.
+- **SAVE, IMPORT, EXPORT and FOLDER** work from any editor page; their messages show on the glass's last row for
+  3 seconds.
+  - **SAVE:** writes the current stored preset to `Library/Singles/<name>.syx`. It refuses while the Compare LED is lit
+    (save on the panel first).
+  - **EXPORT:** a menu, Bank 1 (presets 1-32) or Bank 2 (presets 33-64); writes that bank, including your panel saves,
+    to a file you choose.
+  - **IMPORT:** copies `.syx` files into the library.
+  - **FOLDER:** opens the Library folder.
+- **The factory bank files:** the first time the area opens, Phyzo makes them once from your own OS (about 2 minutes,
+  reading both banks included; the factory rows show the progress) in `Library/Factory/`. They're made from your OS, so don't share them.
+- **Reading new files:** a new or changed file is read once by a hidden copy of the synth (a bank takes about half a
+  minute); the result is kept in `cache/library/`.
+- **Skin:** your skin's main document needs the five controls as empty legends over the art's lettering
+  (`docs/editor/LIBRARY.md`, "Skin").
+
+The first time Phyzo starts with your OS, it makes the factory presets once from the OS itself (a few extra seconds
+while it boots) and keeps them in **Documents > Phyzo > cache**. That file is made from your
+own OS, so don't share it. Deleting it is harmless: it is made again when needed.
 
 ## 8. MIDI ports
 

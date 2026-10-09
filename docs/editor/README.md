@@ -15,6 +15,10 @@ Name-free design documents for the editor unit, from the project chat:
   the Presets page marking the current preset.
 - `EFFECTS_EDITOR_SPEC.md` and `ROUND3_ANSWERS.md` (round 3): the INSERT and REVERB pages, the effect tables' layouts
   and the verified write paths.
+- `LIBRARY.md` (v0.8.3 step 2): the preset library and its LIBRARY area: `.syx` files browsed, auditioned in Compare,
+  saved, imported and exported, read by hidden machines.
+- `ARP_ROUND.md` (v0.8.3.5): the ARP area's page order (owner-approved mockup), the riff, the feel names, the arp
+  presets by the OS's own number and the list ending where the OS stops answering name reads.
 - `IMPLEMENTATION_STEPS.md`: the plan.
 
 ## What is implemented
@@ -22,7 +26,8 @@ Name-free design documents for the editor unit, from the project chat:
 - `phyzo-emu/src/editor/`: messages (`editor_proto`: partial reads and writes, whole reads and dumps, NRPN, program
   changes), the OS tables and arp texts read from the user's OS at run time (`editor_tables`), the preset object's
   COMMON and ARP fields (`editor_fields`), pages (`editor_pages`) and the controller (`editor_controller`): areas
-  SYSTEM, PRESETS, COMMON, SOUND, OSC, ARP, INSERT and REVERB.
+  SYSTEM, PRESETS, COMMON, SOUND, OSC, ARP, INSERT, REVERB and LIBRARY (the preset library, `phyzo-emu/src/library/`,
+  LIBRARY.md).
 - INSERT (ALGO, MOD, SENDS) and REVERB (ALGO, SENDS), round 3 (EFFECTS_EDITOR_SPEC.md): names, ranges, lists, units,
   the edit order, the variations and the panel's codes read from the user's OS image at run time. Effect values: a
   raw-memory write of the word into the edit buffer, then the OS's effect parameter message (clamped to the record's
@@ -58,7 +63,7 @@ Name-free design documents for the editor unit, from the project chat:
 tables, the arp texts and the effect tables as decoded, to check them against the hardware; it writes nothing.
 
 To confirm with the real OS (project chat): the arp texts' addresses (on/off strings, codes, the formats and the
-resolution names); the arp preset numbers' format (`AP%02d`, shown here from AP01); the base channel used for NRPN and
+resolution names); the arp preset numbers' format (`AP%02d`, with the OS's own number from AP00 since v0.8.3.5); the base channel used for NRPN and
 program changes (channel 1 for now); the insert modulation ranges shown as signed 16-bit numbers; the keyboard flag's
 sense (shown ON when the OS's flag is set); the current preset, found as the stored preset whose name the edit buffer
 holds (the last one picked here if names repeat) until the OS's own variable for it is known; the arp tempo shown from

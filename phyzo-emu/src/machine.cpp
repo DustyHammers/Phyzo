@@ -105,9 +105,15 @@ bool Machine::init(const OsImage& os, const Config& cfg, std::string& err) {
     for (uint32_t v = 2; v < 256; ++v) { put32(v * 4, kVectorStubs + v * 4); stop(kVectorStubs + v * 4); }
     put32(0x000, profile::kInitialSsp);   // slot 0: initial SSP (informational)
     put32(0x004, kRebootStub);            // slot 1: reboot service -> host trap
-    put32(0x3EC, 0);                      // slot 251: no flash-write service (saves skipped)
+    put32(0x3EC, kFlashServiceStub);      // slot 251: flash-write service -> host service (flashService)
     put32(0x3F8, kOsUpdateStub);          // slot 254: OS update service -> host trap
     stop(kRebootStub); stop(kOsUpdateStub); stop(kMainReturnStub);
+    // The flash-write service routine, called by the OS as a C function (arguments on the stack). Writing its stack
+    // pointer to the service port runs the service, which copies the data and puts the result in D0.
+    static const uint16_t kFlashServiceCode[] = {
+        0x23CF, 0x0000, 0x2040,           // move.l sp,($2040).l     the service port (kFlashServicePort)
+        0x4E75};                          // rts
+    for (size_t i = 0; i < sizeof kFlashServiceCode / 2; ++i) putBe(&flash_[kFlashServiceStub + 2 * i], kFlashServiceCode[i], 2);
 
     // Serial character times.
     serial.ch_[0].byteCycles = uint64_t(cfg_.panelByteUs * cfg_.cpuHz / 1e6);
@@ -374,7 +380,10 @@ uint32_t Machine::read(uint32_t a, int size) {
 
 void Machine::write(uint32_t a, uint32_t v, int size) {
     if (a - kRamBase <= kRamSize - size) { putBe(&ram_[a - kRamBase], v, size); return; }
-    if (a < kFlashSize) { ++flashWrites; logUnmapped(a, 'W', size, v); return; }   // read-only
+    if (a < kFlashSize) {
+        if (a == kFlashServicePort && size == 4 && !inDma_ && currentPc() == kFlashServiceStub) { flashService(v); return; }
+        ++flashWrites; logUnmapped(a, 'W', size, v); return;   // read-only
+    }
     if (a - kVoiceBase < kVoiceSize) {
         voice.timeMs = ms(now()); voice.pc = inDma_ ? 0xFFFFFF : currentPc();
         if (((a & 3) + size) <= 4) voice.write(a - kVoiceBase, v, size);
@@ -406,6 +415,34 @@ void Machine::write(uint32_t a, uint32_t v, int size) {
         return;
     }
     logUnmapped(a, 'W', size, v);
+}
+
+// The boot ROM's flash-write service (vector slot 251), called by the OS with (destination flash address, source
+// address, length, scratch buffer, scratch length) on the stack. The OS passes whole regions, so a plain copy is all the
+// flash needs. Only the user flash can be written: any other destination copies nothing, returns 1 and is logged
+// (unmapped access 'S' at the destination, value = length). D0 = 0 on success. Runs inside the routine's instruction
+// (with the CPU lock held), which leaves D0 alone; no allocation (the audio thread runs it).
+void Machine::flashService(uint32_t sp) {
+    const uint32_t dst = peek(sp + 4, 4), src = peek(sp + 8, 4), len = peek(sp + 12, 4);
+    ++flashServiceCalls;
+    uint32_t result = 0;
+    if (dst >= kUserFlashBase && dst < kFlashSize && len <= kFlashSize - dst) {
+        if (src - kRamBase <= kRamSize && len <= kRamSize - (src - kRamBase)) std::memcpy(&flash_[dst], &ram_[src - kRamBase], len);
+        else if (src < kFlashSize && len <= kFlashSize - src) std::memmove(&flash_[dst], &flash_[src], len);
+        else for (uint32_t i = 0; i < len; ++i) flash_[dst + i] = uint8_t(peek(src + i, 1));
+        flashServiceBytes += len;
+    } else {
+        ++flashServiceRefused;
+        logUnmapped(dst, 'S', 4, len);
+        result = 1;
+    }
+    m68k_set_reg(M68K_REG_D0, result);
+}
+
+bool Machine::setUserFlash(const uint8_t* data, size_t size) {
+    if (!data || size != kUserFlashSize) return false;
+    std::memcpy(&flash_[kUserFlashBase], data, size);
+    return true;
 }
 
 uint32_t Machine::peek(uint32_t a, int size) const {
@@ -479,6 +516,11 @@ void Machine::saveStateInto(std::vector<uint8_t>& out) {
     w.section("VOIC", [&](StateWriter& s) { voice.save(s); });
     w.section("ESP2", [&](StateWriter& s) { esp2.save(s); });
     w.section("PANL", [&](StateWriter& s) { panel.save(s); });
+    w.section("UFLS", [&](StateWriter& s) {                       // since v0.8.3
+        s.put(flashServiceCalls); s.put(flashServiceBytes); s.put(flashServiceRefused);
+        s.put(uint64_t(kUserFlashSize));
+        s.raw(&flash_[kUserFlashBase], kUserFlashSize);
+    });
     out.swap(w.bytes);
 }
 
@@ -493,6 +535,15 @@ bool Machine::loadState(const std::vector<uint8_t>& data, std::string& err) {
     std::string tag; StateReader s(nullptr, 0);
     int seen = 0;
     while (r.nextSection(tag, s)) {
+        if (tag == "UFLS") {                                     // optional: older states have none
+            uint64_t calls = 0, bytes = 0, refused = 0;
+            s.get(calls); s.get(bytes); s.get(refused);
+            if (s.get<uint64_t>() != kUserFlashSize) s.fail();
+            else s.raw(&flash_[kUserFlashBase], kUserFlashSize);
+            if (!s.ok()) { err = "machine state section UFLS is damaged"; return false; }
+            flashServiceCalls = calls; flashServiceBytes = bytes; flashServiceRefused = refused;
+            continue;
+        }
         if (tag == "MACH") {
             double hz = 0; int ips = 0; bool stub = true;
             s.get(hz); s.get(ips); s.get(stub);

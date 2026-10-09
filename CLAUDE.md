@@ -60,7 +60,13 @@ owner step by step through anything they must do by hand on github.com or on the
   MIDI input as whole messages (`midi_stream.*`). `plugin/` wraps it (JUCE) and scans `~/Documents/Phyzo/roms/`. Musashi has one global CPU:
   machines take turns on it per 68k slice under a lock (`Machine::becomeCpuOwner`); each machine's devices (timers,
   serial, voice chip, ESP2) run outside the lock, in parallel across instances. Project state = complete machine state
-  (`Machine::saveState`), tied to the ROM checksums.
+  (`Machine::saveState`), tied to the ROM checksums, including the user flash 0xD0000-0xFFFFF (presets saved on the
+  panel), which only the boot ROM's flash-write service (slot 251, a host service; the OS reads the slot only at boot)
+  writes. New instances get the factory user flash (`user_flash.*`): made once per OS image by the OS's own factory
+  restore in a hidden machine, cached in `~/Documents/Phyzo/cache/` (from the user's OS: never shipped or committed).
+  States from before v0.8.3 (no user flash) load exactly as then, erased (they can't save). With the factory user flash
+  the OS indexes its user memory at boot (about 0.2 s longer): audio is not byte-identical to v0.8.2 (LFO, arp, random
+  timing), by design; every preset and sound is.
 - Skins: `plugin/skin/` (no JUCE) is the runtime: RmlUi 6.3 + Lua 5.4 (sandboxed, 3 s limit) + FreeType, the custom
   elements knob/pbutton/led/vfdigit and the `panel`/`plugin` Lua API; `skin_test` drives the test skin in CI.
   `plugin/Source/RmlSkinComponent.*` draws a file skin with OpenGL (all RmlUi/Lua work on the GL thread);
@@ -96,9 +102,26 @@ owner step by step through anything they must do by hand on github.com or on the
   effects); under a variation the slot shows the values that play, and the first edit of one in the editor copies the
   variation to PSEt (write path 4b: raw writes, PSEt only once the read-back equals the copy). COMMON
   and ARP fields (no OS table) are in `editor_fields.*`; ARP values come from the live arp state and the OS's arp
-  variables in RAM. Follow also jumps to the page of the panel knob last moved (`Engine::lastPanelControl`).
+  variables in RAM. ARP page (v0.8.3.5, docs/editor/ARP_ROUND.md): the owner-approved order (the Arp Mode button's);
+  arp presets by the OS's own number (from 0); their list ends where the OS stops answering name reads (never a count
+  in the code); PATTERN / RIFF (types 9 / 11) display only, FEEL with its type-10 name. Follow also jumps to the page of the panel knob last moved (`Engine::lastPanelControl`).
   The skin side: `<name>-editor.rml`, `<vfdrow>` (values take drags, double-click, right-click), `<legend>`, the Lua
   `editor` API with `editor.knobLabels` (docs/SKINS.md).
+  LIBRARY (v0.8.3 step 2, docs/editor/LIBRARY.md, `phyzo-emu/src/library/`): `.syx` files in
+  `~/Documents/Phyzo/Library/`, never the synth's memory.
+  - A clicked preset's stored single-preset message goes into the MIDI input (the OS puts it in Compare; Save on the
+    panel keeps it).
+  - Files are read by hidden machines on a worker thread, one job at a time in the process. Fresh machines boot the
+    v0.8.3 way; clones restore the running machine's snapshot, which is never paused, pressed or read otherwise.
+  - The machines are driven only through the OS: panel Dump 0x0C and +/Yes 0x0D, program changes, SysEx in, name
+    reads (#0, 0x40 + n).
+  - Index cache: `cache/library/<file MD5>.idx`. Factory bank files: `Library/Factory/`, from the user's OS, never
+    shipped.
+  - SAVE is refused while the Compare LED (0x16) is lit. New files are never overwritten. Entries go across the rows,
+    as on the PRESETS page.
+  - Five controls, `<legend action="library">` LIBRARY, SAVE, IMPORT, EXPORT (a menu of the two banks), FOLDER: empty
+    legends in the main rack document (lit/avail also with the editor unit closed), from any editor page; LIBRARY
+    opens the unit on the list and goes back to it from a source's presets.
 - Real-time rules for `engine.*`: the audio thread never waits on other threads. `getState` asks the audio thread
   for a snapshot at a block boundary (`Machine::saveStateInto`, preallocated); panel controls go through a
   lock-free latest-value slot per cc, sent at most once per 10 ms each and only while the panel link keeps up;

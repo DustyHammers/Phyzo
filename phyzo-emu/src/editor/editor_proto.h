@@ -20,9 +20,13 @@ constexpr uint8_t kWholeReply = 0x41, kPartialReply = 0x44;
 // The OS's error message (F0 0F 11 01 <device> 7F ... F7): its answer to a request it cannot serve.
 constexpr uint8_t kError = 0x7F;
 // Object types
-constexpr uint8_t kSystem = 0, kSound = 1, kPerformance = 2, kPreset = 7, kArpPreset = 8, kArpPattern = 9, kRawMemory = 0x7F;
+constexpr uint8_t kSystem = 0, kSound = 1, kPerformance = 2, kPreset = 7, kArpPreset = 8, kArpPattern = 9, kArpFeel = 10,
+                  kArpRiff = 11, kRawMemory = 0x7F;
 constexpr uint16_t kEditBuffer = 0x3FFF;             // performance edit buffer number
-constexpr uint16_t kStoredPreset = 0x100;            // preset number 0x100 + n = stored preset n
+// Preset numbers (type kPreset): 0 = the edit buffer; 0x40 + n = stored preset n (the user's, in the user flash);
+// 0x100 + n = the factory copy of preset n in the OS image (not what the user stored).
+constexpr uint16_t kStoredPreset = 0x40;
+constexpr uint16_t kFactoryPreset = 0x100;
 
 // Where a partial read or write goes: object type and number, sub-object type and number, byte range.
 struct Address {

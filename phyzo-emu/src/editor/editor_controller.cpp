@@ -1,5 +1,6 @@
 #include "editor_controller.h"
 #include <algorithm>
+#include <cstdio>
 #include <cctype>
 #include <cstdlib>
 #include <sstream>
@@ -146,10 +147,11 @@ void Controller::setTables(const edtables::OsTables& tables) {
     presetNameRead_ = {};
     presetNamesRequested_ = 0;
     currentPreset_ = -1;
-    patternNames_.clear();
-    patternRequested_.clear();
-    arpPresetNames_ = {};
-    arpNamesRequested_ = 0;
+    objNames_.clear();
+    objNamesRequested_.clear();
+    arpPresetNames_.clear();
+    arpNameOut_ = arpProbe_ = arpPresetCount_ = -1;
+    arpProbeDue_ = arpNamesWait_ = false;
     build();
     render();
 }
@@ -188,8 +190,17 @@ void Controller::setOpen(bool open) {
         lastDisplay_ = link_.display();
         followLeds();
         readDue_ = now_;                             // read the visible page on the next tick
+        if (lib_) {
+            std::string t;
+            while (lib_->takeNotice(t)) {}           // messages from while the editor was closed are old news
+            libNotices_.clear();
+            libNoticeUntil_ = -1;
+            if (libraryArea()) lib_->open();
+        }
     } else {
         outstanding_ = 0;
+        arpNameOut_ = arpProbe_ = -1;               // asked again when the editor opens
+        arpProbeDue_ = arpNamesWait_ = false;
         readDue_ = displayChangedAt_ = readBackAt_ = -1;
         pending_.clear(); rmw_.clear(); pendingArp_.clear();   // the engine drops its queue too
         modPending_ = modReady_ = false;
@@ -315,26 +326,21 @@ void Controller::build() {
         }
         if (!a.sections.empty()) areas_.push_back(a);
     }
-    if (!arp_.empty()) {   // ARP: page 1 the OS's codes four per row; page 2 resolution, tempo, feel, arp preset, pattern, name
-        std::vector<Item> first, second;
-        Row pattern, name;
-        pattern.kind = name.kind = edpages::RowKind::Fixed;
+    if (!arp_.empty()) {   // ARP (owner-approved mockup): the fields in their order, four grid columns per row (the arp
+                           // preset, pattern, riff and feel take two), then the arp settings name on a row of its own
+        std::vector<Item> grid;
+        Row name;
+        name.kind = edpages::RowKind::Fixed;
         for (size_t i = 0; i < arp_.size(); ++i) {
             Item x = pitem('a', int(i));
-            if (arp_[i].kind == Kind::Pattern) { x.col = 0; pattern.items.push_back(x); }
-            else if (arp_[i].kind == Kind::Text) { x.col = 0; name.items.push_back(x); }
-            else (arp_[i].page == 0 ? first : second).push_back(x);
+            if (arp_[i].kind == Kind::Text) { x.col = 0; name.items.push_back(x); continue; }
+            x.span = arp_[i].span;
+            x.width = std::min(x.width, x.span == 2 ? 20 : 7);
+            grid.push_back(x);
         }
-        for (Item& x : first) x.width = std::min(x.width, 7);
-        for (Item& x : second) x.width = std::min(x.width, 7);
-        Page p1 = edpages::gridRows(first), p2 = edpages::gridRows(second);
-        p2.push_back(pattern);
-        p2.push_back(name);
-        std::vector<Page> pages;
-        for (size_t i = 0; i < p1.size(); i += size_t(edpages::kRows))
-            pages.emplace_back(p1.begin() + long(i), p1.begin() + long(std::min(p1.size(), i + size_t(edpages::kRows))));
-        pages.push_back(p2);
-        areas_.push_back({"ARP", {{"", pages}}});
+        std::vector<Row> rows = edpages::gridRows(grid);
+        if (!name.items.empty()) rows.push_back(name);
+        areas_.push_back({"ARP", {{"", edpages::paginate(rows)}}});
     }
     if (tables_.fx.ok) {   // INSERT (ALGO, MOD, SENDS) and REVERB (ALGO, SENDS): docs/editor/EFFECTS_EDITOR_SPEC.md
         const edtables::FxTables& t = tables_.fx;
@@ -374,6 +380,8 @@ void Controller::build() {
         rev.sections.push_back({"SENDS", pages(rsends)});
         areas_.push_back(rev);
     }
+    // LIBRARY: its pages come from the library (renderLibrary), not from tables.
+    if (lib_) areas_.push_back({"LIBRARY", {{"SOURCES", {Page()}}, {"PRESETS", {Page()}}}});
     // Keep the position if the same area, section and page still exist.
     area_ = section_ = page_ = 0;
     for (size_t i = 0; i < areas_.size(); ++i)
@@ -475,7 +483,7 @@ void Controller::readPage() {
 
 void Controller::handleReply(const std::vector<uint8_t>& m) {
     if (outstanding_ > 0) --outstanding_;
-    unanswered_ = false;
+    unanswered_ = arpNamesWait_ = false;
     edproto::Message r;
     if (!edproto::parse(m.data(), m.size(), r) || r.command != edproto::kPartialReply) return;
     const edproto::Address& a = r.address;
@@ -516,11 +524,27 @@ void Controller::handleReply(const std::vector<uint8_t>& m) {
         for (char& c : name) if (static_cast<unsigned char>(c) < 0x20 || static_cast<unsigned char>(c) > 0x7E) c = ' ';
         return name;
     };
-    if (a.type == edproto::kArpPreset && a.number < edfields::kArpPresets) {
-        if (a.offset == 8) arpPresetNames_[a.number] = text();
+    if (a.type == edproto::kArpPreset) {
+        if (a.offset != 8) return;
+        const size_t n = a.number;
+        if (n < arpPresetNames_.size()) {
+            arpPresetNames_[n] = text();
+        } else if (n == arpPresetNames_.size() && arpPresetCount_ < 0) {   // the next one (also a late answer: no end)
+            arpPresetNames_.push_back(text());
+            arpProbe_ = -1;
+            arpProbeDue_ = false;
+        }
+        if (int(n) == arpNameOut_) arpNameOut_ = -1;
+        if (int(n) == arpProbe_) {                   // the OS answers, but not the next one: the arp presets end here
+            arpProbe_ = -1;
+            arpPresetCount_ = int(arpPresetNames_.size());
+        }
         return;
     }
-    if (a.type == edproto::kArpPattern && a.offset == 8) { patternNames_[a.number] = text(); return; }
+    if ((a.type == edproto::kArpPattern || a.type == edproto::kArpFeel || a.type == edproto::kArpRiff) && a.offset == 8) {
+        objNames_[{a.type, a.number}] = text();
+        return;
+    }
     if (a.type == edproto::kPreset && a.number >= edproto::kStoredPreset && a.offset == 8) {
         const int n = a.number - edproto::kStoredPreset;
         if (n >= 0 && n < kPresets) { presetNames_[size_t(n)] = text(); presetNameRead_[size_t(n)] = true; }
@@ -665,7 +689,10 @@ bool Controller::valueOf(int ref, int64_t& d) const {
 bool Controller::rangeOf(int ref, int64_t& lo, int64_t& hi) const {
     if (ref < 0 || size_t(ref) >= refs_.size()) return false;
     const Ref& r = refs_[size_t(ref)];
-    if (const edfields::Field* f = presetField(r)) { lo = f->lo; hi = f->hi; return true; }
+    if (const edfields::Field* f = presetField(r)) {
+        lo = f->lo; hi = f->kind == Kind::PresetAction ? lastArpPreset() : f->hi;
+        return true;
+    }
     if (r.kind == 'x') {
         const FxRef& e = fx_[size_t(r.field)];
         const edtables::FxTables& t = tables_.fx;
@@ -770,7 +797,7 @@ bool Controller::editable(int ref) const {
 
 std::string Controller::textOf(int ref, int64_t d) const {
     const Ref& r = refs_[size_t(ref)];
-    if (const edfields::Field* f = presetField(r)) return edfields::format(*f, d, tables_.arp);
+    if (const edfields::Field* f = presetField(r)) return arpText(*f, d);
     if (r.kind == 'x') {
         const FxRef& e = fx_[size_t(r.field)];
         const edtables::FxTables& t = tables_.fx;
@@ -798,6 +825,25 @@ std::string Controller::textOf(int ref, int64_t d) const {
     return edpages::formatValue(f, *r.table, d, &waves_);
 }
 
+std::string Controller::objName(int type, int64_t number) const {
+    auto it = objNames_.find({type, int(number)});
+    return it == objNames_.end() ? std::string() : edpages::trimmed(it->second);
+}
+
+int64_t Controller::lastArpPreset() const {
+    if (arpPresetCount_ >= 0) return arpPresetCount_ - 1;   // where the OS stops answering
+    // Until then: the last one answered, or the OS's current one if higher.
+    return std::max<int64_t>(int64_t(arpPresetNames_.size()) - 1, arpPresetValid_ ? currentArpPreset_ : -1);
+}
+
+std::string Controller::arpText(const edfields::Field& f, int64_t d) const {
+    std::string s = edfields::format(f, d, tables_.arp);
+    std::string name;
+    if (f.kind == Kind::PresetAction && d >= 0 && size_t(d) < arpPresetNames_.size()) name = edpages::trimmed(arpPresetNames_[size_t(d)]);
+    if (f.kind == Kind::Feel && d >= 0) name = objName(f.nameType, d);
+    return name.empty() ? s : s + " " + name;
+}
+
 std::vector<Choice> Controller::listOf(int ref) const {
     std::vector<Choice> out;
     if (ref < 0 || size_t(ref) >= refs_.size()) return out;
@@ -807,11 +853,7 @@ std::vector<Choice> Controller::listOf(int ref) const {
     if (const edfields::Field* f = presetField(r)) {
         if (f->kind == Kind::PresetAction) {         // the preset's own settings, then the arp presets by number and name
             if (!arpPresetValid_) return out;        // not read yet
-            out.push_back({edfields::format(*f, -1, tables_.arp), -1, known && cur == -1});
-            for (int n = 0; n < edfields::kArpPresets; ++n) {
-                const std::string name = edpages::trimmed(arpPresetNames_[size_t(n)]);
-                out.push_back({edfields::arpPresetLabel(tables_.arp, n) + (name.empty() ? "" : " " + name), n, known && cur == n});
-            }
+            for (int64_t n = -1; n <= lastArpPreset(); ++n) out.push_back({arpText(*f, n), n, known && cur == n});
             return out;
         }
         switch (f->kind) {
@@ -1149,7 +1191,9 @@ void Controller::render() {
     v.edited = edited_;
     v.typing = typing_;
     for (const Area& a : areas_) v.areas.insert(a.name);
-    if (const Area* a = currentArea()) {
+    if (libraryArea()) {
+        renderLibrary(v);
+    } else if (const Area* a = currentArea()) {
         v.area = a->name;
         v.soundTargets = a->name == "SOUND" || a->name == "OSC";
         v.oscTargets = a->name == "OSC";
@@ -1182,11 +1226,10 @@ void Controller::render() {
                                     for (char& c : x.value) if (static_cast<unsigned char>(c) < 0x20 || static_cast<unsigned char>(c) > 0x7E) c = ' ';
                                     x.value = edpages::trimmed(x.value);
                                 }
-                            } else if (f->kind == Kind::Pattern) {
+                            } else if (f->kind == Kind::Pattern) {   // the name; the number if the OS gives none
                                 if (liveValid_ && edfields::rawOf(*f, live_.data(), live_.size(), edfields::kArpBlock, raw)) {
-                                    auto it = patternNames_.find(int(raw));
-                                    x.value = raw == edfields::kNone16 ? std::string("NONE")
-                                              : it != patternNames_.end() ? edpages::trimmed(it->second) : std::to_string(raw);
+                                    const std::string n = objName(f->nameType, raw);
+                                    x.value = raw == edfields::kNone16 ? std::string("NONE") : !n.empty() ? n : std::to_string(raw);
                                 }
                             } else {
                                 int64_t d;
@@ -1194,7 +1237,7 @@ void Controller::render() {
                                 // An arp edit on its way through the panel's buttons: its target until the OS holds it.
                                 if (jobActive_ && job_.ref == x.ref) { d = job_.target; known = true; }
                                 else if (auto it = pendingArp_.find(x.ref); it != pendingArp_.end()) { d = it->second; known = true; }
-                                if (known) x.value = edfields::format(*f, d, tables_.arp);
+                                if (known) x.value = arpText(*f, d);
                                 else if (f->kind == Kind::PresetAction) x.value = "...";   // shown at once; read soon
                             }
                         } else {
@@ -1220,6 +1263,17 @@ void Controller::render() {
                     if (sp.ref == focus && (!sp.pick || a->name == "PRESETS")) { v.focusRow = sp.row; v.focusCol = sp.col; v.focusLen = sp.len; break; }
             }
         }
+    }
+    // A library message replaces row 4 for 3 seconds, on whatever page shows (the library controls work from any).
+    if (libNoticeUntil_ >= 0 && now_ < libNoticeUntil_) {
+        const size_t last = size_t(edpages::kRows - 1);
+        for (size_t c = 0; c < size_t(edpages::kCols); ++c) {
+            v.screen.chars[last][c] = c < libNoticeText_.size() ? libNoticeText_[c] : ' ';
+            v.screen.underline[last][c] = v.screen.dot[last][c] = false;
+        }
+        v.screen.values.erase(std::remove_if(v.screen.values.begin(), v.screen.values.end(),
+                                             [](const auto& sp) { return sp.row == edpages::kRows - 1; }), v.screen.values.end());
+        if (v.focusRow == edpages::kRows - 1) v.focusRow = -1;
     }
     std::lock_guard<std::mutex> lk(viewMtx_);
     auto sameSpans = [](const std::vector<edpages::Screen::Span>& a, const std::vector<edpages::Screen::Span>& b) {
@@ -1309,6 +1363,7 @@ void Controller::moveFocus(int dr, int dc) {
 }
 
 void Controller::command(const std::string& action, const std::string& text) {
+    if (libraryCommand(action, text)) return;
     Area* a = currentArea();
     const int ref = std::atoi(text.c_str());
     const bool validRef = !text.empty() && ref >= 0 && size_t(ref) < refs_.size();
@@ -1999,11 +2054,186 @@ void Controller::pumpMod() {
 
 // ------------------------------------------------------------------ tick
 
+// ------------------------------------------------------------------ LIBRARY (v0.8.3 step 2)
+
+void Controller::setLibrary(LibraryLink* library) {
+    lib_ = library;
+    build();
+    render();
+}
+
+bool Controller::libraryArea() const {
+    const Area* a = currentArea();
+    return lib_ && a && a->name == "LIBRARY";
+}
+
+int Controller::librarySource() const {
+    const std::vector<LibraryLink::Source> list = lib_->sources();
+    if (list.empty()) return -1;
+    for (size_t i = 0; i < list.size(); ++i) if (list[i].title == libSource_) return int(i);
+    return std::clamp(libSourceIndex_, 0, int(list.size()) - 1);   // gone (renamed, deleted): the one in its place
+}
+
+int Controller::libraryPages(int section) const {
+    const size_t n = section == 0 ? lib_->sources().size() : lib_->entries(librarySource()).size();
+    return std::max(1, int((n + kLibraryPerPage - 1) / kLibraryPerPage));
+}
+
+namespace {
+std::string twoDigits(int n) { char b[16]; std::snprintf(b, sizeof b, "%02d", n); return b; }
+// "nn name rest" in 50 characters: without the number if it is too long, then with single spaces, then cut.
+std::string fitNotice(const std::string& num, const std::string& name, const std::string& rest) {
+    std::string t = num + " " + name + " " + rest;
+    if (t.size() > size_t(edpages::kCols)) t = name + " " + rest;
+    if (t.size() > size_t(edpages::kCols)) {
+        std::string single;
+        for (size_t i = 0; i < t.size(); ++i) if (!(t[i] == ' ' && i + 1 < t.size() && t[i + 1] == ' ')) single += t[i];
+        t = single;
+    }
+    return t.substr(0, size_t(edpages::kCols));
+}
+}  // namespace
+
+void Controller::libraryNotice(const std::string& text) {
+    libNoticeText_ = text.substr(0, size_t(edpages::kCols));
+    libNoticeUntil_ = now_ + kLibraryNoticeMs;
+}
+
+void Controller::renderLibrary(View& v) {
+    v.area = "LIBRARY";                              // no section legends: LIBRARY itself goes back to the list
+    const int sec = section_ == 1 ? 1 : 0;
+    v.section = sec == 0 ? "SOURCES" : "PRESETS";
+    const int pages = libraryPages(sec);
+    int& page = libPage_[sec];
+    page = std::clamp(page, 0, pages - 1);
+    v.page = page + 1;
+    v.pages = pages;
+    v.prev = page > 0;
+    v.next = page + 1 < pages;
+    edpages::Screen sc;
+    auto put = [&](int row, int col, const std::string& t, int width) {
+        for (int i = 0; i < width && col + i < edpages::kCols; ++i) sc.chars[size_t(row)][size_t(col + i)] = i < int(t.size()) ? t[size_t(i)] : ' ';
+    };
+    const int first = page * kLibraryPerPage;
+    if (sec == 0) {                                  // sources: title at the left of its half, the count at its right
+        const std::vector<LibraryLink::Source> list = lib_->sources();
+        for (int k = 0; k < kLibraryPerPage && first + k < int(list.size()); ++k) {
+            const LibraryLink::Source& src = list[size_t(first + k)];
+            const int row = k / 2, col = (k % 2) * edpages::kHalf;
+            const std::string count = src.busy ? std::to_string(src.done) + "/" + std::to_string(src.total) : std::to_string(src.count);
+            const int room = edpages::kHalf - 2;     // 2 cells before the next half
+            const std::string title = src.title.substr(0, size_t(std::max(0, room - int(count.size()) - 1)));
+            put(row, col, title, room - int(count.size()));
+            put(row, col + room - int(count.size()), count, int(count.size()));
+            sc.values.push_back({row, col, room, kLibrarySourceRef + first + k, true});
+        }
+    } else {                                         // presets: "nn  name", as the PRESETS area
+        const int src = librarySource();
+        const std::vector<LibraryLink::Entry> list = lib_->entries(src);
+        for (int k = 0; k < kLibraryPerPage && first + k < int(list.size()); ++k) {
+            const int row = k / 2, col = (k % 2) * edpages::kHalf;
+            put(row, col, twoDigits(first + k + 1), 3);
+            put(row, col + 4, list[size_t(first + k)].name, 16);
+            sc.values.push_back({row, col, 4 + 16, kLibraryEntryRef + first + k, true});
+        }
+        const std::vector<LibraryLink::Source> sources = lib_->sources();
+        if (list.empty() && src >= 0 && size_t(src) < sources.size() && sources[size_t(src)].busy)   // being read
+            put(0, 0, sources[size_t(src)].title + "  READING  " + std::to_string(sources[size_t(src)].done) + "/" +
+                      std::to_string(sources[size_t(src)].total), edpages::kCols);
+        // The preset last sent from here is marked (blinks), as the PRESETS area marks the current preset.
+        if (libMarked_ >= first && libMarked_ < first + kLibraryPerPage && src >= 0 && size_t(src) < sources.size() &&
+            sources[size_t(src)].title == libMarkedSource_) {
+            for (const auto& sp : sc.values)
+                if (sp.ref == kLibraryEntryRef + libMarked_) { v.focusRow = sp.row; v.focusCol = sp.col; v.focusLen = sp.len; }
+        }
+    }
+    v.screen = sc;
+}
+
+bool Controller::libraryCommand(const std::string& action, const std::string& text) {
+    if (!lib_) return false;
+    // The five library controls (legend action "library"), from any page: LIBRARY, SAVE, IMPORT, EXPORT, FOLDER.
+    if (action == "library" || (action == "area" && text == "LIBRARY")) {
+        const std::string what = action == "area" ? std::string("LIBRARY") : text;
+        if (what == "LIBRARY") {                     // the source list; from a source's presets, back to it
+            if (!libraryArea()) {
+                for (size_t i = 0; i < areas_.size(); ++i) if (areas_[i].name == "LIBRARY") go(int(i), 0, 0);
+                lib_->open();                        // rescans whenever it is opened
+            }
+            section_ = 0;
+            render();
+        } else if (what == "SAVE") {
+            if (link_.ledMode(kCompareLed) != 0) { libraryNotice("UNSAVED EDITS  SAVE ON THE PANEL FIRST"); render(); }
+            else lib_->save();
+        } else if (what == "EXPORT") lib_->exportMenu();   // Bank 1 or Bank 2: then EXPORT B1 / EXPORT B2
+        else if (what == "EXPORT B1" || what == "EXPORT B2") lib_->exportBank(what == "EXPORT B1" ? 0 : 1);
+        else if (what == "IMPORT") lib_->importFiles();
+        else if (what == "FOLDER") lib_->reveal();
+        return true;
+    }
+    if (!libraryArea()) return false;
+    if (action == "section") {
+        if (text == "SOURCES" || text == "PRESETS") { section_ = text == "SOURCES" ? 0 : 1; render(); }
+        return true;
+    }
+    const int sec = section_ == 1 ? 1 : 0;
+    if (action == "page" || action == "page_prev" || action == "page_next") {
+        const int pages = libraryPages(sec);
+        int& page = libPage_[sec];
+        if (action == "page") { const int n = std::atoi(text.c_str()) - 1; if (n >= 0 && n < pages) page = n; }
+        else if (action == "page_prev") page = std::max(0, page - 1);
+        else page = std::min(pages - 1, page + 1);
+        render();
+        return true;
+    }
+    if (action == "pick") {
+        const int ref = std::atoi(text.c_str());
+        if (ref >= kLibraryEntryRef) {
+            const int e = ref - kLibraryEntryRef, src = librarySource();
+            const std::vector<LibraryLink::Entry> list = lib_->entries(src);
+            if (e < 0 || e >= int(list.size()) || !list[size_t(e)].ready) return true;   // not read yet
+            const std::string num = twoDigits(e + 1), name = list[size_t(e)].name;
+            if (!list[size_t(e)].accepted) { libraryNotice(fitNotice(num, name, " NOT ACCEPTED BY THE OS")); render(); return true; }
+            std::vector<uint8_t> m;
+            // Into the OS's MIDI input, nothing else: no program change, no write to stored memory. The OS puts it in
+            // Compare, as for a single-preset dump over MIDI.
+            if (!open_ || !link_.running() || !lib_->message(src, e, m) || !link_.send(m)) return true;
+            libMarkedSource_ = lib_->sources()[size_t(src)].title;
+            libMarked_ = e;
+            libraryNotice(fitNotice(num, name, "IN COMPARE  SAVE ON PANEL TO KEEP"));
+            render();
+        } else if (ref >= kLibrarySourceRef) {       // a source: open it in PRESETS
+            const std::vector<LibraryLink::Source> list = lib_->sources();
+            const int i = ref - kLibrarySourceRef;
+            if (i < 0 || i >= int(list.size())) return true;
+            if (list[size_t(i)].title != libSource_) libPage_[1] = 0;
+            libSource_ = list[size_t(i)].title;
+            libSourceIndex_ = i;
+            section_ = 1;
+            render();
+        }
+        return true;
+    }
+    // Values to focus, drag or type do not exist here; Follow and the rest work as elsewhere.
+    return action == "focus" || action == "drag_begin" || action == "drag" || action == "drag_end" || action == "type";
+}
+
 void Controller::tick(double nowMs) {
     now_ = nowMs;
     std::vector<uint8_t> m;
     bool got = false;
     while (link_.popReply(m)) { handleReply(m); got = true; }
+    if (open_ && lib_) {                             // the library's messages (row 4, 3 s each, in order) and lists
+        std::string t;
+        while (lib_->takeNotice(t)) libNotices_.push_back(t);
+        if (libNoticeUntil_ >= 0 && now_ >= libNoticeUntil_) { libNoticeUntil_ = -1; got = true; }
+        if (libNoticeUntil_ < 0 && !libNotices_.empty()) {
+            libraryNotice(libNotices_.front());
+            libNotices_.erase(libNotices_.begin());
+            got = true;
+        }
+        if (lib_->serial() != libSerial_) { libSerial_ = lib_->serial(); got = true; }
+    }
     if (!open_ || !link_.running()) { if (got) render(); return; }
 
     if (!wavesRequested_ && currentArea() && currentArea()->name == "OSC") readDue_ = readDue_ < 0 ? now_ : readDue_;
@@ -2039,24 +2269,51 @@ void Controller::tick(double nowMs) {
     const bool quiet = pending_.empty() && pendingArp_.empty() && !jobActive_ && rmw_.empty() && !modPending_ && !copying();
     if (readBackAt_ >= 0 && now_ >= readBackAt_ && quiet && dragRef_ < 0) { readBackAt_ = -1; readPage(); }
 
-    // Names for the ARP area: the pattern shown, and the arp presets for the right-click list (a few per tick, only
-    // once the page's own reads are answered, so they never hold up a page).
+    // Names for the ARP area: the pattern, riff and feel shown (each number once), and the arp presets for the arp
+    // preset field and its right-click list (one at a time, only once the page's own reads are answered, so they never
+    // hold up a page).
     if (currentArea() && currentArea()->name == "ARP" && quiet) {
         for (const edfields::Field& f : arp_) {
             int64_t raw;
-            if (f.kind != Kind::Pattern || !liveValid_ || !edfields::rawOf(f, live_.data(), live_.size(), edfields::kArpBlock, raw)) continue;
-            if (raw != edfields::kNone16 && !patternRequested_.count(int(raw)) && link_.send(edproto::partialRead({edproto::kArpPattern, uint16_t(raw), 0, 0, 8, 16}))) {
-                patternRequested_.insert(int(raw));
+            if (f.nameType < 0 || !liveValid_ || !edfields::rawOf(f, live_.data(), live_.size(), edfields::kArpBlock, raw)) continue;
+            const std::pair<int, int> key{f.nameType, int(raw)};
+            if (raw != edfields::kNone16 && !objNamesRequested_.count(key) &&
+                link_.send(edproto::partialRead({uint8_t(f.nameType), uint16_t(raw), 0, 0, 8, 16}))) {
+                objNamesRequested_.insert(key);
                 ++outstanding_;
                 lastSendAt_ = now_;
             }
         }
-        // (not while the OS leaves requests unanswered, e.g. in its demo: a request is never repeated every tick)
-        for (int i = 0; i < 2 && outstanding_ == 0 && !unanswered_ && arpNamesRequested_ < edfields::kArpPresets; ++i) {
-            if (!link_.send(edproto::partialRead({edproto::kArpPreset, uint16_t(arpNamesRequested_), 0, 0, 8, 16}))) break;
-            ++arpNamesRequested_;
-            ++outstanding_;
-            lastSendAt_ = now_;
+        if (arpNameOut_ >= 0 && now_ - arpNameAt_ > kReplyTimeoutMs) {   // no answer for this arp preset
+            if (arpNameOut_ > 0 && size_t(arpNameOut_) == arpPresetNames_.size()) arpProbeDue_ = true;
+            else arpNamesWait_ = true;
+            arpNameOut_ = -1;
+        }
+        if (arpProbe_ >= 0 && now_ - arpProbeAt_ > kReplyTimeoutMs) {   // nor for the probe: the OS answers nothing now
+            arpProbe_ = -1;
+            arpNamesWait_ = true;
+        }
+        if (arpProbeDue_ && arpProbe_ < 0 && !arpPresetNames_.empty()) {   // the probe: once per arp preset not answered
+            const int n = int(arpPresetNames_.size()) - 1;
+            arpProbeDue_ = false;
+            if (link_.send(edproto::partialRead({edproto::kArpPreset, uint16_t(n), 0, 0, 8, 16}))) {
+                arpProbe_ = n;
+                arpProbeAt_ = now_;
+                ++outstanding_;
+                lastSendAt_ = now_;
+            }
+        }
+        // (not again until the OS answers something, e.g. after its demo: a request is never repeated every tick; a
+        // pattern, riff or feel the OS gives no name for does not hold the list up)
+        if (arpPresetCount_ < 0 && arpNameOut_ < 0 && arpProbe_ < 0 && !arpProbeDue_ && outstanding_ == 0 && !arpNamesWait_ &&
+            arpPresetNames_.size() <= 0x3FFF) {
+            const int n = int(arpPresetNames_.size());
+            if (link_.send(edproto::partialRead({edproto::kArpPreset, uint16_t(n), 0, 0, 8, 16}))) {
+                arpNameOut_ = n;
+                arpNameAt_ = now_;
+                ++outstanding_;
+                lastSendAt_ = now_;
+            }
         }
     }
     // PRESETS: every stored preset's name once (to find the current preset by its name), a few per tick.

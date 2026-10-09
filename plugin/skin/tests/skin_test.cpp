@@ -459,6 +459,24 @@ int main() {
         click(v, 1601 + 10, 848 + 55 + 5);                                       // an indicator: not a control
         v.evalForTest("editor.click('page', '3')");
         CHECK((p3.ed.commands == std::vector<std::string>{"area SOUND", "toggle_follow FOLLOW", "page 3"}));
+        // The library controls (v0.8.3 step 2): available on any page once there is a library; LIBRARY lit while the
+        // open editor shows the library, the actions never lit; a click sends action and value.
+        CHECK(!avail("lSave") && !avail("lLibrary") && !avail("lLibMain"));   // no library
+        st.areas.insert("LIBRARY"); st.open = true; ++st.serial;
+        v.update(t += 0.02);
+        CHECK(avail("lSave") && avail("lExport") && avail("lLibrary") && !lit("lLibrary") && !lit("lSave"));   // on SOUND
+        CHECK(avail("lLibMain") && !lit("lLibMain"));
+        st.area = "LIBRARY"; st.section = "SOURCES"; st.sections.clear(); ++st.serial;
+        v.update(t += 0.02);
+        CHECK(lit("lLibrary") && lit("lLibMain") && !lit("lSave"));
+        p3.ed.commands.clear();
+        click(v, 400 + 10, 848 + 91 + 5);
+        click(v, 460 + 10, 848 + 91 + 5);
+        click(v, 1600 + 10, 600 + 5);                                            // the main document's LIBRARY
+        CHECK((p3.ed.commands == std::vector<std::string>{"library SAVE", "library EXPORT", "library LIBRARY"}));
+        st.area = "SOUND"; st.section = "FILTER"; st.areas.erase("LIBRARY"); st.sections = {"FILTER", "WAVE"}; st.open = false; ++st.serial;
+        v.update(t += 0.02);
+        p3.ed.commands.clear();
         // Values on the glass (spans from the editor): drag (1 step per 4 dp, Shift per 16 dp), double-click for typed
         // entry, a name to pick; right-click asks which value is under the mouse. The wheel never changes a value.
         st.rows[1] = "01  Big Pad" + std::string(39, ' ');
@@ -503,6 +521,16 @@ int main() {
         CHECK(std::isinf(v.nextWake()));
         v.setEditorVisible(false);
         CHECK(!v.editorVisible());
+        // With the editor unit closed, the main document's library control still works: avail, lit, clicks.
+        st.areas.insert("LIBRARY"); st.area = "LIBRARY"; st.open = false; ++st.serial;
+        v.update(t += 0.02);
+        CHECK(avail("lLibMain") && !lit("lLibMain"));                           // closed: the library is not shown
+        p3.ed.commands.clear();
+        click(v, 1600 + 10, 600 + 5);
+        CHECK((p3.ed.commands == std::vector<std::string>{"library LIBRARY"}));  // the plugin opens the editor on it
+        st.open = true; ++st.serial;
+        v.update(t += 0.02);
+        CHECK(lit("lLibMain"));
     }
     // A broken editor file: logged; the panel still loads, without an editor unit.
     {
@@ -537,6 +565,10 @@ int main() {
         legendState(s, "page_prev", "", l, a); CHECK(!l && !a);
         legendState(s, "label", "PAGE", l, a); CHECK(l && !a);
         legendState(s, "area", "ARP", l, a); CHECK(!l && !a);
+        legendState(s, "library", "SAVE", l, a); CHECK(!l && !a);       // LIBRARY's actions: only in that area
+        s.areas.insert("LIBRARY"); s.area = "LIBRARY";
+        legendState(s, "library", "FOLDER", l, a); CHECK(!l && a);
+        legendState(s, "area", "LIBRARY", l, a); CHECK(l && a);
     }
 
     std::printf("skin_test: %s\n", failures ? "FAILED" : "passed");

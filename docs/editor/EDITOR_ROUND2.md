@@ -122,11 +122,12 @@ Labels are the OS's own 4-character codes, read at runtime from the addresses in
 | Tch (0x88898) | 384 | 1 | 0 = off, 1–127 | OFF / number |
 | ndur (0x8886E) | 385 | 1 | 1–255 | shown = raw × 100 / 256 (the OS's own formula, traced); editing shown d stores the smallest raw that shows d |
 | ntLt (0x8887C) | 386 | 1 | 0–99 | number |
-| FEEL (0x88892) | 392 | 2 | 0xFFFF off, else a number | display-only (formatting not decoded) |
+| FEEL (0x88892) | 392 | 2 | 0xFFFF off, else a number | OFF / the number, with the feel's name since v0.8.3.5 (type 10; ARP_ROUND.md) |
 | nrES (0x8881E) | 402 | 4 | 1536, 768, 384, 192, 96, 48, 32, 64, 128, 256, 512, 1024 | the OS's names in its pointer-table order (0x8876C): whole, half, quarter, 8th, 16th, 32nd, then the triplets 32nd … whole. 384 ticks per quarter (factory presets: 96 = 16th in 58 of 64) |
 | t### tempo (0x88812) | 406 | 4 | 25–320 | `t%3d` |
 | arp pattern | 390 | 2 | arp pattern number, 0xFFFF none | display-only: the pattern's name (SysEx read, type 9, number n, offset 8, 16 characters) |
-| PrSt (0x88882) | — | — | the OS's current arp preset, 0x0BE01880 (32-bit, −1 = " Snd") | " Snd" (0x88888) or the number and name (`AP%02d`, 0x8889E; names: type 8, number n, offset 8); drag / typed / right-click list (121 arp presets) step to it through the panel's −/No +/Yes buttons (§1b) |
+| riff (v0.8.3.5) | 394 | 2 | riff number, 0xFFFF none | display-only: the riff's name (type 11, read like the pattern's; ARP_ROUND.md) |
+| PrSt (0x88882) | — | — | the OS's current arp preset, 0x0BE01880 (32-bit, −1 = " Snd") | " Snd" (0x88888) or the OS's own number (from 0, since v0.8.3.5) and name (`AP%02d`, 0x8889E; names: type 8, number n, offset 8); drag / typed / right-click list (the arp presets up to where the OS stops answering name reads, ARP_ROUND.md) step to it through the panel's −/No +/Yes buttons (§1b) |
 | arp settings name | 334 | 16 | text | display-only |
 
 ## 4. Follow on panel knobs
@@ -160,7 +161,7 @@ The rack skin is not in the repo: the project chat adds the call to the rack ski
   panel knob moves; dump-based fields coalesced as in §1) and the final value on release. The mouse wheel never changes
   values.
 - Double-click: typed entry (Enter sends, Esc cancels). Right-click: the OS's value or name list (waves by number and
-  name; on the arp page's PrSt field, the 121 arp presets), and revert to the stored value.
+  name; on the arp page's PrSt field, the arp presets), and revert to the stored value.
 - Every edit: clamp to the field's range, send, read back, show what the OS holds. Display-only fields ignore drags.
 - Arp: Lo n / Hi n write both pairs; setting an interval clears the others; on/off and keyboard are shown only.
 

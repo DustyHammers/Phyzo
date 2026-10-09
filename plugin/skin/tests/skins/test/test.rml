@@ -19,5 +19,6 @@
 	<vfdigit id="d2" pos="2"/>
 	<vfdigit id="d3" pos="3"/>
 	<div id="shown" onshow="shownCount = (shownCount or 0) + 1"/>
+	<legend id="lLibMain" action="library" value="LIBRARY"/>
 </body>
 </rml>

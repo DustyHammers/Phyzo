@@ -13,6 +13,12 @@
 //    step (40 ms apart), reading the value back until it lands. Safety: -/No and +/Yes are pressed only right after the
 //    arp-control variable was read as the wanted control. Arp on/off and keyboard: their own button, pressed once.
 //  - PRESETS: a click on a name sends its program change; the current preset is marked (focused).
+//  - LIBRARY (v0.8.3 step 2; docs/editor/LIBRARY.md): the preset library's sources and their presets, from
+//    LibraryLink. A click on a preset sends its stored single-preset message, and nothing else, into the OS's MIDI
+//    input: the OS puts it in Compare, as for a single-preset dump over MIDI. Five controls (legend action "library"),
+//    from any page: LIBRARY (the source list; again from a source's presets: back to the list), SAVE (refused while
+//    the Compare LED is lit), IMPORT, EXPORT (a menu: Bank 1 or Bank 2) and FOLDER. Their messages replace row 4 for
+//    3 seconds on whatever page shows.
 //  - INSERT and REVERB (docs/editor/EFFECTS_EDITOR_SPEC.md, round 3): effect parameter values by a raw-memory write of
 //    the word into the edit buffer, then the OS's effect parameter message; the algorithm by NRPN MSB 1 LSB 30, 31,
 //    then 32 = 0; variations by NRPN LSB 32 / 33; the insert modulation as one 10-byte partial write of the edit
@@ -62,6 +68,24 @@ struct Link {
     virtual bool panelButtonHeld() const = 0;        // a panel button is down now (latched by the skin, or not released)
 };
 
+// The preset library as the editor sees it (the plugin wraps library::Service and its file dialogs). Message thread.
+struct LibraryLink {
+    struct Source { std::string title; size_t count = 0, done = 0, total = 0; bool busy = false; };
+    struct Entry { std::string name; bool ready = false, accepted = true; };   // ready: read by the OS
+    virtual ~LibraryLink() = default;
+    virtual void open() = 0;                         // the area was opened: rescan, make or read what is missing
+    virtual uint64_t serial() const = 0;             // changes whenever the lists below change
+    virtual std::vector<Source> sources() const = 0;
+    virtual std::vector<Entry> entries(int source) const = 0;
+    virtual bool message(int source, int entry, std::vector<uint8_t>& out) const = 0;   // the stored single-preset message
+    virtual bool takeNotice(std::string& text) = 0;  // the library's messages, in order
+    virtual void save() = 0;                         // SAVE (the Compare LED was checked here)
+    virtual void exportMenu() = 0;                   // EXPORT: the menu of the two banks (its choice: EXPORT B1 / B2)
+    virtual void exportBank(int bank) = 0;           // EXPORT B1 (0) / B2 (1): then the save dialog
+    virtual void importFiles() = 0;                  // IMPORT: the open dialog
+    virtual void reveal() = 0;                       // FOLDER: Library/ in the file browser
+};
+
 // What the skin shows (a copy; legends by their text as in docs/editor/EDITOR_PANEL_LAYOUT.json).
 struct View {
     edpages::Screen screen;                          // screen.values: every value's cells and reference (clicks)
@@ -107,10 +131,13 @@ public:
     // The performance knobs' labels (perf1-perf5, at most 4 characters; empty: PERF1-PERF5).
     void setKnobLabels(const std::array<std::string, 5>& labels);
     void setBaseChannel(int channel) { channel_ = channel & 0x0F; }   // NRPN and program changes (0-15)
+    // The preset library: adds the LIBRARY area (null: none). The link outlives the controller's use of it.
+    void setLibrary(LibraryLink* library);
     void setOpen(bool open);
     bool isOpen() const { return open_; }
     // Legends: action "area" | "section" | "target" | "page" | "page_prev" | "page_next" | "toggle_follow" with the
-    // legend's text (as in the layout table). The glass (text = a value's reference from View::screen.values):
+    // legend's text (as in the layout table); "library" with LIBRARY, SAVE, IMPORT, EXPORT or FOLDER (and EXPORT B1 /
+    // EXPORT B2, the EXPORT menu's choices), from any page. The glass (text = a value's reference from View::screen.values):
     // "focus", "pick" (a name to pick: its program change), "drag_begin", "drag" (text = steps from the start),
     // "drag_end", "type" (typed entry). Unknown or unavailable targets do nothing.
     void command(const std::string& action, const std::string& text);
@@ -132,6 +159,11 @@ public:
     static constexpr double kReadBackMs = 60;        // read the page back this long after the last write
     static constexpr double kOwnLedsMs = 1000;       // LED messages this soon after a write are the edit's own
     static constexpr int kPresets = 64, kPresetsPerPage = 8;
+    // LIBRARY: 8 entries per page; a message on row 4 for this long; the references of its picks on the screen.
+    static constexpr int kLibraryPerPage = 8;
+    static constexpr double kLibraryNoticeMs = 3000;
+    static constexpr int kLibrarySourceRef = 1 << 20, kLibraryEntryRef = 1 << 21;
+    static constexpr int kCompareLed = 0x16;         // lit: unsaved edits, or a received preset in Compare
     static constexpr int kDragDpPerStep = 4, kFineDragDpPerStep = 16;
     // The rebuild hold (docs/editor/ROUND3_ANSWERS.md 4): after the modulation block write or NRPN LSB 30-33 the OS
     // rebuilds the running effects and loses effect edits from the sound for about 280 ms; every effect send waits this
@@ -144,6 +176,7 @@ public:
     std::vector<std::vector<uint8_t>> pageReadsForTest() const { return pageReads(); }
     int refForTest(char kind, int field) const { return refOf(kind, field); }
     int focusForTest() const { return focus_; }
+    bool rangeForTest(int ref, int64_t& lo, int64_t& hi) const { return rangeOf(ref, lo, hi); }
     bool arpBusyForTest() const { return jobActive_ || !pendingArp_.empty(); }
     // The OS's panel mode read before the last arp edit pressed any button (-1: none yet). After an arp edit the panel
     // stays in the arp menu; the editor does not try to return it (docs/editor/ROUND2_REVIEW.md, to be settled).
@@ -178,6 +211,13 @@ private:
 
     void build();
     void render();
+    // LIBRARY
+    bool libraryArea() const;
+    void renderLibrary(View& v);
+    bool libraryCommand(const std::string& action, const std::string& text);
+    void libraryNotice(const std::string& text);     // row 4 for kLibraryNoticeMs, from now
+    int libraryPages(int section) const;
+    int librarySource() const;                       // the open source's index in the current list (-1: none)
     void readPage();
     std::vector<std::vector<uint8_t>> pageReads() const;
     ObjKey keyFor(char kind) const;
@@ -199,6 +239,10 @@ private:
     bool rangeOf(int ref, int64_t& lo, int64_t& hi) const;
     bool editable(int ref) const;
     std::string textOf(int ref, int64_t d) const;
+    // An ARP field's value as shown: the arp preset with its name, the feel's number with its name.
+    std::string arpText(const edfields::Field& f, int64_t d) const;
+    std::string objName(int type, int64_t number) const;   // trimmed; empty if not read (or the OS gave none)
+    int64_t lastArpPreset() const;                   // the last arp preset offered (-1: none)
     bool parseTyped(int ref, const std::string& s, int64_t& d) const;
     std::vector<Choice> listOf(int ref) const;       // the OS's values for a field with a list (empty: none)
 
@@ -269,6 +313,16 @@ private:
     double fxHoldUntil_ = -1e9;                      // effect sends wait until then (the rebuild hold)
 
     Link& link_;
+    LibraryLink* lib_ = nullptr;
+    std::string libSource_;                          // the open source (by title: positions change on a rescan)
+    int libSourceIndex_ = 0;                         // where it was
+    int libPage_[2] = {0, 0};                        // SOURCES, PRESETS
+    std::string libMarkedSource_;                    // the last preset sent from here (marked)
+    int libMarked_ = -1;
+    std::string libNoticeText_;                      // row 4 until libNoticeUntil_
+    double libNoticeUntil_ = -1;
+    std::vector<std::string> libNotices_;            // the library's messages waiting for row 4
+    uint64_t libSerial_ = 0;
     edtables::OsTables tables_;
     std::vector<edfields::Field> common_, arp_;
     std::vector<FxRef> fx_;
@@ -293,10 +347,18 @@ private:
     std::array<std::string, kPresets> presetNames_;
     std::array<uint8_t, edfields::kArpBlockSize> live_{};   // the live arp state
     bool liveValid_ = false;
-    std::map<int, std::string> patternNames_;        // arp pattern number -> name
-    std::set<int> patternRequested_;
-    std::array<std::string, edfields::kArpPresets> arpPresetNames_;
-    int arpNamesRequested_ = 0;
+    // Names of the OS objects the ARP fields refer to (note pattern, feel, riff): by (type, number), each read once.
+    std::map<std::pair<int, int>, std::string> objNames_;
+    std::set<std::pair<int, int>> objNamesRequested_;
+    // The arp presets' names, read one at a time from 0 while the ARP area shows. When the OS does not answer one, a
+    // read of the last answered one (the probe) shows whether it answers at all: if it does, the arp presets end there
+    // and no name past them is read; if not (e.g. its demo), the read is tried again after the OS's next answer.
+    std::vector<std::string> arpPresetNames_;        // arp presets 0 .. size - 1, answered
+    int arpNameOut_ = -1, arpProbe_ = -1;            // the read out (-1: none) and when it was sent
+    double arpNameAt_ = 0, arpProbeAt_ = 0;
+    bool arpProbeDue_ = false;
+    bool arpNamesWait_ = false;                      // no answer to the last one: wait for any answer of the OS
+    int arpPresetCount_ = -1;                        // the number of arp presets, once known
     bool wavesRequested_ = false;
 
     // editing

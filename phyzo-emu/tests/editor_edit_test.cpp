@@ -87,32 +87,50 @@ void testFields() {
     CHECK(c[16].label == "P" && c[16].offset == 34 && c[16].nrpnLsb == 7 && c[18].label == "PERF3" && c[20].offset == 50 && c[20].nrpnLsb == 21);
     const ArpText t = arpText();
     const std::vector<edfields::Field> a = arpFields(t);
-    CHECK(a.size() == 22);
-    CHECK(a[0].label == "ARP" && a[0].kind == Kind::RuntimeFlag && a[0].flag == 0 && a[0].button == kBtnArpOnOff && a[0].editable);
-    CHECK(a[2].label == "KBD" && a[2].kind == Kind::RuntimeFlag && a[2].flag == 1 && a[2].button == kBtnArpKeyboard);
-    CHECK(a[1].label == "HELd" && a[1].arpControl == 16 && a[16].arpControl == 3 && a[17].arpControl == 0 && a[9].arpControl == 1 && a[10].arpControl == 1);
-    CHECK(a[4].arpControl == 6 && a[8].arpControl == 10 && a[11].arpControl == 11 && a[14].arpControl == 4 && a[18].arpControl == 5 && a[19].arpControl == 2);
-    for (const edfields::Field& f : a) CHECK(f.editable == (f.kind != Kind::Pattern && f.kind != Kind::Text));   // pattern and name: display only
+    // The page order (owner-approved mockup, v0.8.3.5): the Arp Mode button's order (PrSt, nrES, ndur, FEEL, the
+    // intervals, Lo n, Hi n, tch, CEnt, ntLt, HELd) with the pattern and the riff after the preset's row, then the
+    // other arp buttons and the name. The labels as before; RIFF is the only new one.
+    std::vector<std::string> labels;
+    for (const edfields::Field& f : a) labels.push_back(f.label);
+    CHECK((labels == std::vector<std::string>{"PrSt", "nrES", "ndur", "PATTERN", "RIFF", "FEEL", "-3rd", "3rd", "4th", "5th",
+                                              "Oct", "Lo n", "Hi n", "Tch", "CEnt", "ntLt", "HELd", "ARP", "KBD", "TMPO", "UP",
+                                              "DOWN", "NAME"}));
+    const int controls[23] = {2, 3, 4, -1, -1, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, -1, -1, 0, 1, 1, -1};
+    for (size_t i = 0; i < a.size() && i < 23; ++i) CHECK(a[i].arpControl == controls[i]);
+    for (const edfields::Field& f : a)                                          // two columns: preset, pattern, riff, feel
+        CHECK(f.span == (f.kind == Kind::PresetAction || f.kind == Kind::Pattern || f.kind == Kind::Feel ? 2 : 1));
+    CHECK(a[17].label == "ARP" && a[17].kind == Kind::RuntimeFlag && a[17].flag == 0 && a[17].button == kBtnArpOnOff && a[17].editable);
+    CHECK(a[18].label == "KBD" && a[18].kind == Kind::RuntimeFlag && a[18].flag == 1 && a[18].button == kBtnArpKeyboard);
+    for (const edfields::Field& f : a) CHECK(f.editable == (f.kind != Kind::Pattern && f.kind != Kind::Text));   // pattern, riff, name: display only
     CHECK(a[11].label == "Lo n" && a[11].offset == 370 && a[11].mirror == 372 && a[12].mirror == 373);
+    // The pattern, the riff and the feel: 16-bit numbers in the arp block, named by the OS's objects 9, 11 and 10.
+    CHECK(a[3].kind == Kind::Pattern && a[3].offset == 390 && a[3].size == 2 && a[3].nameType == edproto::kArpPattern);
+    CHECK(a[4].kind == Kind::Pattern && a[4].offset == 394 && a[4].size == 2 && a[4].nameType == edproto::kArpRiff && a[4].live());
+    CHECK(a[5].kind == Kind::Feel && a[5].offset == 392 && a[5].size == 2 && a[5].nameType == edproto::kArpFeel);
+    CHECK(edproto::kArpFeel == 10 && edproto::kArpRiff == 11);
     // Conversions
-    edfields::Field dur = a[14];
+    edfields::Field dur = a[2];
     CHECK(dur.label == "ndur" && toRaw(dur, 50) == 128 && toDomain(dur, 128) == 50 && toRaw(dur, 0) == 1 && toDomain(dur, 255) == 99);
     for (int s = 0; s <= 99; ++s) CHECK(toDomain(dur, toRaw(dur, s)) == s);   // the smallest raw that shows s
-    edfields::Field down = a[10];
+    edfields::Field down = a[21];
     uint8_t buf[64] = {};
     store(down, toRaw(down, 2), buf, 64, kArpBlock);
     int64_t raw;
     CHECK(buf[368 - 350] == 0xE8 && rawOf(down, buf, 64, kArpBlock, raw) && raw == -24 && toDomain(down, raw) == 2);
     CHECK_EQ(format(down, 2, t), std::string("Oct2"));
-    CHECK(format(a[2], 1, t) == "On" && format(a[0], 0, t) == "OFF" && toDomain(a[0], 2) == 1);
-    edfields::Field res = a[16];
+    CHECK(format(a[18], 1, t) == "On" && format(a[17], 0, t) == "OFF" && toDomain(a[17], 2) == 1);
+    edfields::Field res = a[1];
     CHECK(res.kind == Kind::Resolution && toDomain(res, 96) == 4 && toRaw(res, 4) == 96 && format(res, 4, t) == "16th" && toDomain(res, 1000) == -1);
     store(res, 384, buf, 64, kArpBlock);
     CHECK(buf[52] == 0 && buf[53] == 0 && buf[54] == 0x01 && buf[55] == 0x80);                  // 4 bytes, big-endian
-    CHECK_EQ(format(a[17], 120, t), std::string("t120"));
-    CHECK(toDomain(a[18], kNone16) == -1 && toRaw(a[18], -1) == kNone16 && format(a[18], -1, t) == "OFF" && format(a[18], 3, t) == "3");
-    CHECK(a[19].kind == Kind::PresetAction && format(a[19], -1, t) == "Snd" && format(a[19], 0, t) == "AP01" && a[19].lo == -1 && a[19].hi == 120);
-    CHECK(toDomain(a[19], 0xFFFFFFFF) == -1 && toDomain(a[19], 22) == 22);
+    CHECK_EQ(format(a[19], 120, t), std::string("t120"));
+    // The feel: value, range and conversions as before (its name is added by the controller).
+    CHECK(a[5].lo == -1 && a[5].hi == 999 && a[5].editable);
+    CHECK(toDomain(a[5], kNone16) == -1 && toRaw(a[5], -1) == kNone16 && format(a[5], -1, t) == "OFF" && format(a[5], 3, t) == "3");
+    // The arp preset: the OS's own number (it counts from 0) through the OS's format.
+    CHECK(a[0].kind == Kind::PresetAction && format(a[0], -1, t) == "Snd" && format(a[0], 0, t) == "AP00" && a[0].lo == -1);
+    CHECK(format(a[0], 1, t) == "AP01" && arpPresetLabel(t, 117) == "AP117" && arpPresetLabel(t, 7) == "AP07");
+    CHECK(toDomain(a[0], 0xFFFFFFFF) == -1 && toDomain(a[0], 22) == 22);
     std::printf("editor_edit_test: COMMON and ARP fields\n");
 }
 
@@ -132,6 +150,8 @@ struct FakeLink : editor::Link {
         int bankSwitches = 0;                        // the bank button outside the arp menu: the bank switched
         Bytes live = Bytes(64, 0);
         int32_t preset = -1;
+        int presets = 12;                            // the OS's arp presets (0 .. presets - 1): it answers their names only
+        int demoFrom = -1;                           // a name read of this arp preset or later starts the OS's demo
         uint8_t flags[2] = {0, 0};
         int blindSteps = 0;                          // -/No or +/Yes outside the arp menu (would step the main preset)
         std::vector<int> stepVars;                   // the variable at every -/No / +/Yes
@@ -146,7 +166,7 @@ struct FakeLink : editor::Link {
                 live[17] = uint8_t(up); live[18] = uint8_t(int8_t(-up));
                 break;
             }
-            case 2: preset = std::max(-1, std::min(120, preset + dir)); break;
+            case 2: preset = std::max(-1, std::min(presets - 1, preset + dir)); break;
             case 3: {
                 int i = 0;
                 while (i < 12 && edfields::kResolutionTicks[i] != u32(52)) ++i;
@@ -224,9 +244,31 @@ struct FakeLink : editor::Link {
     std::map<int, int> ledModes;
     std::array<char, 4> disp{{'P', ' ', '0', '1'}};
     bool demo = false;                               // the OS answers no SysEx at all (its demo mode)
+    // The names the OS gives (16 characters, offset 8) by object type and number: arp presets (type 8, below
+    // arp.presets), note patterns (9), feels (10), riffs (11). None given: no answer, as the OS does past its last one.
+    std::map<std::pair<int, int>, std::string> objNames;
+    static std::string arpPresetName(int n) {        // invented names
+        static const char* const kGreek[6] = {"Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta"};
+        return std::string(kGreek[n % 6]) + " " + std::to_string(n);
+    }
     void setOpen(bool on) override { open = on; }
     bool send(const Bytes& m) override {
         sent.push_back(m);
+        if (arp.demoFrom >= 0 && m.size() > 20 && m[5] == edproto::kPartialRead && addressOf(m).type == edproto::kArpPreset &&
+            addressOf(m).number >= arp.demoFrom)
+            demo = true;
+        if (!demo && arp.on && m.size() > 20 && m[5] == edproto::kPartialRead && addressOf(m).offset == 8 &&
+            addressOf(m).type >= edproto::kArpPreset && addressOf(m).type <= edproto::kArpRiff) {
+            const edproto::Address a = addressOf(m);
+            std::string name;
+            bool given = a.type == edproto::kArpPreset && a.number < arp.presets;
+            if (given) name = arpPresetName(a.number);
+            if (auto it = objNames.find({a.type, a.number}); it != objNames.end()) { name = it->second; given = true; }
+            if (given) {                             // (an empty name: 16 spaces)
+                name.resize(16, ' ');
+                answerData(m, Bytes(name.begin(), name.end()));
+            }
+        }
         if (!demo && arp.on && m.size() > 20 && m[5] == edproto::kPartialRead && addressOf(m).type == edproto::kRawMemory) {
             const edproto::Address a = addressOf(m);
             if (a.offset == edfields::kArpControlVar) answerData(m, {uint8_t(arp.var)});
@@ -570,32 +612,49 @@ void testEditing() {
     live[367 - 350] = 12; live[368 - 350] = uint8_t(-12); live[370 - 350] = 0; live[371 - 350] = 127;
     live[372 - 350] = 0; live[373 - 350] = 127; live[385 - 350] = 128; live[386 - 350] = 0;
     live[392 - 350] = 0xFF; live[393 - 350] = 0xFF; live[390 - 350] = 0x00; live[391 - 350] = 0x05;
+    live[394 - 350] = 0xFF; live[395 - 350] = 0xFF;                            // no riff
+    link.objNames[{edproto::kArpPattern, 5}] = "Theta Run";
     live[402 - 350 + 3] = 96; live[406 - 350 + 3] = 120;
     live[383 - 350] = 0;                                                       // the live on/off byte does not reflect the panel
     link.arp.flags[0] = 1; link.arp.flags[1] = 1;                               // the OS's flags: arp on, keyboard on
     c.command("area", "ARP");
     tick(10);
     tick(10);
+    tick(10);
     v = c.view();
-    CHECK_EQ(v.screen.rowText(0), std::string("ARP  On     HELD OFF      KBD  On     CENT OFF    "));
-    CHECK_EQ(v.screen.rowText(1), std::string("-3RD OFF    3RD  On       4TH  OFF    5TH  OFF    "));
-    CHECK_EQ(v.screen.rowText(2), std::string("OCT  OFF    UP   Oct1     DOWN Oct1   LO N C-1    "));
-    CHECK_EQ(v.screen.rowText(3), std::string("HI N G9     TCH  OFF      NDUR 50     NTLT 0      "));
-    bool patternRead = false;                                                  // the pattern's name is read once
-    for (const Bytes& m : link.sent) patternRead |= m.size() > 6 && m[5] == edproto::kPartialRead && FakeLink::addressOf(m).type == edproto::kArpPattern && FakeLink::addressOf(m).number == 5;
-    CHECK(patternRead);
+    // The owner-approved layout: two pages, the arp preset, pattern, riff and feel two columns wide.
+    CHECK(v.page == 1 && v.pages == 2);
+    CHECK_EQ(v.screen.rowText(0), std::string("PRST Snd                  NRES 16th   NDUR 50     "));
+    CHECK_EQ(v.screen.rowText(1), std::string("PATTERN Theta Run         RIFF NONE               "));
+    CHECK_EQ(v.screen.rowText(2), std::string("FEEL OFF                  -3RD OFF    3RD  On     "));
+    CHECK_EQ(v.screen.rowText(3), std::string("4TH  OFF    5TH  OFF      OCT  OFF    LO N C-1    "));
+    int patternReads = 0;                                                      // the pattern's name is read once
+    for (const Bytes& m : link.sent) patternReads += m.size() > 6 && m[5] == edproto::kPartialRead && FakeLink::addressOf(m).type == edproto::kArpPattern && FakeLink::addressOf(m).number == 5;
+    CHECK(patternReads == 1);
+    c.command("page_next", "");
+    tick(10);
+    tick(10);
+    v = c.view();
+    CHECK(v.page == 2);
+    CHECK_EQ(v.screen.rowText(0), std::string("HI N G9     TCH  OFF      CENT OFF    NTLT 0      "));
+    CHECK_EQ(v.screen.rowText(1), std::string("HELD OFF    ARP  On       KBD  On     TMPO t120   "));
+    CHECK_EQ(v.screen.rowText(2), std::string("UP   Oct1   DOWN Oct1                             "));
+    CHECK(v.screen.rowText(3).rfind("NAME ", 0) == 0);
+    c.command("page_prev", "");
+    tick(10);
     auto runFor = [&](double ms) { for (double t = 0; t < ms; t += 10) tick(10); };
     auto settle = [&]() { for (int i = 0; i < 2000 && c.arpBusyForTest(); ++i) tick(10); tick(10); };   // up to 20 s
     auto lastRelease = [&](int raw) { double at = -1; for (size_t i = 0; i < link.presses.size(); ++i) if (link.presses[i].first == raw && !link.presses[i].second) at = link.pressTimes[i]; return at; };
     auto firstPress = [&](int raw) { for (size_t i = 0; i < link.presses.size(); ++i) if (link.presses[i].first == raw && link.presses[i].second) return link.pressTimes[i]; return -1.0; };
-    const int arpOn = c.refForTest('a', 0), kbd = c.refForTest('a', 2), minus3 = c.refForTest('a', 4), up = c.refForTest('a', 9);
-    const int lo = c.refForTest('a', 11), limit = c.refForTest('a', 15), res = c.refForTest('a', 16), tempo = c.refForTest('a', 17);
-    const int feel = c.refForTest('a', 18), prst = c.refForTest('a', 19), pattern = c.refForTest('a', 20);
+    const int arpOn = c.refForTest('a', 17), kbd = c.refForTest('a', 18), minus3 = c.refForTest('a', 6), up = c.refForTest('a', 20);
+    const int lo = c.refForTest('a', 11), limit = c.refForTest('a', 15), res = c.refForTest('a', 1), tempo = c.refForTest('a', 19);
+    const int feel = c.refForTest('a', 5), prst = c.refForTest('a', 0), pattern = c.refForTest('a', 3), riff = c.refForTest('a', 4);
+    const int centre = c.refForTest('a', 14), touch = c.refForTest('a', 13);
 
     // Resolution 16th -> 32nd: Arp Mode until the variable reads 3, 1.4 s for the OS to show it, then +/Yes once.
     link.presses.clear(); link.pressTimes.clear();
     c.choose(res, 5);
-    CHECK(c.view().screen.rowText(0).find("32nd") == std::string::npos);      // (page 2 shows it)
+    CHECK(c.view().screen.rowText(0).find("NRES 32nd") == 26);                  // its target, shown at once
     settle();
     CHECK(link.arp.live[55] == 48 && link.arp.var == 3);                         // 32nd = 48 ticks
     CHECK(link.pressCount(edfields::kBtnYes) == 1 && link.pressCount(edfields::kBtnNo) == 0 && link.pressCount(edfields::kBtnArpMode) >= 2);
@@ -619,22 +678,26 @@ void testEditing() {
     settle();
     CHECK(link.arp.live[17] == 24 && int8_t(link.arp.live[18]) == -24);
     CHECK(link.pressCount(edfields::kBtnRange) == 1 && link.pressCount(edfields::kBtnYes) == 1 && link.pressCount(edfields::kBtnArpMode) == 0);
+    c.command("page_next", "");                                                // UP and DOWN are on page 2
+    tick(10);
+    tick(10);
     v = c.view();
-    CHECK(v.screen.rowText(2).find("UP   Oct2") != std::string::npos && v.screen.rowText(2).find("DOWN Oct2") != std::string::npos);
-    // The arp preset: " Snd" -> AP05 by +/Yes five times; the list has the preset's own settings and the 121 arp presets.
-    c.command("page_next", "");                                                // PrSt is on page 2: already read on page 1,
-    CHECK(c.view().screen.rowText(0).find("PRST Snd") != std::string::npos);  // so shown the moment the page opens
+    CHECK(v.screen.rowText(2).find("UP   Oct2") == 0 && v.screen.rowText(2).find("DOWN Oct2") == 12);
+    c.command("page_prev", "");
     tick(10);
-    tick(10);
-    CHECK(c.view().screen.rowText(0).find("PRST Snd") != std::string::npos && c.view().screen.rowText(0).find("NRES 32nd") == 0);
+    // The arp preset: " Snd" -> AP04 by +/Yes five times. The list: the preset's own settings, then the OS's arp presets
+    // by the OS's own number (from 0) and name, up to the last one the OS answers a name read for.
+    CHECK(c.view().screen.rowText(0).find("PRST Snd") == 0 && c.view().screen.rowText(0).find("NRES 32nd") == 26);
+    runFor(10000);                                                             // the names, and the end of the list
     const editor::Menu pm = c.menu(prst);
-    CHECK(pm.groups.size() == 7 && pm.groups[0].second.size() == 20 && pm.groups[0].second[0].label == "Snd" && pm.groups[0].second[0].current);
-    CHECK(pm.groups[0].second[1].label == "AP01");
+    CHECK(pm.groups.empty() && pm.items.size() == 13 && pm.items[0].label == "Snd" && pm.items[0].current);
+    CHECK(pm.items[1].label == "AP00 Alpha 0" && pm.items[1].value == 0 && pm.items[12].label == "AP11 Zeta 11");
     link.presses.clear(); link.arp.stepVars.clear();
     c.choose(prst, 4);
     settle();
     CHECK(link.arp.preset == 4 && link.pressCount(edfields::kBtnYes) == 5 && link.arp.blindSteps == 0);
     for (int sv : link.arp.stepVars) CHECK(sv == 2);
+    CHECK(c.view().screen.rowText(0).find("PRST AP04 Epsilon 4") == 0);        // the OS's number and the name
     // Lo n by dragging: the target follows the drag; both key-range pairs (the OS writes them).
     link.presses.clear(); link.arp.stepVars.clear();
     c.command("drag_begin", std::to_string(lo));
@@ -649,15 +712,15 @@ void testEditing() {
     // Begun in the arp menu: the editor stays there (no bank button).
     link.presses.clear();
     link.arp.mode = 0x0C; link.arp.var = 9;
-    c.choose(c.refForTest('a', 13), 30);                                         // tch
+    c.choose(touch, 30);
     settle();
     CHECK(link.arp.live[34] == 30 && link.arp.mode == 0x0C && link.pressCount(edfields::kBtnBank) == 0);
     CHECK(c.panelModeBeforeArpEdit() == 0x0C);
     link.arp.mode = 0x01;
     // A run of edits begun in normal mode: each lands, then the bank button once at the end.
     link.presses.clear();
-    c.choose(c.refForTest('a', 13), 31);
-    c.choose(c.refForTest('a', 3), 1);                                           // CEnt
+    c.choose(touch, 31);
+    c.choose(centre, 1);
     settle();
     CHECK(link.arp.live[34] == 31 && link.arp.live[32] == 1 && link.pressCount(edfields::kBtnBank) == 1 && link.arp.mode == 0x01);
     CHECK(link.presses.size() >= 2 && link.presses[link.presses.size() - 2].first == edfields::kBtnBank);
@@ -665,15 +728,15 @@ void testEditing() {
     link.presses.clear();
     link.arp.mode = 0x02;
     const uint32_t notices = c.noticeSerial();
-    c.choose(c.refForTest('a', 13), 50);
-    c.choose(c.refForTest('a', 3), 0);
+    c.choose(touch, 50);
+    c.choose(centre, 0);
     settle();
     CHECK(link.presses.empty() && link.arp.live[34] == 31 && link.arp.live[32] == 1 && c.noticeSerial() == notices + 1);
     CHECK(c.notice().find("normal mode") != std::string::npos && c.panelModeBeforeArpEdit() == 0x02);
     link.arp.mode = 0x01;
     // The next edit clears the message (an empty text with a new serial: the plugin hides its banner).
     const uint32_t refused = c.noticeSerial();
-    c.choose(c.refForTest('a', 13), 32);
+    c.choose(touch, 32);
     CHECK(c.notice().empty() && c.noticeSerial() == refused + 1);
     settle();
     CHECK(link.arp.live[34] == 32 && c.notice().empty());
@@ -755,16 +818,20 @@ void testEditing() {
     c.choose(kbd, 0);
     settle();
     CHECK(link.arp.flags[1] == 0 && link.pressCount(edfields::kBtnArpKeyboard) == 1 && link.pressCount(edfields::kBtnYes) == 0);
+    c.command("page_next", "");
+    tick(10);
+    tick(10);
+    CHECK(c.view().screen.rowText(1).find("ARP  OFF") == 12 && c.view().screen.rowText(1).find("KBD  OFF") == 26);
     c.command("page_prev", "");
-    tick(10);
-    tick(10);
-    CHECK(c.view().screen.rowText(0).find("ARP  OFF") == 0 && c.view().screen.rowText(0).find("KBD  OFF") != std::string::npos);
-    // Display-only fields (the pattern, the name) ignore drags.
+    // Display-only fields (the pattern, the riff, the name) ignore drags and have no list.
     link.presses.clear();
-    c.command("drag_begin", std::to_string(pattern));
-    c.command("drag", "3");
-    c.command("drag_end", "");
-    runFor(500);
+    for (int ref : {pattern, riff}) {
+        c.command("drag_begin", std::to_string(ref));
+        c.command("drag", "3");
+        c.command("drag_end", "");
+        runFor(500);
+        CHECK(c.menu(ref).items.empty() && c.menu(ref).groups.empty());
+    }
     CHECK(link.presses.empty());
     // Over every arp edit above: the bank never switched, the main preset never stepped.
     CHECK(link.arp.bankSwitches == 0 && link.arp.mainPresetSteps == 0 && link.arp.blindSteps == 0);
@@ -784,20 +851,32 @@ void testEditing() {
 
     // ---- PRESETS: the current preset marked (focused) and its view shown; a click sends the program change; a
     // preset change ends EDITED and revert
+    // Stored presets are numbers 0x40 + n (the user's, as saved); 0x100 + n are the factory copies in the OS image,
+    // which the fake OS names differently: the editor must never show those.
+    CHECK(edproto::kStoredPreset == 0x40 && edproto::kFactoryPreset == 0x100);
     std::string currentName = "Preset 12";
     auto presetName = [](int n) { std::string s = "Preset " + std::to_string(n + 1); s.resize(16, ' '); return s; };
+    int storedReads = 0, otherReads = 0;
     auto answerPresets = [&]() {
         for (const Bytes& m : link.sent) {
             if (!(m.size() > 6 && m[5] == edproto::kPartialRead && FakeLink::addressOf(m).type == edproto::kPreset)) continue;
             const edproto::Address a = FakeLink::addressOf(m);
-            if (a.number >= edproto::kStoredPreset) { const std::string n = presetName(a.number - edproto::kStoredPreset); link.answerData(m, Bytes(n.begin(), n.end())); }
-            else if (a.number == 0 && a.offset == 8) { std::string n = currentName; n.resize(16, ' '); link.answerData(m, Bytes(n.begin(), n.end())); }
+            if (a.number >= edproto::kStoredPreset && a.number < edproto::kStoredPreset + 64) {
+                ++storedReads;
+                const std::string n = presetName(a.number - edproto::kStoredPreset); link.answerData(m, Bytes(n.begin(), n.end()));
+            } else if (a.number >= edproto::kFactoryPreset) {
+                ++otherReads;
+                std::string n = "Factory " + std::to_string(a.number - edproto::kFactoryPreset + 1); n.resize(16, ' ');
+                link.answerData(m, Bytes(n.begin(), n.end()));
+            } else if (a.number == 0 && a.offset == 8) { std::string n = currentName; n.resize(16, ' '); link.answerData(m, Bytes(n.begin(), n.end())); }
+            else ++otherReads;
         }
         link.sent.clear();
     };
     link.sent.clear();
     c.command("area", "PRESETS");
     for (int i = 0; i < 60; ++i) { answerPresets(); tick(20); }
+    CHECK(storedReads >= 64 && otherReads == 0);                               // every name from the stored presets
     v = c.view();
     CHECK(v.area == "PRESETS" && v.page == 2);                                  // preset 12 is on the second view
     CHECK(v.focusRow == 1 && v.focusCol == 25 && v.focusLen == 20);            // marked: "12  Preset 12" blinks
@@ -867,7 +946,7 @@ void testEditing() {
 }
 }  // namespace
 
-// ARP page 2 before the OS's current arp preset is read: a placeholder at once, and not clickable until it is read.
+// The ARP page before the OS's current arp preset is read: a placeholder at once, and not clickable until it is read.
 void testArpPresetPlaceholder() {
     FakeLink link;
     editor::Controller c(link);
@@ -876,10 +955,9 @@ void testArpPresetPlaceholder() {
     double now = 0;
     c.tick(now += 10);
     c.command("area", "ARP");
-    c.command("page_next", "");
     editor::View v = c.view();
-    CHECK(v.screen.rowText(0).find("PRST ...") != std::string::npos);        // shown at once
-    const int prst = c.refForTest('a', 19);
+    CHECK(v.screen.rowText(0).find("PRST ...") == 0);                          // shown at once
+    const int prst = c.refForTest('a', 0);
     bool span = false;
     for (const auto& sp : v.screen.values) span = span || sp.ref == prst;
     CHECK(span);
@@ -902,12 +980,232 @@ void testArpPresetPlaceholder() {
     // Once read: the value, and clickable.
     link.arp.on = true;
     link.arp.preset = 7;
-    c.command("page_prev", "");
     c.command("page_next", "");
+    c.command("page_prev", "");
     for (int i = 0; i < 3; ++i) c.tick(now += 10);
-    CHECK(c.view().screen.rowText(0).find("PRST AP08") != std::string::npos);
-    CHECK(!c.menu(prst).groups.empty());
+    CHECK(c.view().screen.rowText(0).find("PRST AP07") == 0);                  // the OS's own number
+    CHECK(!c.menu(prst).items.empty());
     std::printf("editor_edit_test: ARP preset field: placeholder at once, clickable once read\n");
+}
+
+// v0.8.3.5 (invented names; no OS names or table contents): the riff, the feel's name, the arp presets by the OS's own
+// number, and the arp preset list ending where the OS stops answering name reads.
+void testArpRound() {
+    FakeLink link;
+    editor::Controller c(link);
+    c.setTables(tables());
+    c.setOpen(true);
+    link.clock = nullptr;
+    double now = 0;
+    auto tick = [&](double ms) { now += ms; c.tick(now); };
+    auto runFor = [&](double ms) { for (double t = 0; t < ms; t += 10) tick(10); };
+    auto reread = [&]() { c.command("page_next", ""); runFor(30); c.command("page_prev", ""); runFor(30); };
+    auto settle = [&]() { for (int i = 0; i < 2000 && c.arpBusyForTest(); ++i) tick(10); tick(10); };
+    // Name reads sent so far: object type, number (-1: any), at offset 8.
+    auto reads = [&](uint8_t type, int number) {
+        int n = 0;
+        for (const Bytes& m : link.sent)
+            n += m.size() > 20 && m[5] == edproto::kPartialRead && FakeLink::addressOf(m).type == type &&
+                 FakeLink::addressOf(m).offset == 8 && (number < 0 || FakeLink::addressOf(m).number == number);
+        return n;
+    };
+    auto maxRead = [&](uint8_t type) {
+        int n = -1;
+        for (const Bytes& m : link.sent)
+            if (m.size() > 20 && m[5] == edproto::kPartialRead && FakeLink::addressOf(m).type == type) n = std::max<int>(n, FakeLink::addressOf(m).number);
+        return n;
+    };
+    link.arp.on = true;
+    link.arp.presets = 9;                                                       // this OS: arp presets 0-8
+    Bytes& live = link.arp.live;
+    auto put16 = [&](uint32_t off, int v) { live[off - 350] = uint8_t(v >> 8); live[off - 350 + 1] = uint8_t(v); };
+    put16(390, 0xFFFF);                                                         // no pattern
+    put16(394, 7);                                                              // riff 7
+    put16(392, 3);                                                              // feel 3
+    live[402 - 350 + 3] = 96; live[406 - 350 + 3] = 120; live[385 - 350] = 128;
+    link.objNames[{edproto::kArpRiff, 7}] = "Sigma Riff";
+    link.objNames[{edproto::kArpFeel, 3}] = "Lambda Feel";
+    link.objNames[{edproto::kArpFeel, 5}] = "Mu Feel";
+    link.objNames[{edproto::kArpFeel, 20}] = "";                               // answered, but no name
+    link.arp.preset = 2;
+    c.command("area", "ARP");
+    runFor(200);
+    editor::View v = c.view();
+    CHECK_EQ(v.screen.rowText(0), std::string("PRST AP02 Gamma 2         NRES 16th   NDUR 50     "));
+    CHECK_EQ(v.screen.rowText(1), std::string("PATTERN NONE              RIFF Sigma Riff         "));
+    CHECK_EQ(v.screen.rowText(2).substr(0, 26), std::string("FEEL 3 Lambda Feel        "));
+    // RIFF: display only; its name read once (type 11, number = the value, offset 8, 16 bytes), however often the page
+    // is read; no read for none.
+    const int prst = c.refForTest('a', 0), riff = c.refForTest('a', 4), feel = c.refForTest('a', 5);
+    for (int i = 0; i < 5; ++i) reread();
+    CHECK(reads(edproto::kArpRiff, 7) == 1 && reads(edproto::kArpRiff, -1) == 1 && reads(edproto::kArpPattern, -1) == 0);
+    CHECK(reads(edproto::kArpFeel, 3) == 1);
+    {
+        bool exact = false;
+        for (const Bytes& m : link.sent)
+            exact |= m == edproto::partialRead({edproto::kArpRiff, 7, 0, 0, 8, 16});
+        CHECK(exact);
+    }
+    link.presses.clear();
+    c.command("drag_begin", std::to_string(riff));
+    c.command("drag", "2");
+    c.command("drag_end", "");
+    c.command("type", std::to_string(riff));
+    runFor(500);
+    CHECK(!c.view().typing && c.menu(riff).items.empty() && c.menu(riff).groups.empty() && link.presses.empty());
+    // RIFF none: the pattern's none text; a riff the OS gives no name for: its number (read once all the same).
+    put16(394, 0xFFFF);
+    reread();
+    CHECK_EQ(c.view().screen.rowText(1).substr(26), std::string("RIFF NONE               "));
+    put16(394, 12);
+    reread();
+    runFor(4000);
+    for (int i = 0; i < 3; ++i) reread();
+    CHECK_EQ(c.view().screen.rowText(1).substr(26), std::string("RIFF 12                 "));
+    CHECK(reads(edproto::kArpRiff, 12) == 1);
+    // FEEL: the number and the OS's name; OFF for none; the number alone when the OS has no name (no answer, or an
+    // empty one).
+    put16(392, 0xFFFF);
+    reread();
+    CHECK_EQ(c.view().screen.rowText(2).substr(0, 26), std::string("FEEL OFF                  "));
+    put16(392, 20);
+    reread();
+    runFor(100);
+    CHECK_EQ(c.view().screen.rowText(2).substr(0, 26), std::string("FEEL 20                   "));
+    put16(392, 21);
+    reread();
+    runFor(4000);
+    reread();
+    CHECK_EQ(c.view().screen.rowText(2).substr(0, 26), std::string("FEEL 21                   "));
+    CHECK(reads(edproto::kArpFeel, 20) == 1 && reads(edproto::kArpFeel, 21) == 1);
+    // FEEL's value, range and editing as before: -1 (OFF) to 999, stepped through the panel's buttons.
+    int64_t lo = 0, hi = 0;
+    CHECK(c.rangeForTest(feel, lo, hi) && lo == -1 && hi == 999);
+    put16(392, 3);
+    reread();
+    link.presses.clear();
+    c.choose(feel, 5);
+    settle();
+    CHECK(live[42] == 0 && live[43] == 5 && link.pressCount(edfields::kBtnYes) == 2 && link.arp.blindSteps == 0);
+    runFor(100);
+    CHECK_EQ(c.view().screen.rowText(2).substr(0, 26), std::string("FEEL 5 Mu Feel            "));
+    CHECK(c.menu(feel).revert && c.menu(feel).revertLabel == "3 Lambda Feel");
+    // The arp presets: every name read once from 0; the OS answers none for 9, and still answers 8 (the probe), so the
+    // list ends at 8 and no name past 9 is ever asked for, however long the page stays open.
+    CHECK(reads(edproto::kArpPreset, 9) == 1 && reads(edproto::kArpPreset, 8) == 2 && maxRead(edproto::kArpPreset) == 9);
+    for (int n = 0; n < 8; ++n) CHECK(reads(edproto::kArpPreset, n) == 1);
+    for (int i = 0; i < 10; ++i) { reread(); runFor(1000); }
+    CHECK(reads(edproto::kArpPreset, -1) == 11 && maxRead(edproto::kArpPreset) == 9);
+    CHECK(c.rangeForTest(prst, lo, hi) && lo == -1 && hi == 8);
+    const editor::Menu pm = c.menu(prst);
+    CHECK(pm.items.size() == 10 && pm.items[0].label == "Snd" && pm.items[1].label == "AP00 Alpha 0" &&
+          pm.items[3].label == "AP02 Gamma 2" && pm.items[3].current && pm.items[9].label == "AP08 Gamma 8");
+    // Arp presets past the end cannot be chosen, dragged to or typed: the edit stops at the last one.
+    link.presses.clear();
+    c.choose(prst, 50);
+    settle();
+    CHECK(link.arp.preset == 8 && link.pressCount(edfields::kBtnYes) == 6);
+    CHECK(c.view().screen.rowText(0).find("PRST AP08 Gamma 8") == 0);
+    std::printf("editor_edit_test: ARP round: riff, feel names, arp preset numbering, list end (%d name reads)\n",
+                reads(edproto::kArpPreset, -1));
+
+    // The OS stops answering anything (its demo) just as the names are read: no end is taken from that. The probe
+    // gets no answer either, nothing is repeated every tick, and the names go on once the OS answers again.
+    FakeLink l2;
+    editor::Controller c2(l2);
+    c2.setTables(tables());
+    c2.setOpen(true);
+    l2.arp.on = true;
+    l2.arp.presets = 9;
+    l2.arp.demoFrom = 4;
+    now = 0;
+    c2.command("area", "ARP");
+    for (int i = 0; i < 1000; ++i) c2.tick(now += 10);                         // 10 s
+    auto reads2 = [&](int number) {
+        int n = 0;
+        for (const Bytes& m : l2.sent)
+            n += m.size() > 20 && m[5] == edproto::kPartialRead && FakeLink::addressOf(m).type == edproto::kArpPreset &&
+                 (number < 0 || FakeLink::addressOf(m).number == number);
+        return n;
+    };
+    CHECK(reads2(4) == 1 && reads2(3) == 2 && reads2(-1) == 6);                 // 0-4 once, the probe (3) once
+    CHECK(c2.rangeForTest(c2.refForTest('a', 0), lo, hi) && hi == 3);           // no end yet: the ones answered
+    l2.demo = false;
+    l2.arp.demoFrom = -1;
+    c2.command("page_next", "");                                               // a page read: the OS answers again
+    for (int i = 0; i < 1000; ++i) c2.tick(now += 10);
+    CHECK(reads2(4) == 2 && reads2(9) == 1 && reads2(8) == 2);
+    for (const Bytes& m : l2.sent)
+        if (m.size() > 20 && m[5] == edproto::kPartialRead && FakeLink::addressOf(m).type == edproto::kArpPreset) CHECK(FakeLink::addressOf(m).number <= 9);
+    CHECK(c2.rangeForTest(c2.refForTest('a', 0), lo, hi) && hi == 8 && c2.menu(c2.refForTest('a', 0)).items.size() == 10);
+    // In its demo from the start: arp preset 0 is asked once, and not again until the OS answers something.
+    FakeLink l3;
+    editor::Controller c3(l3);
+    c3.setTables(tables());
+    c3.setOpen(true);
+    l3.arp.on = true;
+    l3.arp.demoFrom = 0;
+    now = 0;
+    c3.command("area", "ARP");
+    for (int i = 0; i < 1500; ++i) c3.tick(now += 10);                         // 15 s
+    int first = 0;
+    for (const Bytes& m : l3.sent)
+        first += m.size() > 20 && m[5] == edproto::kPartialRead && FakeLink::addressOf(m).type == edproto::kArpPreset;
+    CHECK(first == 1);
+    std::printf("editor_edit_test: ARP round: no list end taken while the OS answers nothing\n");
+}
+
+// Long arp preset names (invented): the arp preset's value uses its half up to col 24, never the gap cell (col 25):
+// 20 cells from col 5. A 15-character name fits exactly after a four-character label (AP07), a 14-character one after
+// a five-character label (AP104). A 15-character name after a five-character label (AP105) needs 21 cells: it loses
+// exactly its last character, and the gap cell stays blank.
+void testArpLongNames() {
+    FakeLink link;
+    editor::Controller c(link);
+    c.setTables(tables());
+    c.setOpen(true);
+    double now = 0;
+    auto runFor = [&](double ms) { for (double t = 0; t < ms; t += 10) c.tick(now += 10); };
+    link.arp.on = true;
+    link.arp.presets = 110;
+    Bytes& live = link.arp.live;
+    live[390 - 350] = live[391 - 350] = live[392 - 350] = live[393 - 350] = live[394 - 350] = live[395 - 350] = 0xFF;
+    live[402 - 350 + 3] = 96; live[406 - 350 + 3] = 120; live[385 - 350] = 128;
+    link.objNames[{edproto::kArpPreset, 7}] = "Omicron Pattern";                // 15 characters
+    link.objNames[{edproto::kArpPreset, 104}] = "Kappa Sequence";               // 14
+    link.objNames[{edproto::kArpPreset, 105}] = "Upsilon Cascade";              // 15
+    link.arp.preset = 7;
+    c.command("area", "ARP");
+    runFor(5000);                                                              // every name, and the end of the list
+    const int prst = c.refForTest('a', 0);
+    auto show = [&](int preset) {
+        link.arp.preset = preset;
+        c.command("page_next", ""); runFor(30); c.command("page_prev", ""); runFor(30);
+        return c.view();
+    };
+    editor::View v = show(7);
+    CHECK_EQ(v.screen.rowText(0), std::string("PRST AP07 Omicron Pattern NRES 16th   NDUR 50     "));
+    const edpages::Screen::Span* sp = spanOf(v, prst);
+    CHECK(sp && sp->col == 5 && sp->len == 20 && v.screen.underline[0][24] && !v.screen.underline[0][25]);
+    v = show(104);
+    CHECK_EQ(v.screen.rowText(0), std::string("PRST AP104 Kappa Sequence NRES 16th   NDUR 50     "));
+    sp = spanOf(v, prst);
+    CHECK(sp && sp->col == 5 && sp->len == 20 && v.screen.underline[0][24] && !v.screen.underline[0][25]);
+    v = show(105);                                                             // the limit: the last character only
+    CHECK_EQ(v.screen.rowText(0), std::string("PRST AP105 Upsilon Cascad NRES 16th   NDUR 50     "));
+    sp = spanOf(v, prst);
+    CHECK(sp && sp->col == 5 && sp->len == 20 && v.screen.rowText(0)[25] == ' ' && !v.screen.underline[0][25]);
+    // The right-click list has the whole names.
+    const editor::Menu m = c.menu(prst);
+    bool whole7 = false, whole104 = false, whole105 = false;
+    for (const auto& g : m.groups)
+        for (const editor::Choice& ch : g.second) {
+            whole7 |= ch.value == 7 && ch.label == "AP07 Omicron Pattern";
+            whole104 |= ch.value == 104 && ch.label == "AP104 Kappa Sequence";
+            whole105 |= ch.value == 105 && ch.label == "AP105 Upsilon Cascade";
+        }
+    CHECK(whole7 && whole104 && whole105);
+    std::printf("editor_edit_test: long arp preset names: the half to col 24, never the gap cell\n");
 }
 
 // Demo mode: the OS answers no SysEx. An arp edit started there sends a bounded number of requests (none repeated every
@@ -940,6 +1238,8 @@ int main() {
     testFields();
     testEditing();
     testArpPresetPlaceholder();
+    testArpRound();
+    testArpLongNames();
     testDemoMode();
     std::printf("editor_edit_test: %s\n", failures ? "FAILED" : "passed");
     return failures ? 1 : 0;

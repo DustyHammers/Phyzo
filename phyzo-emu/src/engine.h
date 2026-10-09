@@ -22,6 +22,7 @@
 #include "resampler.h"
 
 class Machine;
+struct OsImage;
 
 class Engine {
 public:
@@ -37,6 +38,20 @@ public:
     // at a block boundary (about 0.05 ms, no allocation), so the host asking for the state never blocks the audio.
     std::vector<uint8_t> getState();
     void setState(const std::vector<uint8_t>& blob); // restores now, or as soon as the ROMs are known
+    // Factory user flash (v0.8.3): what the OS's own factory restore writes, made once per OS image in a hidden
+    // machine (userflash::factoryRestore) and cached in `cacheDir` by the OS image's MD5 (empty: this process only).
+    // A new machine gets it before it boots (a new unit with factory presets); a restored state keeps its own (one
+    // saved before v0.8.3 has none: it loads exactly as it did then, erased). Off by default: machines then start with
+    // erased user flash, as before v0.8.3. With it the OS indexes its user memory at boot (about 0.2 s longer), so the
+    // audio is not byte-identical to an erased machine's (LFO, arp and random timing); presets and sounds are the same.
+    // Message thread, before setRoms.
+    void setFactoryUserFlash(bool on, const std::string& cacheDir);
+    using UserFlash = std::shared_ptr<const std::vector<uint8_t>>;
+    // The factory user flash this process made or read for an OS image (null: not yet, or it could not be made).
+    static UserFlash factoryUserFlashFor(const std::string& osMd5);
+    // The running machine's state alone (getState without the engine's wrapping): what a library clone restores.
+    // Taken the same way (a snapshot at a block boundary); the machine is not paused, pressed or read otherwise.
+    std::vector<uint8_t> machineState();
     // Front-panel button press/release by OS button id (0 = -/No, 1 = +/Yes); lock-free, message thread.
     void pressButton(int osButton, bool down);
     // An analog panel control moved (docs/PANEL_CONTROLS.md): cc 0-25, raw 0-1023. Lock-free, any UI thread.
@@ -141,6 +156,10 @@ public:
     static constexpr size_t kStandingReadBytes = 4096;
 
     // ---- tests
+    // The process's factory user flash for an OS image MD5: set it (no hidden machine is made then), and count the
+    // hidden machines made so far.
+    static void setFactoryUserFlashForTest(const std::string& osMd5, UserFlash data);
+    static uint64_t factoryRunsForTest();
     std::vector<uint8_t> machineStateForTest();
     uint32_t peekForTest(uint32_t addr, int size);
     std::vector<uint64_t> midiQueueForTest();        // scheduled machine cycles of the MIDI events so far (last 64)
@@ -158,8 +177,16 @@ public:
     static constexpr const char* kBootDisplay = "P 01";
 
 private:
-    void startJob(std::vector<uint8_t> state);
-    void runJob(std::string osPath, std::string wavePath, std::vector<uint8_t> state, uint64_t generation);
+    struct Job {
+        std::string osPath, wavePath, osMd5;
+        bool factoryOn = false;
+        std::string factoryDir;
+        UserFlash keep;                              // a reboot: the user flash the machine had (else the factory's)
+    };
+    void startJob(std::vector<uint8_t> state, UserFlash keep = nullptr);
+    void runJob(Job job, std::vector<uint8_t> state, uint64_t generation);
+    bool coldBoot(Machine& m, bool publish, std::string& err);
+    UserFlash factoryUserFlash(const Job& job, const OsImage& os);
     void stopJob();
     void install(std::unique_ptr<Machine> m, uint64_t generation, uint8_t rawPlus, uint8_t rawMinus);
     void publishDisplay(Machine& m);
@@ -179,7 +206,11 @@ private:
 
     // ROMs (message thread)
     std::string osPath_, wavePath_, osMd5_, waveMd5_;
+    bool factoryOn_ = false;
+    std::string factoryDir_;
     std::vector<uint8_t> pendingState_;              // a saved state waiting for the ROMs
+    std::vector<uint8_t> jobState_;                  // the machine state the current job restores (under getStateMtx_):
+                                                     // what getState returns until the machine runs
 
     // worker
     std::thread worker_;

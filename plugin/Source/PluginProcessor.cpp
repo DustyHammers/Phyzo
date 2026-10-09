@@ -24,6 +24,10 @@ PhyzoProcessor::PhyzoProcessor()
     dataFolder_.getChildFile("skins").createDirectory();
     events_.reserve(4096);
     port_.ed = &editorPort_;
+    // The factory user flash (what the OS's own factory restore writes): made once per OS image from the user's own
+    // OS, cached in cache/ (never shipped). New instances start from it (Engine).
+    engine_.setFactoryUserFlash(true, dataFolder_.getChildFile("cache").getFullPathName().toStdString());
+    editor_.setLibrary(&libraryBridge_);
     scanRoms();
     applyMidiSettings();
     { std::lock_guard<std::mutex> lk(g_instancesMtx); g_instances.push_back(this); }
@@ -33,6 +37,8 @@ PhyzoProcessor::PhyzoProcessor()
 PhyzoProcessor::~PhyzoProcessor() {
     stopTimer();
     editorTicker_.stopTimer();
+    chooser_.reset();
+    library_.reset();                                // cancels the running library job and joins its thread
     port_.ed = nullptr;
     { std::lock_guard<std::mutex> lk(g_instancesMtx); g_instances.erase(std::find(g_instances.begin(), g_instances.end(), this)); }
     vport_.close();
@@ -56,6 +62,97 @@ void PhyzoProcessor::scanRoms() {
         engine_.setRoms(scan_.osPath, scan_.wavePath, romid::kOsImageMd5, romid::kWaveImageMd5);
         loadEditorTables();
     }
+}
+
+// ------------------------------------------------------------------ preset library (v0.8.3 step 2)
+
+library::Service* PhyzoProcessor::libraryService() {
+    if (!library_ && scan_.complete()) {
+        auto machines = std::make_unique<library::RealMachines>(scan_.osPath, scan_.wavePath,
+                                                                 [] { return Engine::factoryUserFlashFor(romid::kOsImageMd5); });
+        library::Service::Config cfg{dataFolder_.getFullPathName().toStdString(), romid::kOsImageMd5,
+                                     [this] { return engine_.machineState(); }};
+        library_ = std::make_unique<library::Service>(std::move(cfg), std::move(machines));
+    }
+    return library_.get();
+}
+
+std::vector<editor::LibraryLink::Source> PhyzoProcessor::LibraryBridge::sources() const {
+    std::vector<Source> out;
+    if (proc.library_)
+        for (const auto& s : proc.library_->sources()) out.push_back({s.title, s.count, s.done, s.total, s.busy});
+    return out;
+}
+
+std::vector<editor::LibraryLink::Entry> PhyzoProcessor::LibraryBridge::entries(int source) const {
+    std::vector<Entry> out;
+    if (proc.library_)
+        for (const auto& e : proc.library_->entries(source)) out.push_back({e.name, e.ready, e.accepted});
+    return out;
+}
+
+bool PhyzoProcessor::LibraryBridge::takeNotice(std::string& text) {
+    if (!proc.libraryNotices_.empty()) {
+        text = proc.libraryNotices_.front();
+        proc.libraryNotices_.pop_front();
+        return true;
+    }
+    return proc.library_ && proc.library_->takeNotice(text);
+}
+
+// IMPORT: .syx files chosen in the open dialog are copied into the library (never overwriting) and read.
+void PhyzoProcessor::chooseImport() {
+    if (chooserBusy_ || !libraryService()) return;
+    chooserBusy_ = true;
+    chooser_ = std::make_unique<juce::FileChooser>("Import presets into the library", juce::File(), "*.syx");
+    chooser_->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles |
+                              juce::FileBrowserComponent::canSelectMultipleItems,
+                          [this](const juce::FileChooser& fc) {
+                              std::vector<std::string> paths;
+                              for (const juce::File& f : fc.getResults()) paths.push_back(f.getFullPathName().toStdString());
+                              if (!paths.empty()) if (library::Service* s = libraryService()) s->import(paths);
+                              chooserBusy_ = false;
+                          });
+}
+
+void PhyzoProcessor::showExportMenu() {
+    if (auto* ed = dynamic_cast<PhyzoEditor*>(getActiveEditor())) ed->showExportMenu();
+}
+
+void PhyzoProcessor::openEditorUnit() {
+    if (auto* ed = dynamic_cast<PhyzoEditor*>(getActiveEditor())) ed->openEditorUnit();
+}
+
+// FOLDER: the Library folder opened in Finder (or Explorer).
+void PhyzoProcessor::revealLibrary() {
+    const juce::File lib = dataFolder_.getChildFile("Library");
+    lib.createDirectory();
+    lib.startAsProcess();
+}
+
+// EXPORT B1 / B2: once the clone has dumped the bank, the save dialog (default name Phyzo Bank n.syx).
+void PhyzoProcessor::serviceLibrary() {
+    if (chooser_ && !chooserBusy_) chooser_.reset();   // a dialog that has closed
+    int bank = 0;
+    std::vector<uint8_t> bytes;
+    if (chooserBusy_ || !library_ || !library_->takeExport(bank, bytes)) return;
+    chooserBusy_ = true;
+    const juce::String name = "Phyzo Bank " + juce::String(bank + 1) + ".syx";
+    chooser_ = std::make_unique<juce::FileChooser>("Export Bank " + juce::String(bank + 1),
+                                                   dataFolder_.getChildFile("Library").getChildFile(name), "*.syx");
+    auto data = std::make_shared<std::vector<uint8_t>>(std::move(bytes));
+    chooser_->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles |
+                              juce::FileBrowserComponent::warnAboutOverwriting,
+                          [this, bank, data](const juce::FileChooser& fc) {
+                              juce::File f = fc.getResult();
+                              if (f != juce::File()) {
+                                  if (!f.hasFileExtension("syx")) f = f.withFileExtension("syx");
+                                  libraryNotice(f.replaceWithData(data->data(), data->size())
+                                                    ? "EXPORTED BANK " + std::to_string(bank + 1)
+                                                    : std::string("NOT EXPORTED  CANNOT WRITE THE FILE"));
+                              }
+                              chooserBusy_ = false;
+                          });
 }
 
 // ------------------------------------------------------------------ editor unit (F-30)
@@ -84,10 +181,14 @@ void PhyzoProcessor::postToEditor(std::function<void(editor::Controller&)> f) {
     editorQueue_.push_back(std::move(f));
 }
 
-void PhyzoProcessor::editorTick() {
+void PhyzoProcessor::runEditorQueue() {
     std::vector<std::function<void(editor::Controller&)>> q;
     { std::lock_guard<std::mutex> lk(editorQueueMtx_); q.swap(editorQueue_); }
     for (auto& f : q) f(editor_);
+}
+
+void PhyzoProcessor::editorTick() {
+    runEditorQueue();
     editor_.tick(juce::Time::getMillisecondCounterHiRes());
 }
 
@@ -113,11 +214,16 @@ void PhyzoProcessor::EditorPort::editorState(skin::EditorState& out) {
     out.page = v.page; out.pages = v.pages;
     out.prev = v.prev; out.next = v.next; out.follow = v.follow; out.data = v.data; out.edited = v.edited;
     out.areas = v.areas; out.sections = v.sections;
+    out.open = proc.editorActive_.load();
     out.serial = v.serial;
 }
 
 void PhyzoProcessor::timerCallback() {
     engine_.service();
+    // The skin's editor calls while the editor unit is closed: the library controls in the main document (LIBRARY
+    // opens the unit; SAVE, IMPORT, EXPORT and FOLDER work without it). While it is open, its own ticker runs them.
+    if (!editorActive_.load()) runEditorQueue();
+    serviceLibrary();
     if (!scan_.complete() && ++timerTicks_ >= kScanEveryTicks) {
         timerTicks_ = 0;
         if (!romFolder().isDirectory()) romFolder().createDirectory();

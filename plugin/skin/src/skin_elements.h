@@ -122,7 +122,8 @@ private:
 };
 
 // A legend on the editor glass: action (area, section, target, page, page_prev, page_next, toggle_follow, indicator,
-// label) and value (its text). Class "lit" when active, "avail" when clicking it leads somewhere; hover is the
+// label, library) and value (its text; library: LIBRARY, SAVE, IMPORT, EXPORT, FOLDER). The library legends may also be
+// in the main document (empty legends: click areas over the art's own lettering); lit and avail apply there too. Class "lit" when active, "avail" when clicking it leads somewhere; hover is the
 // skin's :hover. A click sends the action to the editor.
 class LegendElement : public Rml::Element {
 public:

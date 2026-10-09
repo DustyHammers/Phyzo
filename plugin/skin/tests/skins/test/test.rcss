@@ -23,3 +23,5 @@ vfdigit { width: 30dp; height: 50dp; top: 400dp; background-color: #101010; spri
 #d2 { left: 80dp; }
 #d3 { left: 120dp; }
 #shown { left: 0dp; top: 500dp; width: 10dp; height: 10dp; }
+/* A library control in the main document: an empty legend, a click area over the art's own lettering. */
+#lLibMain { display: block; position: absolute; left: 1600dp; top: 600dp; width: 60dp; height: 20dp; }

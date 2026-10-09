@@ -107,10 +107,11 @@ jumping). That is the intended panel behaviour and the editor never changes it.
 ## Names shown (only names the OS holds)
 | Name | Source |
 |---|---|
-| Preset names (64) | SysEx partial read, type 7, number 0x100 + n, offset 8, 16 characters; current name: preset edit buffer offset 8 |
+| Preset names (64) | SysEx partial read, type 7, number 0x40 + n (the stored preset), offset 8, 16 characters; current name: preset edit buffer offset 8 |
 | Arp settings name stored in the preset | preset edit buffer, offset 334, 16 characters |
-| Arp preset names (121) | SysEx partial read, type 8, number n, offset 8, 16 characters |
+| Arp preset names (up to where the OS stops answering; v0.8.3.5) | SysEx partial read, type 8, number n, offset 8, 16 characters |
 | Arp pattern names | SysEx partial read, type 9, number n, offset 8, 16 characters |
+| Feel names, riff names (v0.8.3.5, ARP_ROUND.md) | SysEx partial read, type 10 / 11, number n, offset 8, 16 characters |
 | Insert algorithm name stored in the preset | preset edit buffer, offset 178, 16 characters |
 | Insert algorithm names (40 of 41) | OS image: effect variation records, a 16-character field, right-aligned with leading spaces, repeated once per variation, between 0x93700 and 0xB9700; one algorithm has no stored name (use the panel's 4-character code) |
 | Insert variations, global reverb variations | no names in the OS: show VAR 1–6 / PRESET and R01–R08 / PRESET |
@@ -141,7 +142,7 @@ Whole objects: `F0 0F 11 01 7F 01 <type> <number:14> F7`, reply command 0x41.
 | 0 | system settings, 50 bytes | 0 | — |
 | 1 | sound, 500 bytes | 0–3 = Sound 1–4 edit buffers | 1 = sound common (36 bytes); 2 = oscillator (180 bytes), sub-number 0/1 |
 | 2 | performance, 1398 bytes | 0x3FFF = edit buffer | 1 = track settings, sub-number 0–3 |
-| 7 | preset, 414 bytes | 0 = edit buffer; 0x100 + n = stored preset n | — |
+| 7 | preset, 414 bytes | 0 = edit buffer; 0x40 + n = stored preset n (user flash); 0x100 + n = the factory copy of preset n in the OS image | — |
 | 8 | arp preset, 88 bytes | 0 | — |
 | 9 | arp pattern, 37 bytes | 0 | — |
 

@@ -288,8 +288,9 @@ int main(int argc, char** argv) {
          (unsigned long long)m.panel.resetPulses, (unsigned long long)m.panel.unknownMessages);
     both("%s", "leds:");
     for (auto& kv : m.panel.ledState) both(" %02X=%d", kv.first, kv.second);
-    both("\nmidi_out_bytes: %zu\nflash_writes: %llu\nflag_0BE01526: %u\nflag_0BE00800: %u\n",
-         m.midiOut.size(), (unsigned long long)m.flashWrites, flag1526, flag0800);
+    both("\nmidi_out_bytes: %zu\nflash_writes: %llu\nflash_service: calls %llu bytes %llu refused %llu\nflag_0BE01526: %u\nflag_0BE00800: %u\n",
+         m.midiOut.size(), (unsigned long long)m.flashWrites, (unsigned long long)m.flashServiceCalls,
+         (unsigned long long)m.flashServiceBytes, (unsigned long long)m.flashServiceRefused, flag1526, flag0800);
 
 #ifdef HARNESS_TRACE
     both("%s", "\n[checkpoints]\n");

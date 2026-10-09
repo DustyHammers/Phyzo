@@ -15,7 +15,7 @@ they are not copied content.
 | Part | Model |
 |---|---|
 | CPU | Musashi in 68020 mode (the OS uses only instructions common to CPU32 and 68020) |
-| Flash 0x0–0xFFFFF | Read-only; synthetic vector table and trap stubs below 0x4000; OS at 0x4000; rest erased (0xFF) |
+| Flash 0x0–0xFFFFF | Read-only to the CPU; synthetic vector table and stubs below 0x4000; OS at 0x4000; rest erased (0xFF). The user flash 0xD0000–0xFFFFF is written only through the flash-write service |
 | RAM 0x0BE00000–0x0BE3FFFF | 256 KB, zero-filled at start |
 | 68340 timer 1 | Counts down from PREL1 at fsys/2, sets TO, reloads; IRQ at the IR level when CR.IE2 |
 | 68340 serial A/B | Holding + shift register transmitter, 3-byte receive FIFO, paced input; ISR bit 3 reads 0 |
@@ -26,8 +26,19 @@ they are not copied content.
 | Everything else | Reads 0, writes ignored, logged |
 
 Boot-ROM services are host traps: reboot (vector slot 1), OS update (slot 254),
-and an unexpected exception lands on a per-vector stub. Slot 251 (flash write) is
-left null, so the OS skips saves.
+and an unexpected exception lands on a per-vector stub. Slot 251, the flash-write
+service, is served (since v0.8.3), so the OS's saves work:
+
+- The OS reads the slot once, at boot (into RAM 0x0BE00808), and calls it as a C function with (destination flash
+  address, source address, length, scratch buffer, scratch length) on the stack; D0 = 0 means success. It passes whole regions (0xD0000 and 0xE0000, 64 KB each;
+  0xF0000, 32 KB; 0xFFE00, 512 bytes), so a plain copy is all the flash needs (no erase or program sequence).
+- Slot 251 points at a two-instruction routine in the boot block, `move.l sp,($2040).l` then `rts`. Its write to the
+  service port 0x2040 (only from that routine) runs the copy in the host (`Machine::flashService`), which puts the
+  result in D0. A host service rather than a 68k copy loop: the copy takes no machine time, and the result is in D0
+  before the routine returns, so a state saved between any two instructions is complete.
+- Only destinations inside the user flash, 0xD0000–0xFFFFF, are accepted (the copy may end exactly at 0x100000). Any
+  other copies nothing, returns 1 and is logged as unmapped access `S` at the destination (value = the length).
+- Every other flash write stays read-only. Calls, bytes and refusals are counted (`flash_service` in the boot summary).
 
 ## Build
 
@@ -187,9 +198,45 @@ The plugin (`plugin/`) runs the machine through `Engine`, which has no plugin-fr
 host audio block. MIDI bytes go to channel B at the machine cycle that matches their host sample position plus a
 constant latency, which the plugin reports to the host. The ESP2 DAC output (24-bit, 1.0 = 2^23) is converted from
 44.1 kHz to the host rate by `Resampler` (Kaiser windowed sinc, 128 taps at 44.1 kHz, about 100 dB accuracy, no
-added delay). `Machine::saveState()/loadState()` hold the complete machine (CPU, RAM, all devices, timing); flash
-and wave memory are not stored. Several machines can run in one process: Musashi's single CPU is shared under a
-lock, with each machine's CPU state parked while another one runs.
+added delay). `Machine::saveState()/loadState()` hold the complete machine (CPU, RAM, all devices, timing) and the
+user flash (section `UFLS`, since v0.8.3); the rest of the flash and the wave memory are not stored. A state without
+the user flash (saved before v0.8.3) loads exactly as before, with the user flash left erased (that machine cannot
+save: its OS read the service pointer at boot, when it was null, and indexed blank user memory). Several
+machines can run in one process: Musashi's single CPU is shared under a lock, with each machine's CPU state parked
+while another one runs.
+
+Factory user flash (`src/user_flash.*`, `Engine::setFactoryUserFlash`, on in the plugin): what the OS's own factory
+restore writes (164,352 bytes). It is made once per OS image in a hidden machine: a freshly booted machine plays the
+restore on its panel (Save down, Compare pressed, Save up; the display asks `r5t?`; +/Yes; the display shows `burn`,
+then `P 01`), waiting for the display rather than a fixed delay. The flash is read only once the display is back on
+`P 01` and the OS has written exactly that many bytes (`burn` is watched for but not required: the service takes no
+machine time, so it can be gone before it reaches the panel). It is cached by the OS image's MD5 (the plugin:
+`~/Documents/Phyzo/cache/`; made from the user's own OS on the user's machine, never shipped or committed). A new
+machine gets it before it boots; a restored state keeps its own user flash (none for a state from before v0.8.3);
+when the OS restarts itself, the new machine keeps the user flash the old one had. Without it (tests, tools) the user
+flash starts erased.
+
+Audio with the factory user flash is not byte-identical to an erased machine (v0.8.2), by design: the OS indexes its
+user memory at boot, which takes about 0.2 s longer, so LFO, arp and random timing differ. Every preset and sound is
+identical.
+
+## Preset library (src/library/*, v0.8.3)
+
+The editor's LIBRARY area (`docs/editor/LIBRARY.md`) browses `.syx` files in `~/Documents/Phyzo/Library/`.
+
+- **Auditioning:** a clicked preset's stored single-preset message goes into the synth's MIDI input, and the OS puts
+  it in Compare. Save on the panel keeps it.
+- **Hidden machines:** the files are read by hidden machines on a worker thread, one job at a time in the process,
+  never on the audio thread. The machines are driven only through the OS: panel Dump and +/Yes, program changes,
+  SysEx in, name reads.
+  - Fresh machines boot with the factory user memory. Clones restore the running machine's snapshot.
+  - `syx.*` splits and classifies the files: single preset `02 17`, bank `0D <bank>`.
+- **Index cache:** `library.*` keeps `cache/library/<file MD5>.idx`. It also scans the folder (factory banks first,
+  then files, then SINGLES) and makes new file names (never overwriting).
+- **Jobs (`service.*`):**
+  - make the factory bank files from the user's own OS (`Library/Factory/`, never shipped);
+  - read files;
+  - SAVE (refused while the Compare LED, 0x16, is lit), EXPORT and IMPORT.
 
 ## phyzo_stress: real-time check of the plugin engine
 

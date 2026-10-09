@@ -334,6 +334,29 @@ void testPages() {
     const Screen gs = render(Page(grid.begin(), grid.end()));
     CHECK_EQ(gs.rowText(0).substr(0, 12), std::string("C0XX 0      "));
     CHECK_EQ(gs.rowText(0).substr(38, 12), std::string("C3XX 30     "));
+    // Two-slot items (a whole half): the name in full, the value up to the half's end; one never straddles the halves.
+    std::vector<Item> wide = {{"AB", "1", 0}, {"Wide One", "a value nineteen ch", 1}, {"CD", "2", 2}, {"EF", "3", 3},
+                              {"GH", "4", 4}, {"Wide Two", "v", 5}};
+    wide[1].span = wide[5].span = 2;
+    const std::vector<Row> wr = gridRows(wide);
+    CHECK(wr.size() == 3 && wr[0].items.size() == 2 && wr[0].items[1].col == 2);   // slot 1 left empty
+    CHECK(wr[1].items.size() == 3 && wr[2].items.size() == 1 && wr[2].items[0].col == 0);
+    const Screen wsc = render(Page(wr.begin(), wr.end()));
+    CHECK_EQ(wsc.rowText(0), std::string("AB   1                    WIDE ONE a value ninetee"));
+    CHECK_EQ(wsc.rowText(1), std::string("CD   2      EF   3        GH   4                  "));
+    CHECK_EQ(wsc.rowText(2), std::string("WIDE TWO v                                        "));
+    CHECK(wsc.values.size() == 6 && wsc.values[1].col == 35 && wsc.values[1].len == 15);
+    // A long value in the left half fills it to its last cell (col 24); the gap cell (col 25) stays blank, and the next
+    // item is untouched. In the right half the value ends at col 49.
+    std::vector<Item> longer = {{"Wide", "abcdefghijklmnopqrstuvwxyz", 0}, {"IJ", "5", 1}, {"KL", "6", 2},
+                                {"MN", "7", 3}, {"Wide", "abcdefghijklmnopqrstuvwxyz", 4}};
+    longer[0].span = longer[4].span = 2;
+    const std::vector<Row> lr = gridRows(longer);
+    const Screen lsc = render(Page(lr.begin(), lr.end()));
+    CHECK_EQ(lsc.rowText(0), std::string("WIDE abcdefghijklmnopqrst IJ   5      KL   6      "));
+    CHECK_EQ(lsc.rowText(1), std::string("MN   7                    WIDE abcdefghijklmnopqrs"));
+    CHECK(lsc.values[0].col == 5 && lsc.values[0].len == 20 && lsc.underline[0][24] && !lsc.underline[0][25]);
+    CHECK(lsc.values[4].col == 31 && lsc.values[4].len == 19 && lsc.underline[1][49]);
     std::vector<Item> presets;
     for (int i = 0; i < 64; ++i) presets.push_back({(i < 9 ? "0" : "") + std::to_string(i + 1), "Preset " + std::to_string(i + 1), -1});
     const std::vector<Page> pages = paginate(nameRows(presets));
@@ -563,7 +586,7 @@ void testController() {
     link.sent.clear();
     c.command("area", "PRESETS");
     CHECK(link.sent.size() == 9 && link.sent[8] == edproto::partialRead({edproto::kPreset, 0, 0, 0, 8, 16}));
-    CHECK(link.sent[3] == edproto::partialRead({edproto::kPreset, 0x103, 0, 0, 8, 16}));
+    CHECK(link.sent[3] == edproto::partialRead({edproto::kPreset, 0x43, 0, 0, 8, 16}));   // stored preset 3 (0x40 + n)
     Bytes preset(24, ' ');
     const char* nm = "Big Pad 4       ";
     std::memcpy(preset.data() + 8, nm, 16);

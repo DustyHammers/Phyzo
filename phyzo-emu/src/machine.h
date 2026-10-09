@@ -36,17 +36,29 @@ public:
     // Synthetic boot block: trap stubs (STOP #$2700) the harness recognises.
     static constexpr uint32_t kVectorStubs = 0x1000;   // + vector*4: unexpected exception
     static constexpr uint32_t kRebootStub = 0x2000, kOsUpdateStub = 0x2008, kMainReturnStub = 0x2010;
+    // User flash: the OS's own stored data (presets, sounds, settings), written only through the flash-write service.
+    static constexpr uint32_t kUserFlashBase = 0xD0000, kUserFlashSize = kFlashSize - kUserFlashBase;
+    // Flash-write service (vector slot 251), a host service: the boot-block routine at kFlashServiceStub writes its
+    // stack pointer to kFlashServicePort, where the host copies the data and sets D0 (flashService), then returns.
+    // See README.md, "Boot-ROM services".
+    static constexpr uint32_t kFlashServiceStub = 0x2020, kFlashServicePort = 0x2040;
 
     Machine();
     ~Machine() override;
     bool init(const OsImage& os, const Config& cfg, std::string& err);   // section A
 
-    // Complete machine state for plugin projects: CPU, RAM, every device, timing. Flash and wave memory are not
-    // included (they come from the ROM files, which must be the same ones). load() needs init() and the wave memory
-    // first; on failure the machine is left as it was before the call only if the data was rejected up front.
+    // Complete machine state for plugin projects: CPU, RAM, every device, timing, and the user flash. The rest of
+    // the flash and the wave memory are not included (they come from the ROM files, which must be the same ones).
+    // load() needs init() and the wave memory first; on failure the machine is left as it was before the call only if
+    // the data was rejected up front. A state without the user flash (saved before v0.8.3) loads exactly as before
+    // and leaves the user flash as it is.
     std::vector<uint8_t> saveState();
     void saveStateInto(std::vector<uint8_t>& out);
     bool loadState(const std::vector<uint8_t>& data, std::string& err);
+
+    // The user flash (kUserFlashSize bytes from kUserFlashBase). setUserFlash ignores data of another size.
+    const uint8_t* userFlash() const { return &flash_[kUserFlashBase]; }
+    bool setUserFlash(const uint8_t* data, size_t size);
 
     // Audio timing: voice-chip samples produced so far, and the CPU cycle at which sample n is produced.
     uint64_t samplesProduced() const { return voiceSamples_; }
@@ -107,7 +119,8 @@ public:
     // diagnostics
     struct AccessStat { uint64_t count = 0; uint32_t firstPc = 0; uint64_t firstCycle = 0; uint32_t lastValue = 0; };
     std::map<std::tuple<uint32_t, char, int>, AccessStat> unmapped;   // (addr, 'R'/'W', size)
-    uint64_t flashWrites = 0;
+    uint64_t flashWrites = 0;                    // CPU writes to flash (read-only, ignored)
+    uint64_t flashServiceCalls = 0, flashServiceBytes = 0, flashServiceRefused = 0;   // the flash-write service
     std::string trapReason;
     uint32_t trapPc = 0;
     uint32_t stallPc = 0;
@@ -134,6 +147,7 @@ private:
     uint32_t moduleRead8(uint32_t off, bool& ok);
     void moduleWrite8(uint32_t off, uint8_t v, bool& ok);
     void logUnmapped(uint32_t a, char rw, int size, uint32_t v);
+    void flashService(uint32_t sp);
     void noteDevice(const char* dev, char rw, uint32_t a, int size, uint32_t v);
     void updateIrq();
     void advanceDevices();
