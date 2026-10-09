@@ -64,7 +64,8 @@ struct Engine::InputFifo : Machine::LiveInput {
 Engine::Engine() : fifo_(std::make_unique<InputFifo>()) {
     snap_.reserve(size_t(4) << 20);                 // machine state is about 0.8 MB: snapshots never allocate
     hostEvents_.reserve(8192);
-    for (int i = 0; i < 26; ++i) { controls_[size_t(i)] = PanelModel::kFreshControls[size_t(i)]; positions_[size_t(i)] = controls_[size_t(i)]; }
+    for (int i = 0; i < 26; ++i) { controls_[size_t(i)] = PanelModel::kFreshControls[size_t(i)]; positions_[size_t(i)] = controls_[size_t(i)].load(); }
+    for (uint32_t i = 0; i < kButtonRing; ++i) buttons_[i].seq.store(i, std::memory_order_relaxed);
 }
 
 Engine::~Engine() {
@@ -124,12 +125,26 @@ void Engine::setState(const std::vector<uint8_t>& blob) {
     startJob(std::move(b.machine));
 }
 
-void Engine::push(uint32_t entry) {
-    std::lock_guard<std::mutex> lk(pushMtx_);
-    const uint32_t head = btnHead_.load(std::memory_order_relaxed);
-    if (head - btnTail_.load(std::memory_order_acquire) >= uint32_t(kButtonRing)) return;   // full: drop
-    buttons_[head % kButtonRing].store(entry, std::memory_order_relaxed);
-    btnHead_.store(head + 1, std::memory_order_release);
+// Any thread, no lock, no allocation (a bounded multi-producer queue: each cell's sequence number says whether it is
+// free for the producer at `pos` (== pos), written and waiting for the consumer (== pos + 1), or not yet consumed
+// from the previous lap (< pos: full)).
+bool Engine::push(uint32_t entry) {
+    uint32_t pos = btnEnqueue_.load(std::memory_order_relaxed);
+    for (;;) {
+        ButtonCell& c = buttons_[pos & (kButtonRing - 1)];
+        const int32_t dif = int32_t(c.seq.load(std::memory_order_acquire) - pos);
+        if (dif == 0) {
+            if (btnEnqueue_.compare_exchange_weak(pos, pos + 1, std::memory_order_relaxed)) {
+                c.value = entry;
+                c.seq.store(pos + 1, std::memory_order_release);
+                return true;
+            }
+        } else if (dif < 0) {
+            return false;                            // full: dropped
+        } else {
+            pos = btnEnqueue_.load(std::memory_order_relaxed);
+        }
+    }
 }
 
 void Engine::pressButton(int osButton, bool down) {
@@ -200,7 +215,7 @@ void Engine::publishLeds(const Machine& m) {
 void Engine::setControl(int cc, int raw) {
     if (cc < 0 || cc >= 26) return;
     raw = std::clamp(raw, 0, 1023);
-    { std::lock_guard<std::mutex> lk(controlsMtx_); controls_[size_t(cc)] = uint16_t(raw); }
+    controls_[size_t(cc)].store(uint16_t(raw), std::memory_order_relaxed);
     positions_[size_t(cc)] = uint16_t(raw);
     pendingControl_[size_t(cc)].store(uint16_t(0x8000 | raw), std::memory_order_release);   // latest value wins
     lastPanelControl_ = cc;                          // before the counters: a reader that sees the move sees the control
@@ -221,6 +236,7 @@ void Engine::sendControls(Machine& m) {
         if (!(v & 0x8000)) continue;
         m.panel.moveControl(int(cc), int(v & 0x3FF), now);
         positions_[cc] = m.panel.controls[cc];
+        controls_[cc].store(m.panel.controls[cc], std::memory_order_relaxed);   // what the panel now answers to F4
         controlSentAt_[cc] = now ? now : 1;
         ++controlMessages_;
     }
@@ -382,7 +398,7 @@ void Engine::runJob(Job job, std::vector<uint8_t> state, uint64_t generation) {
         if (!m->init(os, cfg, err) || !m->loadWaveMemory(job.wavePath, err)) return false;
         m->panel.keepLog = false;
         attachLeds(*m);
-        { std::lock_guard<std::mutex> lk(controlsMtx_); m->panel.controls = controls_; }   // answered to the OS's F4
+        for (size_t i = 0; i < controls_.size(); ++i) m->panel.controls[i] = controls_[i].load(std::memory_order_relaxed);   // answered to the OS's F4
         m->captureAudio = true;
         m->audio.reserve(1 << 16); m->wet.reserve(1 << 16);
         return true;
@@ -427,10 +443,11 @@ void Engine::install(std::unique_ptr<Machine> m, uint64_t generation, uint8_t ra
         if (generation != generation_.load()) return;           // a newer job replaced this one
         live_.swap(m);
         rawPlus_ = rawPlus; rawMinus_ = rawMinus;
+        rawPlusPub_ = rawPlus; rawMinusPub_ = rawMinus;
         publishPositions(*live_);
         publishLeds(*live_);
         controlSentAt_.fill(0);
-        { std::lock_guard<std::mutex> lc(controlsMtx_); controls_ = live_->panel.controls; }   // a restored state's knobs
+        for (size_t i = 0; i < controls_.size(); ++i) controls_[i].store(live_->panel.controls[i], std::memory_order_relaxed);   // a restored state's knobs
         retime_ = true;
         state_ = State::Running;
     }
@@ -470,20 +487,24 @@ void Engine::prepare(double hostRate, int maxBlock, bool audioIn) {
     latency_ = int(std::ceil((resampler_.lookahead() + marginIn_) / r));
 }
 
+// Audio thread: every button edge queued so far, in order (a cell a producer is still writing waits for the next
+// block, and so do the ones after it).
 void Engine::drainButtons(Machine& m) {
-    uint32_t tail = btnTail_.load(std::memory_order_relaxed);
-    const uint32_t head = btnHead_.load(std::memory_order_acquire);
-    for (; tail != head; ++tail) {
-        const uint32_t v = buttons_[tail % kButtonRing].load(std::memory_order_relaxed);
+    for (;;) {
+        ButtonCell& c = buttons_[btnDequeue_ & (kButtonRing - 1)];
+        if (int32_t(c.seq.load(std::memory_order_acquire) - (btnDequeue_ + 1)) < 0) break;
+        const uint32_t v = c.value;
+        c.seq.store(btnDequeue_ + kButtonRing, std::memory_order_release);
+        ++btnDequeue_;
         ++buttonMessages_;
+        uint8_t msg[2];
         if ((v >> 24) == 2) {
-            m.panel.inject({uint8_t((v & 0x100) ? 0x81 : 0x80), uint8_t(v & 0x7F)}, m.cycles(), std::string());
-            continue;
+            msg[0] = uint8_t((v & 0x100) ? 0x81 : 0x80); msg[1] = uint8_t(v & 0x7F);
+        } else {
+            msg[0] = uint8_t((v & 1) ? 0x81 : 0x80); msg[1] = ((v >> 1) & 0xFF) == 1 ? rawPlus_ : rawMinus_;
         }
-        const uint8_t raw = ((v >> 1) & 0xFF) == 1 ? rawPlus_ : rawMinus_;
-        m.panel.inject({uint8_t((v & 1) ? 0x81 : 0x80), raw}, m.cycles(), std::string());
+        m.panel.inject(msg, 2, m.cycles(), "");
     }
-    btnTail_.store(tail, std::memory_order_release);
 }
 
 void Engine::process(float* left, float* right, int n, const MidiEvent* events, int numEvents, const float* inLeft, const float* inRight) {

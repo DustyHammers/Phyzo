@@ -28,7 +28,7 @@ int main() {
 
     std::vector<Sent> sent;
     PanelModel p;
-    p.sendToOs = [&](const std::vector<uint8_t>& b, uint64_t when) { sent.push_back({b, when}); };
+    p.sendToOs = [&](const uint8_t* b, size_t n, uint64_t when) { sent.push_back({std::vector<uint8_t>(b, b + n), when}); };
 
     // F4 from the OS: one message per control, in cc order, B(0|(raw>>7)&7) cc (raw & 0x7F), 2 ms later.
     p.onOsByte(0xF4, 1000);
@@ -68,7 +68,7 @@ int main() {
     // Switched off: no answer (the old behaviour, for comparisons).
     sent.clear();
     PanelModel off; off.answerF4 = false;
-    off.sendToOs = [&](const std::vector<uint8_t>& b, uint64_t when) { sent.push_back({b, when}); };
+    off.sendToOs = [&](const uint8_t* b, size_t n, uint64_t when) { sent.push_back({std::vector<uint8_t>(b, b + n), when}); };
     off.onOsByte(0xF4, 0);
     CHECK(sent.empty());
 

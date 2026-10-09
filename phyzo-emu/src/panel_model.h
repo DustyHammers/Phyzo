@@ -30,7 +30,8 @@ class PanelModel {
 public:
     // fontTable: 128 bytes (ASCII -> segments) read from the user's OS image.
     void setFont(const uint8_t* fontTable);
-    std::function<void(const std::vector<uint8_t>&, uint64_t)> sendToOs;
+    // Bytes to the OS (serial channel A), whole messages; never allocates for the caller.
+    std::function<void(const uint8_t* bytes, size_t n, uint64_t cycle)> sendToOs;
     std::function<double(uint64_t)> cyclesToMs;
     uint64_t cyclesPerMs = 16000;
 
@@ -58,6 +59,8 @@ public:
     void onOsByte(uint8_t b, uint64_t cycle);
     void onResetPin(bool asserted, uint64_t cycle);
     void inject(const std::vector<uint8_t>& bytes, uint64_t cycle, const std::string& note);
+    // The same without allocating (the audio thread's knob and button messages; the note is logged only with keepLog).
+    void inject(const uint8_t* bytes, size_t n, uint64_t cycle, const char* note);
 
     std::string text() const { return text_; }
     const std::array<uint8_t, 4>& rawDigits() const { return raw_; }

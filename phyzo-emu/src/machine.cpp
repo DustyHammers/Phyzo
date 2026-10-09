@@ -121,7 +121,7 @@ bool Machine::init(const OsImage& os, const Config& cfg, std::string& err) {
 
     panel.setFont(&flash_[profile::kSegmentFont]);
     panel.cyclesPerMs = uint64_t(cfg_.cpuHz / 1000.0);
-    panel.sendToOs = [this](const std::vector<uint8_t>& b, uint64_t when) { serial.queueRx(0, b, when); };
+    panel.sendToOs = [this](const uint8_t* b, size_t n, uint64_t when) { serial.queueRx(0, b, n, when); };
 
     // A1/A6: 68020-mode core, SR = 0x2700, VBR = 0, SSP = 0x0BE30000, call main. The core starts from the cleared
     // state the first machine in a process finds (reset leaves D/A registers alone; they must not carry over from

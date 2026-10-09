@@ -54,7 +54,8 @@ bool factoryRestore(Panel& p, std::string& err) {
 // ------------------------------------------------------------------ a real machine
 
 void MachinePanel::press(uint8_t raw, bool down) {
-    m_.panel.inject({uint8_t(down ? 0x81 : 0x80), raw}, m_.cycles(), std::string());
+    const uint8_t msg[2] = {uint8_t(down ? 0x81 : 0x80), raw};
+    m_.panel.inject(msg, 2, m_.cycles(), "");
 }
 
 Panel::Run MachinePanel::run(double ms, const std::function<bool(const std::string&)>& until) {
