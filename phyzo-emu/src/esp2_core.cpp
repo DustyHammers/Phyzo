@@ -935,16 +935,36 @@ void Esp2Core::sampleTick() {
 }
 
 // ------------------------------------------------------------------ state (plugin projects)
+#include <cstddef>
+#include <cstring>
 #include "state_io.h"
 
+namespace {
+// A field's bytes at its offset in a struct's in-memory layout.
+template <class F> void place(uint8_t* layout, size_t offset, const F& field) { std::memcpy(layout + offset, &field, sizeof field); }
+}
+
 void Esp2Core::save(StateWriter& w) const {
+    // The pending memory operation and the pointer histories are stored in their in-memory layout (as states always
+    // held them), with the padding as zeros: copied whole, the padding, never set, put leftover memory into the state.
+    static_assert(sizeof(MemOp) == 12 && sizeof(PtrWrite) == 16 && sizeof(ptrPend_) == 28 * sizeof(PtrWrite), "state layout");
     w.put(r_); w.put(imem_); w.vec(ram_); w.put(port_);
     w.put(cycle_); w.put(pc_); w.put(npc_); w.put(biozArmed_); w.put(suspended_); w.put(iozStatus_);
     w.put(ccr_); w.put(cmr_); w.put(refpt_); w.put(aluShift_); w.put(macLatch_); w.put(macp_); w.put(macrl_);
     w.put(pcStack_); w.put(sp_); w.put(reptSt_); w.put(reptEnd_); w.put(reptCnt_);
     w.put(aluPend_); w.put(aluPendPlain_); w.put(aluPendAddr_); w.put(aluPendVal_);
-    w.put(memPend_); w.put(dilPend_); w.put(dilPendLatch_); w.put(dilPendVal_);
-    w.put(ptrPend_); w.put(ptrN_); w.put(writer_);
+    uint8_t mem[sizeof(MemOp)] = {};
+    place(mem, offsetof(MemOp, valid), memPend_.valid); place(mem, offsetof(MemOp, write), memPend_.write);
+    place(mem, offsetof(MemOp, addr), memPend_.addr); place(mem, offsetof(MemOp, latch), memPend_.latch);
+    w.raw(mem, sizeof mem);
+    w.put(dilPend_); w.put(dilPendLatch_); w.put(dilPendVal_);
+    for (const auto& history : ptrPend_)
+        for (const PtrWrite& p : history) {
+            uint8_t ptr[sizeof(PtrWrite)] = {};
+            place(ptr, offsetof(PtrWrite, visible), p.visible); place(ptr, offsetof(PtrWrite, value), p.value);
+            w.raw(ptr, sizeof ptr);
+        }
+    w.put(ptrN_); w.put(writer_);
     w.put(control); w.put(lastControl); w.put(instrPerSample);
     w.put(voicePort); w.put(serialIn); w.put(dacOut); w.put(auxOut);
     const uint64_t stats[] = {regWrites, regReads, instrWrites, instrReads, controlWrites, readoutReads, mailboxReadsWhileRunning,
