@@ -327,6 +327,13 @@ const edpages::Screen::Span* spanOf(const editor::View& v, int ref) {
     return nullptr;
 }
 
+// Typed entry into a value: Enter-style typing of `text`, then Enter.
+void typeIn(editor::Controller& c, int ref, const std::string& text) {
+    c.command("type", std::to_string(ref));
+    for (char ch : text) c.key(std::string(1, ch));
+    c.key("enter");
+}
+
 int refOfLabel(editor::Controller& c, const std::string& text) {   // the value reference after a label on screen
     const editor::View v = c.view();
     for (int r = 0; r < edpages::kRows; ++r) {
@@ -404,7 +411,7 @@ void testController(const edtables::FxTables& fx) {
     const int algoRef = refOfLabel(c, "ALGO");
     CHECK(c.menu(algoRef).groups.size() + c.menu(algoRef).items.size() > 0);
     link.sent.clear();
-    c.choose(algoRef, 1);
+    typeIn(c, algoRef, "beta");                      // typed entry by name (F-56): as the list's choice of B
     Bytes want;
     std::vector<Bytes> wantMsgs;
     for (auto& m : edproto::nrpn(0, 1, 30, 2)) wantMsgs.push_back(m);
@@ -443,6 +450,12 @@ void testController(const edtables::FxTables& fx) {
     tick(10);
     vm = c.menu(refOfLabel(c, "VARIATION"));
     CHECK(!vm.items.empty() && vm.items[0].value == -1 && vm.items[0].label == "PSEt" && vm.items.size() == 3);
+    // Typed entry by the list entry's text (F-56): " u01" as the list chose it.
+    link.sent.clear();
+    typeIn(c, refOfLabel(c, "VARIATION"), " u01");
+    CHECK(link.sent == edproto::nrpn(0, 1, 32, 0));
+    p[332] = 0;                                      // the OS selected u01
+    tick(20);                                        // (past the rebuild hold)
     link.sent.clear();
     c.choose(refOfLabel(c, "VARIATION"), 1);
     std::vector<Bytes> varMsgs = edproto::nrpn(0, 1, 32, 1);
@@ -455,9 +468,12 @@ void testController(const edtables::FxTables& fx) {
     c.choose(mix, 30);
     CHECK(link.sent.size() == 2 && link.sent[0] == edproto::partialWrite({edproto::kRawMemory, 0, 0, 0, edproto::kEditBufferRam + 292, 2}, {0, 30}) &&
           link.sent[1] == edproto::fxParameter(0, 13, 30));
-    tick(5);
+    tick(20);                                        // (past the hold)
+    link.sent.clear();
+    typeIn(c, refOfLabel(c, "VARIATION"), "PSEt");   // typed entry by name (F-56): back to PSEt
+    CHECK(link.sent == edproto::nrpn(0, 1, 32, -1));
     p[332] = 0xFF;
-    tick(10);
+    tick(20);                                        // (past the rebuild hold)
 
     // SENDS: routing slots; the FX-bus 1 reverb send (slot 6) plays the insert variation's value.
     c.command("section", "SENDS");

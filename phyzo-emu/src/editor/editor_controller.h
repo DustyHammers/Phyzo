@@ -102,8 +102,9 @@ struct View {
     uint32_t serial = 0;                             // changes whenever anything above changes
 };
 
-// The right-click list of a value: the OS's value or name list (empty for plain numbers), grouped when long, and
-// whether revert applies.
+// A value's OS value or name list (empty for plain numbers), grouped when long, and whether revert applies. The plugin
+// shows only the revert (F-56): right-click on a value opens the plugin menu with Revert on top when the value was
+// edited; values are set by click-and-drag and typed entry.
 struct Choice {
     std::string label;
     int64_t value = 0;
@@ -115,7 +116,10 @@ struct Menu {
     std::vector<std::pair<std::string, std::vector<Choice>>> groups;   // long lists, in groups
     bool revert = false;                                         // the value differs from the one before the edits
     std::string revertLabel;                                     // the value revert goes back to
+    std::string name;                                            // the value's name as the page shows it (with revert)
 };
+// The Revert item of a value's right-click menu (F-56): "Revert WAVE to 12 MARIMBA".
+inline std::string revertItemText(const Menu& m) { return "Revert " + m.name + " to " + m.revertLabel; }
 
 class Controller {
 public:
@@ -144,7 +148,7 @@ public:
     // Keys while the editor has the focus: "left", "right", "up", "down", "plus", "minus", "enter", "escape",
     // "backspace" or one printable character. True if the editor used it.
     bool key(const std::string& k);
-    Menu menu(int ref) const;                        // the right-click list of a value
+    Menu menu(int ref) const;                        // a value's list and revert (the plugin shows only the revert)
     void choose(int ref, int64_t value);             // a choice from the list (the arp preset field: load it)
     void revert(int ref);
     void tick(double nowMs);                         // regularly (~every 10-50 ms): replies, triggers, sends, debounce
@@ -242,6 +246,7 @@ private:
     // An ARP field's value as shown: the arp preset with its name, the feel's number with its name.
     std::string arpText(const edfields::Field& f, int64_t d) const;
     std::string objName(int type, int64_t number) const;   // trimmed; empty if not read (or the OS gave none)
+    std::string nameOf(int ref) const;               // a value's name on its page, whole and upper case (empty: none)
     int64_t lastArpPreset() const;                   // the last arp preset offered (-1: none)
     bool parseTyped(int ref, const std::string& s, int64_t& d) const;
     std::vector<Choice> listOf(int ref) const;       // the OS's values for a field with a list (empty: none)

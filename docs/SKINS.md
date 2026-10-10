@@ -65,7 +65,8 @@ the geometry of the glass and every legend is in `docs/editor/EDITOR_PANEL_LAYOU
   `editor.followLeds`. Without it the labels are PERF1-PERF5.
 - `editor.state()` also has `edited` (an edit since the preset loaded) and `typing` (typed entry in the focused value).
 - Editing needs nothing from the skin: the values on the `<vfdrow>` glass take the mouse (drag up/down, Shift fine;
-  double-click for typed entry; right-click for the value's list and revert; a click on a preset name loads it). The
+  double-click for typed entry; right-click for the plugin menu, with Revert on top when the value was edited; a click
+  on a preset name loads it). The
   mouse wheel never changes a value.
 - Wave names (optional): `waves.txt` in the skin folder, one line per wave: number, a tab, the name. The wave value then
   shows "number name"; without the file, the number only.

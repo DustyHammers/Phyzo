@@ -698,6 +698,23 @@ void testEditing() {
     CHECK(link.arp.preset == 4 && link.pressCount(edfields::kBtnYes) == 5 && link.arp.blindSteps == 0);
     for (int sv : link.arp.stepVars) CHECK(sv == 2);
     CHECK(c.view().screen.rowText(0).find("PRST AP04 Epsilon 4") == 0);        // the OS's number and the name
+    // Typed entry by the list entry's text (F-56: right-click opens the plugin menu, no list): "AP06" and "Snd" go
+    // through the panel's buttons as list choices do.
+    auto typeIn = [&](int ref, const std::string& text) {
+        c.command("type", std::to_string(ref));
+        for (char ch : text) c.key(std::string(1, ch));
+        c.key("enter");
+    };
+    link.presses.clear(); link.arp.stepVars.clear();
+    typeIn(prst, "AP06");
+    settle();
+    CHECK(link.arp.preset == 6 && link.arp.blindSteps == 0 && c.view().screen.rowText(0).find("PRST AP06 Alpha 6") == 0);
+    typeIn(prst, "snd");
+    settle();
+    CHECK(link.arp.preset == -1 && link.arp.blindSteps == 0 && c.view().screen.rowText(0).find("PRST Snd") == 0);
+    c.choose(prst, 4);                                                         // back to AP04 for what follows
+    settle();
+    CHECK(link.arp.preset == 4);
     // Lo n by dragging: the target follows the drag; both key-range pairs (the OS writes them).
     link.presses.clear(); link.arp.stepVars.clear();
     c.command("drag_begin", std::to_string(lo));
@@ -1233,6 +1250,54 @@ void testDemoMode() {
     std::printf("editor_edit_test: demo mode: %d requests in 10 s, nothing pressed, one message\n", requests);
 }
 
+// F-56: right-click on an editor value opens the plugin menu; a value edited since the preset loaded adds Revert on top
+// (the value's name and the old value's text), which focuses the value and reverts it. Unedited and display-only
+// values: nothing on top. A wave is typed by its list entry's text: the number, or the number and the start of the name.
+void testValueMenu() {
+    FakeLink link;
+    editor::Controller c(link);
+    c.setTables(tables());
+    c.setWaveNames(editor::parseWaveNames("7\tChoir\n13\tBell\n"));
+    double now = 0;
+    auto tick = [&](double ms) { now += ms; c.tick(now); };
+    c.setOpen(true);
+    tick(10);
+    c.command("area", "OSC");
+    c.command("section", "WAVE");
+    Bytes osc(0x100, 0);
+    osc[0x4C] = 0xAB; osc[0x4D] = 0xCD; osc[0x4F] = 0x07;                     // wave 7
+    Bytes ram(232, 0);
+    ram[4 * 6] = 0xAB; ram[4 * 6 + 1] = 0xCD; ram[4 * 6 + 3] = 0x07;          // wave 7
+    ram[4 * 12] = 0x12; ram[4 * 12 + 3] = 0x34;                                 // wave 13
+    for (const Bytes& m : link.sent) {
+        if (link.isRead(m, edproto::kRawMemory, kWaveList + 4)) link.answerData(m, ram);
+        else if (m.size() > 6 && m[5] == edproto::kPartialRead && FakeLink::addressOf(m).type == edproto::kSound) link.answer(m, osc);
+    }
+    tick(10);
+    const int wave = c.refForTest('o', 51), trig = c.refForTest('o', 16);
+    CHECK(spanOf(c.view(), wave) && c.view().screen.rowText(spanOf(c.view(), wave)->row).find("7 Choir") != std::string::npos);
+    CHECK(!c.menu(wave).revert && !c.menu(trig).revert);                       // nothing edited: nothing on top
+    link.sent.clear();
+    c.command("type", std::to_string(wave));
+    for (char ch : std::string("13 bell")) c.key(std::string(1, ch));
+    c.key("enter");
+    CHECK(link.sent.size() == 1 && link.sent[0] == edproto::partialWrite({edproto::kSound, 0, 2, 0, 0x4C, 4}, {0x12, 0x00, 0x00, 0x34}));
+    tick(200);
+    const editor::Menu m = c.menu(wave);
+    CHECK(m.revert && editor::revertItemText(m) == "Revert WAVE ID to 7 Choir");
+    CHECK(!c.menu(trig).revert);                                               // display only
+    // Choosing Revert, as the plugin does: the value focused, the old wave written back; then nothing to revert.
+    link.sent.clear();
+    c.command("focus", std::to_string(trig));
+    c.command("focus", std::to_string(wave));
+    c.revert(wave);
+    CHECK(c.focusForTest() == wave);
+    CHECK(link.sent.size() == 1 && link.sent[0] == edproto::partialWrite({edproto::kSound, 0, 2, 0, 0x4C, 4}, {0xAB, 0xCD, 0x00, 0x07}));
+    tick(200);
+    CHECK(!c.menu(wave).revert);
+    std::printf("editor_edit_test: right-click Revert on an edited value; waves typed by their list text\n");
+}
+
 int main() {
     testMessages();
     testFields();
@@ -1241,6 +1306,7 @@ int main() {
     testArpRound();
     testArpLongNames();
     testDemoMode();
+    testValueMenu();
     std::printf("editor_edit_test: %s\n", failures ? "FAILED" : "passed");
     return failures ? 1 : 0;
 }

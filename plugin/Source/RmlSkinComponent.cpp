@@ -289,8 +289,8 @@ void RmlSkinComponent::mouseDown(const juce::MouseEvent& e) {
     if (message_.isNotEmpty() && e.position.y < bannerBottom && e.position.y >= bannerBottom - 64) { showMessage({}); return; }   // click hides it
     if (e.mods.isPopupMenu()) {                                                   // right-click never presses
         if (!viewReady_.load()) { if (onRightClick) onRightClick(e, -1); return; }
-        // Ask the view (GL thread) what is under the mouse: an editor value (its list), else a panel control (the
-        // menu with MIDI learn's items for it), else the plain menu.
+        // Ask the view (GL thread) what is under the mouse: an editor value (the menu with its Revert, if edited), else
+        // a panel control (the menu with MIDI learn's items for it), else the plain menu.
         const int x = toPx(e.position.x), y = toPx(e.position.y);
         const bool values = editorVisible_.load() && onEditorValueMenu;
         post([this, x, y, values, sp = juce::Component::SafePointer<RmlSkinComponent>(this), ev = e] {

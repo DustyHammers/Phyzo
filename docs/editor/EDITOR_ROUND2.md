@@ -127,7 +127,7 @@ Labels are the OS's own 4-character codes, read at runtime from the addresses in
 | t### tempo (0x88812) | 406 | 4 | 25–320 | `t%3d` |
 | arp pattern | 390 | 2 | arp pattern number, 0xFFFF none | display-only: the pattern's name (SysEx read, type 9, number n, offset 8, 16 characters) |
 | riff (v0.8.3.5) | 394 | 2 | riff number, 0xFFFF none | display-only: the riff's name (type 11, read like the pattern's; ARP_ROUND.md) |
-| PrSt (0x88882) | — | — | the OS's current arp preset, 0x0BE01880 (32-bit, −1 = " Snd") | " Snd" (0x88888) or the OS's own number (from 0, since v0.8.3.5) and name (`AP%02d`, 0x8889E; names: type 8, number n, offset 8); drag / typed / right-click list (the arp presets up to where the OS stops answering name reads, ARP_ROUND.md) step to it through the panel's −/No +/Yes buttons (§1b) |
+| PrSt (0x88882) | — | — | the OS's current arp preset, 0x0BE01880 (32-bit, −1 = " Snd") | " Snd" (0x88888) or the OS's own number (from 0, since v0.8.3.5) and name (`AP%02d`, 0x8889E; names: type 8, number n, offset 8); drag / typed entry (the arp presets up to where the OS stops answering name reads, ARP_ROUND.md) step to it through the panel's −/No +/Yes buttons (§1b) |
 | arp settings name | 334 | 16 | text | display-only |
 
 ## 4. Follow on panel knobs
@@ -160,8 +160,10 @@ The rack skin is not in the repo: the project chat adds the call to the rack ski
 - Click and hold a value and drag up/down: 1 step per 4 dp, Shift fine. Values are sent while dragging (NRPN paced like
   panel knob moves; dump-based fields coalesced as in §1) and the final value on release. The mouse wheel never changes
   values.
-- Double-click: typed entry (Enter sends, Esc cancels). Right-click: the OS's value or name list (waves by number and
-  name; on the arp page's PrSt field, the arp presets), and revert to the stored value.
+- Double-click: typed entry (Enter sends, Esc cancels): a number, or an entry of the OS's value or name list (waves by
+  number and name; on the arp page's PrSt field, the arp presets) by its text or the start of it. Right-click: the
+  plugin menu, with Revert (to the value before the edits) on top when the value was edited (v0.8.4.1, F-56: the list
+  is no longer shown).
 - Every edit: clamp to the field's range, send, read back, show what the OS holds. Display-only fields ignore drags.
 - Arp: Lo n / Hi n write both pairs; setting an interval clears the others; on/off and keyboard are shown only.
 
