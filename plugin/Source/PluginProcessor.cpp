@@ -7,8 +7,8 @@
 
 namespace {
 constexpr uint32_t kStateMagic = 0x505A4850;     // "PHZP" (little-endian)
-constexpr uint32_t kStateVersion = 5;          // 2: + skin knob positions; 3: + window size; 4: + its scale's version;
-                                                // 5: + the editor unit open (older still read)
+constexpr uint32_t kStateVersion = 6;          // 2: + skin knob positions; 3: + window size; 4: + its scale's version;
+                                                // 5: + the editor unit open; 6: + the MIDI learn bindings (older still read)
 constexpr int kTimerMs = 100, kScanEveryTicks = 20;   // rescan the ROM folder every 2 s while something is missing
 
 std::mutex g_instancesMtx;
@@ -24,6 +24,8 @@ PhyzoProcessor::PhyzoProcessor()
     dataFolder_.getChildFile("skins").createDirectory();
     events_.reserve(4096);
     port_.ed = &editorPort_;
+    port_.learn = &learn_;
+    learn_.setBindings(learnDefaults());            // a new instance: the default bindings (none unless saved)
     // The factory user flash (what the OS's own factory restore writes): made once per OS image from the user's own
     // OS, cached in cache/ (never shipped). New instances start from it (Engine).
     engine_.setFactoryUserFlash(true, dataFolder_.getChildFile("cache").getFullPathName().toStdString());
@@ -35,6 +37,7 @@ PhyzoProcessor::PhyzoProcessor()
 }
 
 PhyzoProcessor::~PhyzoProcessor() {
+    learn_.releaseHeld();                            // a learned button held: released first
     stopTimer();
     editorTicker_.stopTimer();
     chooser_.reset();
@@ -220,6 +223,7 @@ void PhyzoProcessor::EditorPort::editorState(skin::EditorState& out) {
 
 void PhyzoProcessor::timerCallback() {
     engine_.service();
+    serviceLearn();
     // The skin's editor calls while the editor unit is closed: the library controls in the main document (LIBRARY
     // opens the unit; SAVE, IMPORT, EXPORT and FOLDER work without it). While it is open, its own ticker runs them.
     if (!editorActive_.load()) runEditorQueue();
@@ -257,6 +261,10 @@ void PhyzoProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
     for (const auto meta : midi)
         if (events_.size() < events_.capacity()) events_.push_back({meta.samplePosition, meta.data, meta.numBytes});
     midi.clear();
+    // MIDI learn: bound messages (and the one that completes a learn) drive the panel and are taken out; everything
+    // else passes as it came. No lock, no allocation (with no bindings, nothing is even looked at).
+    events_.resize(size_t(learn_.process(events_.data(), int(events_.size()), learnClockMs_)));
+    learnClockMs_ += n * 1000.0 / std::max(1.0, hostRate_.load());
     // Audio In shares the buffer with the output (in place): copy it out first.
     const float* inL = nullptr; const float* inR = nullptr;
     if (inputActive_ && n <= int(inL_.size())) {
@@ -308,7 +316,8 @@ juce::AudioProcessorEditor* PhyzoProcessor::createEditor() { return new PhyzoEdi
 // State: magic, version, UI flags, the engine state (complete machine, gzip-compressed), then the skin's knob
 // element positions (count, then id and raw for each), then the window size (winscale) and whether it is still on
 // the old scale (version 3 projects store sizes relative to the full body size), then whether the editor unit is
-// open (version 5).
+// open (version 5), then the MIDI learn bindings (version 6: count, then for each: control id (int), channel (0 =
+// Any), CC or note number, kind (0 CC, 1 note), 14-bit seen; an empty list means no bindings).
 void PhyzoProcessor::getStateInformation(juce::MemoryBlock& dest) {
     ++meter.stateRequests;
     const std::vector<uint8_t> engineState = engine_.getState();
@@ -331,6 +340,15 @@ void PhyzoProcessor::getStateInformation(juce::MemoryBlock& dest) {
     out.writeFloat(editorScale.load());
     out.writeByte(editorScaleLegacy.load() ? 1 : 0);
     out.writeByte(editorWanted_.load() ? 1 : 0);
+    const std::vector<midilearn::Binding> bindings = learn_.bindings();
+    out.writeInt(int(bindings.size()));
+    for (const midilearn::Binding& b : bindings) {
+        out.writeInt(b.control);
+        out.writeByte(char(b.channel));
+        out.writeByte(char(b.number));
+        out.writeByte(b.note ? 1 : 0);
+        out.writeByte(b.fine ? 1 : 0);
+    }
 }
 
 void PhyzoProcessor::setStateInformation(const void* data, int size) {
@@ -360,8 +378,103 @@ void PhyzoProcessor::setStateInformation(const void* data, int size) {
         editorScaleLegacy = version == 3 || (!in.isExhausted() && in.readByte() != 0);
     }
     if (version >= 5 && !in.isExhausted()) editorWanted_ = in.readByte() != 0;
+    // MIDI learn: the project's bindings (version 6, possibly none); an older project gets the default bindings. A
+    // learned button held now is released first.
+    std::vector<midilearn::Binding> bindings;
+    if (version >= 6) {
+        const int count = in.getNumBytesRemaining() >= 4 ? in.readInt() : 0;
+        for (int i = 0; i < count && i < 1024 && in.getNumBytesRemaining() >= 8; ++i) {
+            midilearn::Binding b;
+            b.control = in.readInt();
+            b.channel = uint8_t(in.readByte());
+            b.number = uint8_t(in.readByte());
+            b.note = in.readByte() != 0;
+            b.fine = in.readByte() != 0;
+            bindings.push_back(b);
+        }
+    } else {
+        bindings = learnDefaults();
+    }
+    learn_.setBindings(bindings);
     { std::lock_guard<std::mutex> lk(port_.mtx); port_.knobs = std::move(knobs); }
     engine_.setState(engineState);
 }
+
+// ------------------------------------------------------------------ MIDI learn (F-55, docs/MIDI_LEARN.md)
+
+std::vector<midilearn::Binding> PhyzoProcessor::learnDefaults() {
+    return midilearn::Learn::fromText(SkinSettings::midiLearnDefaults().toStdString());
+}
+
+// Timer: what the audio thread heard. A learned message becomes a binding on the channel it came on (moving it from
+// another control if one held it); a learned button that sent only one edge gets a warning (the binding stays). A
+// learned button left down with no binding (it was moved or forgotten while a message was on its way) is released.
+void PhyzoProcessor::serviceLearn() {
+    midilearn::Event e;
+    while (learn_.takeEvent(e)) {
+        const midilearn::PerfLabels labels = perfLabels();
+        midilearn::Binding b;
+        if (e.kind == midilearn::Event::Learned) {
+            std::vector<int> moved;
+            if (learn_.commit(e, &moved) && learn_.bindingOf(e.control, b))
+                learnMessage(moved.empty() ? midilearn::msgBound(b, labels) : midilearn::msgMoved(b, moved, labels));
+        } else if (e.kind == midilearn::Event::OneEdge && learn_.bindingOf(e.control, b)) {
+            learnMessage(midilearn::msgOneEdge(b, labels));
+        }
+    }
+    learn_.releaseOrphans();
+}
+
+// Row 4 of the editor unit while it shows (one message at a time, 3 s each, as the library's), else the window's
+// banner for 3 s; with no window, nowhere.
+void PhyzoProcessor::learnMessage(const std::string& text) {
+    if (editorActive_.load()) { libraryNotice(text); return; }
+    if (auto* ed = dynamic_cast<PhyzoEditor*>(getActiveEditor())) ed->showLearnMessage(juce::String::fromUTF8(text.c_str()));
+}
+
+void PhyzoProcessor::armLearn(int control) {
+    if (!midilearn::learnable(control)) return;
+    if (learn_.armed() == control) { learn_.arm(midilearn::kNone); return; }   // MIDI learn again: cancelled
+    learn_.arm(control);
+    learnMessage(midilearn::msgLearn(control, perfLabels()));
+}
+
+bool PhyzoProcessor::cancelLearn() {
+    if (learn_.armed() == midilearn::kNone) return false;
+    learn_.arm(midilearn::kNone);
+    return true;
+}
+
+void PhyzoProcessor::setLearnCc(int control, int cc) {
+    midilearn::Binding b, nb;
+    nb.control = control; nb.number = cc;
+    if (learn_.bindingOf(control, b)) nb.channel = b.channel;   // its channel; Any if it had none
+    std::vector<int> moved;
+    if (!learn_.bind(nb, &moved) || !learn_.bindingOf(control, b)) return;
+    const midilearn::PerfLabels labels = perfLabels();
+    learnMessage(moved.empty() ? midilearn::msgBound(b, labels) : midilearn::msgMoved(b, moved, labels));
+}
+
+void PhyzoProcessor::setLearnChannel(int control, int channel) {
+    midilearn::Binding b;
+    if (!learn_.bindingOf(control, b) || b.channel == channel) return;
+    b.channel = channel;
+    std::vector<int> moved;
+    if (!learn_.bind(b, &moved, false) || !learn_.bindingOf(control, b)) return;
+    const midilearn::PerfLabels labels = perfLabels();
+    learnMessage(moved.empty() ? midilearn::msgBound(b, labels) : midilearn::msgMoved(b, moved, labels));
+}
+
+void PhyzoProcessor::forgetLearn(int control) {
+    midilearn::Binding b;
+    if (!learn_.bindingOf(control, b) || !learn_.forget(control)) return;
+    learnMessage(midilearn::msgForgotten(b, perfLabels()));
+}
+
+void PhyzoProcessor::forgetAllLearn() { learn_.forgetAll(); }
+
+void PhyzoProcessor::saveLearnDefaults() { SkinSettings::setMidiLearnDefaults(juce::String(midilearn::Learn::toText(learn_.bindings()))); }
+
+void PhyzoProcessor::clearLearnDefaults() { SkinSettings::clearMidiLearnDefaults(); }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new PhyzoProcessor(); }

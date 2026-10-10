@@ -1,6 +1,8 @@
 // Machine smoke test: needs no ROM data. A small 68k program of our own stands in for the OS image and exercises
 // the CPU core (Musashi), RAM, serial channel B in both directions (the MIDI port) and the hard-stall detector.
 #include <cstdio>
+#include <cstring>
+#include <new>
 #include <string>
 #include <thread>
 #include <vector>
@@ -168,6 +170,24 @@ int main() {
             });
         for (auto& th : threads) th.join();
         for (int t = 0; t < kThreads; ++t) CHECK(bad[size_t(t)] == 0);
+    }
+
+    // A saved state holds only what the machine set, never leftover memory: machines that start in memory filled with
+    // different patterns and run the same save the same bytes, struct padding included, and a machine restored from
+    // that state saves it again unchanged. (The ESP2's pending memory operation was copied whole with its two padding
+    // bytes never set, so states of the same machine could differ in them.)
+    {
+        alignas(Machine) static unsigned char memA[sizeof(Machine)], memB[sizeof(Machine)], memC[sizeof(Machine)];
+        std::memset(memA, 0xAA, sizeof memA); std::memset(memB, 0x55, sizeof memB); std::memset(memC, 0x3C, sizeof memC);
+        Machine* a = new (memA) Machine();
+        Machine* b = new (memB) Machine();
+        Machine* c = new (memC) Machine();
+        CHECK(a->init(os, cfg, err)); CHECK(b->init(os, cfg, err)); CHECK(c->init(os, cfg, err));
+        a->runUntil(a->cycles() + 7777); b->runUntil(b->cycles() + 7777);
+        const std::vector<uint8_t> sa = a->saveState(), sb = b->saveState();
+        CHECK(sa == sb);
+        CHECK(c->loadState(sa, err)); CHECK(c->saveState() == sa);
+        a->~Machine(); b->~Machine(); c->~Machine();
     }
 
     std::printf("machine_test: %s\n", failures ? "FAILED" : "passed");

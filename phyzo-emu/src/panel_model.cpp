@@ -68,7 +68,8 @@ void PanelModel::complete() {
             uint64_t when = msgStart_ + uint64_t(helloDelayMs * cyclesPerMs);
             if (keepLog) log({msgStart_, true, msg_, d});
             msg_.clear();
-            sendToOs({0xf0, 0x33}, when);
+            const uint8_t reply[2] = {0xf0, 0x33};
+            sendToOs(reply, 2, when);
             if (keepLog) log({when, false, {0xf0, 0x33}, "hello reply (panel model)"});
             return;
         }
@@ -79,7 +80,8 @@ void PanelModel::complete() {
             if (keepLog) log({msgStart_, true, msg_, d});
             msg_.clear();
             uint64_t when = msgStart_ + uint64_t(helloDelayMs * cyclesPerMs);
-            sendToOs({0xf2, uint8_t(replyF2 & 0x7f)}, when);
+            const uint8_t reply[2] = {0xf2, uint8_t(replyF2 & 0x7f)};
+            sendToOs(reply, 2, when);
             if (keepLog) log({when, false, {0xf2, uint8_t(replyF2 & 0x7f)}, "F2 reply (panel model)"});
             return;
         }
@@ -99,7 +101,7 @@ void PanelModel::complete() {
                 out.push_back(uint8_t(v & 0x7f));
             }
             uint64_t when = msgStart_ + uint64_t(helloDelayMs * cyclesPerMs);
-            sendToOs(out, when);
+            sendToOs(out.data(), out.size(), when);
             if (answerF4Value >= 0) std::snprintf(buf, sizeof buf, "26 control reports, value %d (panel model)", answerF4Value & 0x3ff);
             else std::snprintf(buf, sizeof buf, "26 control reports, panel positions (panel model)");
             if (keepLog) log({when, false, out, buf});
@@ -154,12 +156,18 @@ void PanelModel::moveControl(int cc, int raw, uint64_t cycle) {
     if (cc < 0 || cc >= kControls) return;
     const int v = raw < 0 ? 0 : raw > 1023 ? 1023 : raw;
     controls[size_t(cc)] = uint16_t(v);
-    inject({uint8_t(0xb0 | ((v >> 7) & 7)), uint8_t(cc), uint8_t(v & 0x7f)}, cycle, "control moved");
+    const uint8_t m[3] = {uint8_t(0xb0 | ((v >> 7) & 7)), uint8_t(cc), uint8_t(v & 0x7f)};
+    inject(m, 3, cycle, "control moved");
 }
 
 void PanelModel::inject(const std::vector<uint8_t>& bytes, uint64_t cycle, const std::string& note) {
     if (keepLog) log({cycle, false, bytes, note});
-    if (sendToOs) sendToOs(bytes, cycle);
+    if (sendToOs) sendToOs(bytes.data(), bytes.size(), cycle);
+}
+
+void PanelModel::inject(const uint8_t* bytes, size_t n, uint64_t cycle, const char* note) {
+    if (keepLog) log({cycle, false, std::vector<uint8_t>(bytes, bytes + n), note});
+    if (sendToOs) sendToOs(bytes, n, cycle);
 }
 
 // ---------------------------------------------------------------- state (plugin projects)

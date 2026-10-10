@@ -221,6 +221,10 @@ void SkinView::update(double now) {
             // messages since the last frame arrive here as one change).
             pollLeds();
             pollDisplay();
+            for (int cc = 0; cc < 26; ++cc) {         // knobs moved by learned MIDI controls
+                int raw;
+                if (port_.takeLearnedKnob(cc, raw)) controlMoved(cc, raw);
+            }
             if (applyLedClasses()) changed_ = true;
             if (applyEditor()) changed_ = true;
             // Frame events only for a handler with code in it: an absent, empty or blank onframe asks for no frames.
@@ -361,6 +365,17 @@ void SkinView::setKnob(int cc, int raw) {
     knobSent(cc, raw);
 }
 
+void SkinView::controlMoved(int cc, int raw) {
+    if (cc < 0 || cc >= 26) return;
+    raw = std::clamp(raw, 0, 1023);
+    for (KnobElement* k : knobs_)
+        if (k->cc() == cc && k->IsVisible(true)) k->show(raw);
+    knobSent_[size_t(cc)] = raw;                  // the engine has it: a mouse move to the same value sends nothing
+    changed_ = true;
+    auto it = onKnobFns.find(cc);
+    if (it != onKnobFns.end()) callLua(it->second, {raw});
+}
+
 void SkinView::button(int raw, bool down) {
     if ((down_.count(raw) != 0) == down) return;  // only press and release edges
     if (down) down_.insert(raw); else down_.erase(raw);
@@ -467,6 +482,20 @@ int SkinView::editorValueAt(int x, int y) {
         if (const EditorSpan* sp = spanAt(context_->GetHoverElement()); sp && !sp->pick) ref = sp->ref;
     });
     return ref;
+}
+
+bool SkinView::panelControlAt(int x, int y, bool& knob, int& id) {
+    bool found = false;
+    guarded(this, [&] {
+        ViewScope s(this);
+        if (!context_ || !document_) return;
+        mouseX_ = x; mouseY_ = y;
+        context_->ProcessMouseMove(x, y, 0);
+        Rml::Element* hover = context_->GetHoverElement();
+        if (KnobElement* k = findUp<KnobElement>(hover)) { knob = true; id = k->cc(); found = true; }
+        else if (PButtonElement* b = findUp<PButtonElement>(hover)) { knob = false; id = b->raw(); found = true; }
+    });
+    return found;
 }
 
 // The mouse wheel never changes editor values (it only scrolls, as RmlUi does).

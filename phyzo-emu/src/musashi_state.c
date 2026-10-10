@@ -1,6 +1,7 @@
 /* Save and restore Musashi's CPU state (one global struct). Used to run several machines in one process
    (several plugin instances) and to store the CPU in the plugin's project state. Host-side pointers in the struct
    (cycle tables and callbacks) are never taken from a saved copy: the live values of this process are kept. */
+#include <stddef.h>
 #include <string.h>
 #include "m68kcpu.h"
 
@@ -26,12 +27,16 @@ void phyzo_cpu_load(const void* src) {
     m68ki_cpu.instr_hook_callback = live.instr_hook_callback;
 }
 
-/* As phyzo_cpu_save, with the host pointers cleared (for state written to project files). */
+/* As phyzo_cpu_save, with the host pointers cleared (for state written to project files). Copied whole, padding
+   included, then the pointers zeroed in place: a struct copy on the stack may leave its padding as leftover memory. */
 void phyzo_cpu_save_portable(void* dst) {
-    m68ki_cpu_core c = m68ki_cpu;
-    c.cyc_instruction = 0; c.cyc_exception = 0;
-    c.int_ack_callback = 0; c.bkpt_ack_callback = 0; c.reset_instr_callback = 0; c.cmpild_instr_callback = 0;
-    c.rte_instr_callback = 0; c.tas_instr_callback = 0; c.illg_instr_callback = 0; c.trap_instr_callback = 0;
-    c.pc_changed_callback = 0; c.set_fc_callback = 0; c.instr_hook_callback = 0;
-    memcpy(dst, &c, sizeof c);
+    unsigned char* d = (unsigned char*)dst;
+    memcpy(d, &m68ki_cpu, sizeof(m68ki_cpu_core));
+#define PHYZO_CLEAR(f) memset(d + offsetof(m68ki_cpu_core, f), 0, sizeof m68ki_cpu.f)
+    PHYZO_CLEAR(cyc_instruction); PHYZO_CLEAR(cyc_exception);
+    PHYZO_CLEAR(int_ack_callback); PHYZO_CLEAR(bkpt_ack_callback); PHYZO_CLEAR(reset_instr_callback);
+    PHYZO_CLEAR(cmpild_instr_callback); PHYZO_CLEAR(rte_instr_callback); PHYZO_CLEAR(tas_instr_callback);
+    PHYZO_CLEAR(illg_instr_callback); PHYZO_CLEAR(trap_instr_callback); PHYZO_CLEAR(pc_changed_callback);
+    PHYZO_CLEAR(set_fc_callback); PHYZO_CLEAR(instr_hook_callback);
+#undef PHYZO_CLEAR
 }

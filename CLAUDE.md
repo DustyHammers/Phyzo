@@ -76,9 +76,9 @@ owner step by step through anything they must do by hand on github.com or on the
   aspect locked, resized by our own corner drag, never larger than the screen's usable area (F-32): Zoom steps that
   don't fit are greyed out and a saved size that doesn't fit steps down) is saved globally and per project; neither is
   a parameter.
-  Per-element knob positions and the window scale are project state (processor state version 5; version 3 sizes are
+  Per-element knob positions and the window scale are project state (processor state version 6; version 3 sizes are
   on the old scale and are converted x 4/3 for file skins when an editor opens; version 5 adds the editor unit's
-  open state).
+  open state; version 6 the MIDI learn bindings).
 - Editor screens (F-30, docs/editor/): `phyzo-emu/src/editor/` (no JUCE) reads the OS's parameter tables from the
   user's OS image at run time (never copied into the repo), builds the pages and reads the visible page with SysEx
   partial reads; `Engine` queues its messages whole at cable speed, puts the page read directly behind program changes,
@@ -124,8 +124,16 @@ owner step by step through anything they must do by hand on github.com or on the
     opens the unit on the list and goes back to it from a source's presets.
 - Real-time rules for `engine.*`: the audio thread never waits on other threads. `getState` asks the audio thread
   for a snapshot at a block boundary (`Machine::saveStateInto`, preallocated); panel controls go through a
-  lock-free latest-value slot per cc, sent at most once per 10 ms each and only while the panel link keeps up;
-  buttons go through a lock-free ring and are never merged or dropped. `phyzo_stress` measures this.
+  lock-free latest-value slot per cc, sent at most once per 10 ms each and only while the panel link keeps up (the
+  boot positions are per-control atomics); buttons go through a bounded lock-free multi-producer queue and are never
+  merged or dropped. setControl and pressRaw are lock-free and allocation-free from any thread, the audio thread
+  included. `phyzo_stress` measures this.
+- MIDI learn (v0.8.4, F-55, docs/MIDI_LEARN.md, `phyzo-emu/src/midi_learn.*`): a controller is a second front panel.
+  Learned CCs (notes for buttons) from the host's MIDI drive panel controls (knobs cc 0-22, panel buttons by raw; never
+  cc 23-25 or the keys) through setControl / pressRaw exactly as the mouse, and are swallowed; unbound MIDI passes
+  unchanged; 14-bit pairs (CC n + 32), buttons need both edges. Bindings: tables of atomics read by the audio thread
+  (no lock, no allocation), saved in processor state version 6, defaults in Phyzo.settings (`midiLearnDefaults`);
+  never synth or host parameters. The virtual MIDI port is not affected.
 - Panel analog controls (26, `Bx cc vv`, raw 0-1023): `phyzo-emu/docs/PANEL_CONTROLS.md`. Their positions are the
   panel's physical state (`PanelModel::controls`, saved with the machine), never host parameters. The pitch wheel
   must be answered at 512 to the OS's F4 request.

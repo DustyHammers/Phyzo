@@ -203,6 +203,14 @@ VST3 does not carry SysEx reliably; use the virtual port or the AU version for d
 Both are switched in the right-click menu under **MIDI**: **Virtual port "Phyzo"** (the name shows which port this
 window has) and **Send MIDI to host**. They are remembered for all projects and apply to every open Phyzo.
 
+**MIDI learn** (play the panel from a hardware controller): right-click a knob or a panel button, choose **MIDI
+learn**, then move a control on your controller (Esc cancels). Or choose **Set CC** for a CC number in two clicks.
+Learned CCs drive that panel control exactly as the mouse does and no longer reach the synth as MIDI; everything else
+from REAPER plays as before. Buttons need a controller button that sends both press and release (momentary); a
+message says so if it sends only one. The bindings are saved with the project; **MIDI > MIDI learn** lists them, and
+**Save as default for new instances** keeps them for new Phyzo instances. They apply only to MIDI from REAPER, not to
+the virtual port. Details: `docs/MIDI_LEARN.md`.
+
 ## 9. Audio input
 
 Phyzo has an optional stereo input, **Audio In**, that feeds the synth's effects processor the way the hardware's line

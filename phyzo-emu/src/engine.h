@@ -52,9 +52,14 @@ public:
     // The running machine's state alone (getState without the engine's wrapping): what a library clone restores.
     // Taken the same way (a snapshot at a block boundary); the machine is not paused, pressed or read otherwise.
     std::vector<uint8_t> machineState();
-    // Front-panel button press/release by OS button id (0 = -/No, 1 = +/Yes); lock-free, message thread.
+    // Front-panel button press/release by OS button id (0 = -/No, 1 = +/Yes). Lock-free and allocation-free, any
+    // thread (the button queue takes any number of producers).
     void pressButton(int osButton, bool down);
-    // An analog panel control moved (docs/PANEL_CONTROLS.md): cc 0-25, raw 0-1023. Lock-free, any UI thread.
+    // The panel id (raw) the running OS gives an OS button (0 = -/No, 1 = +/Yes), from the image's own button table;
+    // -1 until a machine runs. pressButton(b) and pressRaw(osButtonRaw(b)) send the OS the same message.
+    int osButtonRaw(int osButton) const { return osButton == 1 ? rawPlusPub_.load() : osButton == 0 ? rawMinusPub_.load() : -1; }
+    // An analog panel control moved (docs/PANEL_CONTROLS.md): cc 0-25, raw 0-1023. Lock-free and allocation-free,
+    // any thread, the audio thread included (MIDI learn, docs/MIDI_LEARN.md).
     // Like the real panel's serial link, each control sends at most one Bx cc vv per kControlIntervalMs (the latest
     // value wins) and only while the link is not backed up; buttons are never dropped or merged. The position is kept
     // (saved with the machine state) and is what the panel answers to the OS's F4 request when a machine boots.
@@ -62,7 +67,8 @@ public:
     static constexpr double kControlIntervalMs = 10;
     static constexpr size_t kPanelBacklogBytes = 9;  // knob messages wait while more bytes than this are unread
     int controlPosition(int cc) const { return cc >= 0 && cc < 26 ? positions_[size_t(cc)].load() : 0; }
-    // A front-panel button by its panel id (raw): sends 81 raw (down) or 80 raw (up). Lock-free for the audio thread.
+    // A front-panel button by its panel id (raw): sends 81 raw (down) or 80 raw (up). Lock-free and allocation-free,
+    // any thread, the audio thread included (learned buttons go through here exactly as the skin's).
     void pressRaw(int raw, bool down);
     // A panel button is down now (pressed and not yet released, or latched by the skin), by either call above.
     bool anyButtonHeld() const;
@@ -194,7 +200,7 @@ private:
     void fail(const std::string& reason);
     void drainButtons(Machine& m);
     void publishPositions(const Machine& m);
-    void push(uint32_t entry);
+    bool push(uint32_t entry);                       // false: the queue is full (the edge is dropped)
     void attachLeds(Machine& m);
     void sendControls(Machine& m);
     void serveSnapshot(Machine& m);
@@ -310,14 +316,23 @@ private:
     std::array<uint64_t, 26> controlSentAt_{};       // machine cycle of each control's last message (audio thread)
     uint64_t controlMessages_ = 0, buttonMessages_ = 0;
 
-    // panel buttons: ring (UI threads) -> audio thread, never merged
-    static constexpr int kButtonRing = 1024;
-    std::array<std::atomic<uint32_t>, kButtonRing> buttons_{};
+    // panel buttons: a bounded lock-free queue, never merged. Any number of producers (the message thread, the skin's
+    // render thread, the audio thread's learned buttons) reserve a cell with one compare-and-swap; the audio thread
+    // consumes the cells in reservation order (a cell still being written waits for the next block). Entries:
+    // (kind << 24) | payload.
+    static constexpr uint32_t kButtonRing = 1024;    // a power of two
+    struct ButtonCell { std::atomic<uint32_t> seq{0}; uint32_t value = 0; };
+    std::array<ButtonCell, kButtonRing> buttons_;
+    std::atomic<uint32_t> btnEnqueue_{0};
+    uint32_t btnDequeue_ = 0;                         // audio thread
     std::array<std::atomic<uint32_t>, 4> heldRaw_{};  // the raw buttons down now (one bit each)
-    std::atomic<uint32_t> heldOs_{0};                 // pressButton's -/No and +/Yes down now   // (kind << 24) | payload
-    std::mutex pushMtx_;                                         // producers: message thread and skin render thread
+    std::atomic<uint32_t> heldOs_{0};                 // pressButton's -/No and +/Yes down now
     std::array<std::atomic<uint16_t>, 26> positions_{};          // current control positions (for the UI)
-    std::mutex controlsMtx_;
-    std::array<uint16_t, 26> controls_{};                          // positions for the next cold boot
-    std::atomic<uint32_t> btnHead_{0}, btnTail_{0};
+    // Positions for the next cold boot (what the panel answers to the OS's F4), one atomic per control: setControl
+    // writes the new position from any thread without a lock; a new machine copies them one by one. Each element is
+    // always a whole position; a move that lands while a new machine copies them is still pending (pendingControl_)
+    // and goes to that machine once it runs, and sendControls writes back each position it sent, so they converge on
+    // the last position set.
+    std::array<std::atomic<uint16_t>, 26> controls_{};
+    std::atomic<int> rawPlusPub_{-1}, rawMinusPub_{-1};   // rawPlus_ / rawMinus_ for other threads (-1: no machine yet)
 };

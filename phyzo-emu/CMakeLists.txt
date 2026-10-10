@@ -71,7 +71,7 @@ endforeach()
 # One static library with the Musashi core inside (the core and our glue call each other).
 add_library(phyzo_core STATIC
   src/machine.cpp src/mc68340.cpp src/esp2_stub.cpp src/esp2_core.cpp src/voice_core.cpp src/panel_model.cpp
-  src/os_image.cpp src/rom_id.cpp src/musashi_glue.cpp src/resampler.cpp src/engine.cpp src/midi_stream.cpp src/user_flash.cpp
+  src/os_image.cpp src/rom_id.cpp src/musashi_glue.cpp src/resampler.cpp src/engine.cpp src/midi_stream.cpp src/user_flash.cpp src/midi_learn.cpp
   src/library/syx.cpp src/library/library.cpp src/library/hidden_machine.cpp src/library/service.cpp
   src/editor/editor_proto.cpp src/editor/editor_tables.cpp src/editor/editor_pages.cpp src/editor/editor_fields.cpp src/editor/editor_controller.cpp
   ${MUSASHI_SOURCES})
@@ -204,6 +204,11 @@ add_executable(engine_test tests/engine_test.cpp)
 target_link_libraries(engine_test PRIVATE phyzo_core)
 target_compile_options(engine_test PRIVATE -Wall -Wextra)
 add_test(NAME engine COMMAND engine_test)
+
+add_executable(midi_learn_test tests/midi_learn_test.cpp)
+target_link_libraries(midi_learn_test PRIVATE phyzo_core)
+target_compile_options(midi_learn_test PRIVATE -Wall -Wextra)
+add_test(NAME midi_learn COMMAND midi_learn_test)
 
 add_executable(midi_test tests/midi_test.cpp)
 target_link_libraries(midi_test PRIVATE phyzo_core)

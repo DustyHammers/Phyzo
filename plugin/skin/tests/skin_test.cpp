@@ -48,6 +48,14 @@ public:
         auto it = knobs.find(id); if (it == knobs.end()) return false; raw = it->second; return true;
     }
     void setKnobPosition(const std::string& id, int raw) override { knobs[id] = raw; }
+    std::map<int, int> learned;                      // MIDI learn: knob moves from learned controls, taken once
+    bool takeLearnedKnob(int cc, int& raw) override {
+        auto it = learned.find(cc);
+        if (it == learned.end()) return false;
+        raw = it->second;
+        learned.erase(it);
+        return true;
+    }
     std::string last() const { return sent.empty() ? std::string() : sent.back(); }
 };
 
@@ -169,6 +177,37 @@ int main() {
         v.update(t += 0.02);
         CHECK_EQ(sprite(v, "envA"), std::string("image(knob_012)"));           // round(202 * 60 / 1023)
         port.sent.clear();
+
+        // MIDI learn (docs/MIDI_LEARN.md). A learned control moved cc 11 and cc 3: the visible knobs show it as
+        // panel.setKnob does (positions saved, Lua told), the hidden stacked knob keeps its own, nothing is sent.
+        port.learned[11] = 300;
+        port.learned[3] = 900;
+        v.update(t += 0.02);
+        CHECK(port.sent.empty() && port.learned.empty());
+        CHECK_EQ(sprite(v, "vol"), std::string("image(knob_018)"));            // round(300 * 60 / 1023)
+        CHECK_EQ(port.knobs["vol"], 300);
+        CHECK_EQ(port.knobs["envA"], 900);
+        CHECK_EQ(port.knobs["envB"], 102);
+        CHECK_EQ(v.evalForTest("lastEvent()"), std::string("knob11 300"));
+        // A mouse move to the value the engine already has sends nothing; another value goes as before.
+        v.evalForTest("panel.setKnob(11, 300)");
+        CHECK(port.sent.empty());
+        v.evalForTest("panel.setKnob(11, 301)");
+        CHECK_EQ(port.last(), std::string("cc 11 301"));
+        port.sent.clear();
+        // The control under the mouse (right-click): a knob by its cc, a panel button by its id, nothing elsewhere.
+        bool isKnob = false;
+        int id = -1;
+        CHECK(v.panelControlAt(50, 50, isKnob, id) && isKnob && id == 11);
+        CHECK(v.panelControlAt(250, 50, isKnob, id) && isKnob && id == 3);    // the visible one of the stack
+        CHECK(v.panelControlAt(120, 210, isKnob, id) && !isKnob && id == 0x13);
+        CHECK(!v.panelControlAt(1000, 700, isKnob, id));
+        CHECK(port.sent.empty());                                                // asking presses nothing
+        port.learned[11] = 488;                                                  // back to where the tests below expect
+        port.learned[3] = 202;
+        port.positions[11] = 488;
+        v.update(t += 0.02);
+        CHECK(port.knobs["vol"] == 488 && port.knobs["envA"] == 202 && port.sent.empty());
 
         // Panel button: 81 on press, 80 on release, class pressed while down; onButton fires.
         v.mouseMove(120, 210, 0); v.mouseDown(0, 0);

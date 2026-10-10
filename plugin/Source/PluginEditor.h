@@ -20,8 +20,15 @@ public:
     void mouseDrag(const juce::MouseEvent&) override;
     void mouseUp(const juce::MouseEvent&) override;
     void mouseMove(const juce::MouseEvent&) override;
-    void setNotice(const juce::String& text);        // e.g. why this skin is shown instead of the chosen one
-    std::function<void(const juce::MouseEvent&)> onRightClick;
+    void setNotice(const juce::String& text, int seconds = 15);   // e.g. why this skin is shown instead of the chosen one
+    bool keyPressed(const juce::KeyPress&) override;
+    // Right-click: the main menu, with MIDI learn's items for -/No or +/Yes when the click was on one of them and it
+    // is learnable (control: 0x100 | its panel id; -1: none).
+    std::function<void(const juce::MouseEvent&, int control)> onRightClick;
+    std::function<bool()> onEscape;                  // Esc: true if used (a MIDI learn cancelled)
+    // MIDI learn: -/No and +/Yes are the same panel controls as the rack skin's (raw 0x0E and 0x0D) when the running
+    // OS gives its two buttons those ids (then pressButton and pressRaw send it the same message); else not learnable.
+    int learnControl(int osButton) const;
     std::function<void(int phase, juce::Point<int> offset)> onCornerResize;   // as RmlSkinComponent's
 
 private:
@@ -33,6 +40,7 @@ private:
         void paint(juce::Graphics&) override;
         void mouseDown(const juce::MouseEvent&) override;
         void mouseUp(const juce::MouseEvent&) override;
+        int osButton() const { return id; }
     private:
         PhyzoProcessor& proc;
         int id;
@@ -63,6 +71,8 @@ public:
     // The preset library's controls (message thread): LIBRARY with the editor unit closed opens it; EXPORT's menu.
     void openEditorUnit();
     void showExportMenu();
+    // MIDI learn's messages while the editor unit is closed: the window's banner, 3 s.
+    void showLearnMessage(const juce::String& text);
 
 private:
     juce::StringArray skinNames() const;             // discovered file skins
@@ -74,7 +84,9 @@ private:
     void cornerResize(int phase, juce::Point<int> offset);    // window = 100 % size (winscale) x scale (0.5-2.0)
     juce::Point<int> baseSize() const;               // 1795 x 848 for file skins (+ 394 with the editor unit), Built-in's own size
     void updateEditorUnit();                         // shows the editor unit if the project wants it and the skin has one
-    void showMenu(const juce::MouseEvent&);
+    void showMenu(const juce::MouseEvent&, int control = -1);   // control: MIDI learn's items on top (-1: none)
+    void addLearnItems(juce::PopupMenu& menu, int control);
+    juce::PopupMenu learnListMenu();                 // MIDI > MIDI learn
     bool showValueMenu(int ref);                     // an editor value's list and revert; false if it has none
     bool editorKey(const juce::KeyPress& k);         // the editor unit's focused value and typed entry
     void timerCallback() override;                   // missing-ROM message on file skins; saves the size

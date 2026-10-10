@@ -70,6 +70,9 @@ public:
     virtual bool knobPosition(const std::string& id, int& raw) = 0;
     virtual void setKnobPosition(const std::string& id, int raw) = 0;
     virtual bool audioClip() { return false; }                // Input Clip LED (F-19); unlit until then
+    // MIDI learn (docs/MIDI_LEARN.md): a learned control moved this knob's cc from the host's MIDI (the engine already
+    // has it). Taken once; the view shows it on the cc's visible knobs as panel.setKnob does, without sending it again.
+    virtual bool takeLearnedKnob(int /*cc*/, int& /*raw*/) { return false; }
     virtual EditorPort* editor() { return nullptr; }          // the editor unit (F-30); none: no editor
 };
 
