@@ -100,7 +100,9 @@ jumping). That is the intended panel behaviour and the editor never changes it.
 - Click and hold a value and drag up/down: 1 step per 4 dp, Shift = fine. Values are sent while dragging, paced like
   panel knob moves, and the final value on release.
 - The mouse wheel never changes values.
-- Double-click: typed entry (Enter sends, Esc cancels). Right-click: the value or name list, and revert to stored value.
+- Double-click: typed entry (Enter sends, Esc cancels): a number, or a value list entry's text or its start. Right-click:
+  the plugin menu, with Revert (to the value before the edits) on top when the value was edited (v0.8.4.1, F-56: the
+  value or name list is no longer shown).
   Arrow keys move the focus, +/- step it.
 - Every edit: clamp to the field's range, send, read back, display what the OS holds.
 

@@ -105,8 +105,10 @@ In the editor unit:
   and oscillator (O1/O2), the page (PAGE, PREV / NEXT). **FOLLOW** makes the editor follow the panel: the sound and
   oscillator being edited there, and, when you turn a panel knob, the page with that knob's value.
 - **Edit a value**: click and hold it, then drag up or down (one step per small movement; hold Shift for fine steps).
-  **Double-click** it to type a value (Enter sends, Esc cancels). **Right-click** it for the synth's list of values (or
-  the waves, notes, arp presets) and **Revert** (back to the value before your edits since the preset loaded). With a
+  **Double-click** it to type a value (Enter sends, Esc cancels): a number, or a named value or the start of it (`AP06`,
+  `Snd`, `PSEt`, an effect's name; a wave by its number, optionally followed by the start of its name, e.g. `13 bel`).
+  **Right-click** it for the usual menu; if you edited that value since the preset loaded, **Revert** (back to the
+  value before your edits) sits on top. With a
   value selected (it blinks), the arrow keys move to the next value and **+** / **-** step it. The mouse wheel never
   changes values.
 - Values that can't be edited yet ignore the mouse. **EDITED** lights after an edit until another preset is loaded.

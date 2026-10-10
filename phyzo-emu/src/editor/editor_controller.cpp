@@ -922,8 +922,23 @@ Menu Controller::menu(int ref) const {
     if (editable(ref) && it != before_.end() && valueOf(ref, cur) && cur != it->second) {
         m.revert = true;
         m.revertLabel = textOf(ref, it->second);
+        m.name = nameOf(ref);
     }
     return m;
+}
+
+std::string Controller::nameOf(int ref) const {
+    for (const Area& a : areas_)
+        for (const Section& s : a.sections)
+            for (const edpages::Page& page : s.pages)
+                for (const edpages::Row& row : page)
+                    for (const Item& x : row.items)
+                        if (x.ref == ref) {
+                            std::string n = edpages::trimmed(x.name.empty() ? row.label : x.name);
+                            for (char& ch : n) ch = char(std::toupper(static_cast<unsigned char>(ch)));
+                            return n;
+                        }
+    return std::string();
 }
 
 bool Controller::parseTyped(int ref, const std::string& s, int64_t& d) const {

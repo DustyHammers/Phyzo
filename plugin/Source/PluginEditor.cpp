@@ -493,29 +493,10 @@ void PhyzoEditor::showExportMenu() {
     menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition());
 }
 
-// Right-click on an editor value: the OS's value or name list (long lists in groups) and revert.
+// Right-click on an editor value (F-56): the usual plugin menu, with Revert on top when the value was edited since the
+// preset loaded. Values are set by click-and-drag and typed entry; the OS's value lists are not shown.
 bool PhyzoEditor::showValueMenu(int ref) {
-    editor::Controller& c = proc.editorController();
-    const editor::Menu m = c.menu(ref);
-    if (m.items.empty() && m.groups.empty() && !m.revert) return false;
-    c.command("focus", std::to_string(ref));
-    juce::PopupMenu menu;
-    auto add = [this, ref](juce::PopupMenu& to, const editor::Choice& ch) {
-        to.addItem(juce::String::fromUTF8(ch.label.c_str()), true, ch.current,
-                   [this, ref, v = ch.value] { proc.editorController().choose(ref, v); });
-    };
-    for (const editor::Choice& ch : m.items) add(menu, ch);
-    for (const auto& g : m.groups) {
-        juce::PopupMenu sub;
-        bool current = false;
-        for (const editor::Choice& ch : g.second) { add(sub, ch); current = current || ch.current; }
-        menu.addSubMenu(juce::String::fromUTF8(g.first.c_str()), sub, true, nullptr, current);
-    }
-    if (m.revert) {
-        if (menu.getNumItems() > 0) menu.addSeparator();
-        menu.addItem("Revert to " + juce::String::fromUTF8(m.revertLabel.c_str()), [this, ref] { proc.editorController().revert(ref); });
-    }
-    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition());
+    openMenu(-1, ref);
     return true;
 }
 
@@ -611,11 +592,25 @@ juce::PopupMenu PhyzoEditor::learnListMenu() {
     return m;
 }
 
-void PhyzoEditor::showMenu(const juce::MouseEvent&, int control) {
+void PhyzoEditor::showMenu(const juce::MouseEvent&, int control) { openMenu(control, -1); }
+
+void PhyzoEditor::openMenu(int control, int valueRef) {
     const juce::StringArray names = skinNames();
     const bool fileSkin = rml_ != nullptr;
     juce::PopupMenu skins, zoom, dev, menu;
-    if (midilearn::learnable(control)) addLearnItems(menu, control);
+    if (valueRef >= 0) {
+        const editor::Menu m = proc.editorController().menu(valueRef);
+        if (m.revert) {
+            menu.addItem(juce::String::fromUTF8(editor::revertItemText(m).c_str()), [this, valueRef] {
+                editor::Controller& c = proc.editorController();
+                c.command("focus", std::to_string(valueRef));
+                c.revert(valueRef);
+            });
+            menu.addSeparator();
+        }
+    } else if (midilearn::learnable(control)) {
+        addLearnItems(menu, control);
+    }
     skins.addItem(SkinSettings::kBuiltIn, true, current_ == SkinSettings::kBuiltIn, [this] {
         SkinSettings::setSkin(SkinSettings::kBuiltIn);
         showSkin(SkinSettings::kBuiltIn);

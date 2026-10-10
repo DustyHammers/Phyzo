@@ -85,9 +85,11 @@ private:
     juce::Point<int> baseSize() const;               // 1795 x 848 for file skins (+ 394 with the editor unit), Built-in's own size
     void updateEditorUnit();                         // shows the editor unit if the project wants it and the skin has one
     void showMenu(const juce::MouseEvent&, int control = -1);   // control: MIDI learn's items on top (-1: none)
+    // The plugin menu; on top: MIDI learn's items for a panel control, or Revert for an edited editor value (-1: none).
+    void openMenu(int control, int valueRef);
     void addLearnItems(juce::PopupMenu& menu, int control);
     juce::PopupMenu learnListMenu();                 // MIDI > MIDI learn
-    bool showValueMenu(int ref);                     // an editor value's list and revert; false if it has none
+    bool showValueMenu(int ref);                     // an editor value: the plugin menu, Revert on top if it was edited
     bool editorKey(const juce::KeyPress& k);         // the editor unit's focused value and typed entry
     void timerCallback() override;                   // missing-ROM message on file skins; saves the size
 

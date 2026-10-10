@@ -31,8 +31,7 @@ next item.
 **Limit (the arp preset's value):** after `PRST ` the value has 20 cells (cols 5-24): the number, a space and the
 name. A 15-character name fits exactly after a four-character number (`AP07`), a 14-character one after a
 five-character number (`AP104`). A longer name loses its last characters there (a 15-character name at a
-five-character number loses exactly its last one); the gap cell stays blank. The right-click list always shows the
-whole name.
+five-character number loses exactly its last one); the gap cell stays blank.
 
 ## The objects an arp preset refers to
 
@@ -60,7 +59,7 @@ number, in the ARP area only.
   - the probe not answered either: the OS answers nothing now (e.g. its demo), so no end is taken. The read waits for
     the OS's next answer to anything, then is tried again (never repeated every tick).
   The one read past the last arp preset is how the end is found; nothing after it is requested.
-- **Range:** the arp preset field's drag, typed entry and right-click list go from the preset's own settings (`Snd`)
+- **Range:** the arp preset field's drag and typed entry (`AP06`, `Snd`) go from the preset's own settings (`Snd`)
   to the last arp preset. Until the end is known they reach the last name answered (or the current arp preset, if
   higher).
 - A pattern, riff or feel the OS gives no name for never holds the arp preset names up.

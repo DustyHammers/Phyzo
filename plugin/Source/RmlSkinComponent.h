@@ -43,8 +43,8 @@ public:
     std::function<void(const juce::MouseEvent&, int control)> onRightClick;
     // Esc: true if the plugin used it (a MIDI learn cancelled); otherwise Esc releases the held panel buttons.
     std::function<bool()> onEscape;
-    // Right-click on a value of the editor unit (its reference): the value's list. Returns false to show the main
-    // menu instead.
+    // Right-click on a value of the editor unit (its reference): the plugin menu with the value's Revert on top (if
+    // edited). Returns false to show the plain menu instead.
     std::function<bool(int ref)> onEditorValueMenu;
     // A key for the editor unit (its focused value, typed entry); returns true if the editor used it.
     std::function<bool(const juce::KeyPress&)> onEditorKey;
