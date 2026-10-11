@@ -397,6 +397,7 @@ void Engine::runJob(Job job, std::vector<uint8_t> state, uint64_t generation) {
         Machine::Config cfg;
         if (!m->init(os, cfg, err) || !m->loadWaveMemory(job.wavePath, err)) return false;
         m->panel.keepLog = false;
+        m->esp2.audit = false;                       // the tools' audit bookkeeping: not needed here (output unchanged)
         attachLeds(*m);
         for (size_t i = 0; i < controls_.size(); ++i) m->panel.controls[i] = controls_[i].load(std::memory_order_relaxed);   // answered to the OS's F4
         m->captureAudio = true;

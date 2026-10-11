@@ -190,8 +190,11 @@ inline uint32_t Esp2Core::dolTrunc(uint32_t v) const {
 
 uint32_t Esp2Core::memRead(uint32_t addr) {
     if (addr - kRamBase < kRamWords) {
-        ++memReads; ramLow = std::min(ramLow, addr); ramHigh = std::max(ramHigh, addr);
-        if (wEpoch[addr - kRamBase] < epoch && addr >= staleWinLo && addr <= staleWinHi) { ++staleReads; staleLow = std::min(staleLow, addr); staleHigh = std::max(staleHigh, addr); }
+        ++memReads;
+        if (audit) {
+            ramLow = std::min(ramLow, addr); ramHigh = std::max(ramHigh, addr);
+            if (wEpoch[addr - kRamBase] < epoch && addr >= staleWinLo && addr <= staleWinHi) { ++staleReads; staleLow = std::min(staleLow, addr); staleHigh = std::max(staleHigh, addr); }
+        }
         return ram_[addr - kRamBase];
     }
     if ((addr & ~0x1Fu) == kVoicePort) { ++voicePortReads; return uint32_t(voicePort[addr & 31]) & 0xFFFFFF; }
@@ -202,8 +205,9 @@ uint32_t Esp2Core::memRead(uint32_t addr) {
 
 void Esp2Core::memWrite(uint32_t addr, uint32_t v) {
     if (addr - kRamBase < kRamWords) {
-        ++memWrites; ramLow = std::min(ramLow, addr); ramHigh = std::max(ramHigh, addr);
-        ram_[addr - kRamBase] = dolTrunc(v); wEpoch[addr - kRamBase] = epoch;
+        ++memWrites;
+        if (audit) { ramLow = std::min(ramLow, addr); ramHigh = std::max(ramHigh, addr); wEpoch[addr - kRamBase] = epoch; }
+        ram_[addr - kRamBase] = dolTrunc(v);
         return;
     }
     if ((addr & ~0x1Fu) == kVoicePort) { ++voicePortWrites; voicePort[addr & 31] = sx24(dolTrunc(v)); return; }
@@ -540,7 +544,7 @@ void Esp2Core::stepRef() {
         int64_t addr = int64_t(r_[d.G]) + r_[baseA] + ((d.ag == 4 || d.ag == 5) ? 1 : 0);
         if (addr - int64_t(r_[endA]) > 0) addr -= int64_t(r_[sizeA]) + 1;
         uint32_t ea = uint32_t(addr) & 0xFFFFFF;
-        if (d.ag != 7 && (int64_t(ea) < int64_t(r_[endA]) - int64_t(r_[sizeA]) || ea > r_[endA])) ++regionViolations;
+        if (audit && d.ag != 7 && (int64_t(ea) < int64_t(r_[endA]) - int64_t(r_[sizeA]) || ea > r_[endA])) ++regionViolations;
         if (watch > 0 && d.ag != 7 && !(ea - kRamBase < kRamWords) && (ea & ~0x1Fu) != kVoicePort) {
             --watch; std::fprintf(stderr, "AGEN pc %03X op %d R%d G=%03X aor %06X base %06X sizem1 %06X end %06X -> %06X\n", pc_, d.ag, d.rgn, d.G, r_[d.G], r_[baseA], r_[sizeA], r_[endA], ea);
         }
@@ -635,12 +639,14 @@ __attribute__((always_inline)) inline void Esp2Core::step() {
     if (memPend_.valid) {
         const uint32_t ra = memPend_.addr - kRamBase;
         if (ra < kRamWords) {                  // delay RAM, inline (statistics as memRead/memWrite)
-            if (memPend_.addr < ramLow) ramLow = memPend_.addr;
-            if (memPend_.addr > ramHigh) ramHigh = memPend_.addr;
-            if (memPend_.write) { ++memWrites; ram_[ra] = dolTrunc(r_[spr::DOL0 - memPend_.latch]); wEpoch[ra] = epoch; }
+            if (audit) {
+                if (memPend_.addr < ramLow) ramLow = memPend_.addr;
+                if (memPend_.addr > ramHigh) ramHigh = memPend_.addr;
+            }
+            if (memPend_.write) { ++memWrites; ram_[ra] = dolTrunc(r_[spr::DOL0 - memPend_.latch]); if (audit) wEpoch[ra] = epoch; }
             else {
                 ++memReads; dilPend_ = true; dilPendLatch_ = memPend_.latch; dilPendVal_ = ram_[ra];
-                if (wEpoch[ra] < epoch && memPend_.addr >= staleWinLo && memPend_.addr <= staleWinHi) { ++staleReads; staleLow = std::min(staleLow, memPend_.addr); staleHigh = std::max(staleHigh, memPend_.addr); }
+                if (audit && wEpoch[ra] < epoch && memPend_.addr >= staleWinLo && memPend_.addr <= staleWinHi) { ++staleReads; staleLow = std::min(staleLow, memPend_.addr); staleHigh = std::max(staleHigh, memPend_.addr); }
             }
         } else if (memPend_.write) memWrite(memPend_.addr, r_[spr::DOL0 - memPend_.latch]);
         else { dilPend_ = true; dilPendLatch_ = memPend_.latch; dilPendVal_ = memRead(memPend_.addr); }
@@ -655,7 +661,7 @@ __attribute__((always_inline)) inline void Esp2Core::step() {
         int64_t addr = int64_t(r_[d.G]) + r_[baseA] + ((d.ag == 4 || d.ag == 5) ? 1 : 0);
         if (addr - int64_t(r_[endA]) > 0) addr -= int64_t(r_[sizeA]) + 1;
         uint32_t ea = uint32_t(addr) & 0xFFFFFF;
-        if (d.ag != 7 && (int64_t(ea) < int64_t(r_[endA]) - int64_t(r_[sizeA]) || ea > r_[endA])) ++regionViolations;
+        if (audit && d.ag != 7 && (int64_t(ea) < int64_t(r_[endA]) - int64_t(r_[sizeA]) || ea > r_[endA])) ++regionViolations;
         if (watch > 0 && d.ag != 7 && !(ea - kRamBase < kRamWords) && (ea & ~0x1Fu) != kVoicePort) {
             --watch; std::fprintf(stderr, "AGEN pc %03X op %d R%d G=%03X aor %06X -> %06X\n", pc_, d.ag, d.rgn, d.G, r_[d.G], ea);
         }
@@ -721,15 +727,25 @@ __attribute__((always_inline)) inline void Esp2Core::step() {
 
 const Esp2Core::Decoded Esp2Core::Binder::kOutside = [] { Decoded n{}; n.run = &Esp2Core::runStep; return n; }();
 
-// Threaded dispatch: each line's routine ends by running the next line's (a tail call), so every routine has its own
-// indirect jump and the branch predictor learns the program's line sequence. runTo bounds a chain to 256 lines.
-__attribute__((always_inline)) inline void Esp2Core::next() {
-    ++cycle_;
-    if (cycle_ < stop_ && !suspended_) {
-        const Decoded& n = pc_ < uint32_t(kInstr) ? dec_[pc_] : Binder::kOutside;
-        n.run(*this, n);
-    }
-}
+// Threaded dispatch: each line's routine ends by running the next line's as a guaranteed tail call (a jump), so every
+// routine has its own indirect jump, the branch predictor learns the program's line sequence, and a chain of lines
+// never nests calls. runTo bounds a chain to 256 lines. Without the attribute (another compiler) it is a plain call
+// that the compiler may or may not turn into a jump, as before v0.8.5; the result is the same either way.
+#if defined(__clang__)
+#define ESP2_MUSTTAIL [[clang::musttail]]
+#elif defined(__GNUC__) && __GNUC__ >= 15
+#define ESP2_MUSTTAIL [[gnu::musttail]]
+#else
+#define ESP2_MUSTTAIL
+#endif
+#define ESP2_NEXT_LINE(c)                                                                           \
+    do {                                                                                            \
+        ++(c).cycle_;                                                                               \
+        if ((c).cycle_ < (c).stop_ && !(c).suspended_) {                                            \
+            const Decoded& n_ = (c).pc_ < uint32_t(kInstr) ? (c).dec_[(c).pc_] : Binder::kOutside;  \
+            ESP2_MUSTTAIL return n_.run((c), n_);                                                   \
+        }                                                                                           \
+    } while (0)
 
 // The common opcodes written out directly for the specialised lines (aluT is the definition; the lockstep test checks
 // these against it): ADD ADDV SUBV SUB SUBREV set every flag from the exact result and the operand signs, AVG keeps
@@ -781,12 +797,14 @@ __attribute__((always_inline)) inline void Esp2Core::stepT(const Decoded& d) {
     if (memPend_.valid) {
         const uint32_t ra = memPend_.addr - kRamBase;
         if (ra < kRamWords) {
-            if (memPend_.addr < ramLow) ramLow = memPend_.addr;
-            if (memPend_.addr > ramHigh) ramHigh = memPend_.addr;
-            if (memPend_.write) { ++memWrites; ram_[ra] = dolTrunc(r_[spr::DOL0 - memPend_.latch]); wEpoch[ra] = epoch; }
+            if (audit) {
+                if (memPend_.addr < ramLow) ramLow = memPend_.addr;
+                if (memPend_.addr > ramHigh) ramHigh = memPend_.addr;
+            }
+            if (memPend_.write) { ++memWrites; ram_[ra] = dolTrunc(r_[spr::DOL0 - memPend_.latch]); if (audit) wEpoch[ra] = epoch; }
             else {
                 ++memReads; dilPend_ = true; dilPendLatch_ = memPend_.latch; dilPendVal_ = ram_[ra];
-                if (wEpoch[ra] < epoch && memPend_.addr >= staleWinLo && memPend_.addr <= staleWinHi) { ++staleReads; staleLow = std::min(staleLow, memPend_.addr); staleHigh = std::max(staleHigh, memPend_.addr); }
+                if (audit && wEpoch[ra] < epoch && memPend_.addr >= staleWinLo && memPend_.addr <= staleWinHi) { ++staleReads; staleLow = std::min(staleLow, memPend_.addr); staleHigh = std::max(staleHigh, memPend_.addr); }
             }
         } else if (memPend_.write) memWrite(memPend_.addr, r_[spr::DOL0 - memPend_.latch]);
         else { dilPend_ = true; dilPendLatch_ = memPend_.latch; dilPendVal_ = memRead(memPend_.addr); }
@@ -802,7 +820,7 @@ __attribute__((always_inline)) inline void Esp2Core::stepT(const Decoded& d) {
         int64_t addr = int64_t(r_[d.G]) + r_[baseA] + d.agPlus;
         if (addr - int64_t(end) > 0) addr -= int64_t(size) + 1;
         uint32_t ea = uint32_t(addr) & 0xFFFFFF;
-        if (d.agMem && (int64_t(ea) < int64_t(end) - int64_t(size) || ea > end)) ++regionViolations;
+        if (audit && d.agMem && (int64_t(ea) < int64_t(end) - int64_t(size) || ea > end)) ++regionViolations;
         if (watch > 0 && d.agMem && !(ea - kRamBase < kRamWords) && (ea & ~0x1Fu) != kVoicePort) {
             --watch; std::fprintf(stderr, "AGEN pc %03X op %d R%d G=%03X aor %06X -> %06X\n", pc_, d.ag, d.rgn, d.G, r_[d.G], ea);
         }
@@ -864,17 +882,25 @@ __attribute__((always_inline)) inline void Esp2Core::stepT(const Decoded& d) {
         biozArmed_ = false;
         if (iozStatus_) iozStatus_ = false; else { suspended_ = true; ++biozSuspends; }
     }
-    next();
 }
 
-void Esp2Core::runStep(Esp2Core& c, const Decoded&) { c.step(); c.next(); }
+template <int SK, int AG, int MAC, int ALU, int OP>
+void Esp2Core::runT(Esp2Core& c, const Decoded& d) {
+    c.stepT<SK, AG, MAC, ALU, OP>(d);
+    ESP2_NEXT_LINE(c);
+}
+
+void Esp2Core::runStep(Esp2Core& c, const Decoded&) {
+    c.step();
+    ESP2_NEXT_LINE(c);
+}
 
 void Esp2Core::runNop(Esp2Core& c, const Decoded&) {
     if (!c.memPend_.valid && !c.aluPend_ && !c.dilPend_ && !c.biozArmed_ && c.pc_ != c.reptEnd_) {
         c.refpt_ = (c.refpt_ + 1) & 511;
         c.pc_ = c.npc_; c.npc_ = (c.npc_ + 1) & 0x3FF;
     } else c.step();
-    c.next();
+    ESP2_NEXT_LINE(c);
 }
 
 const std::array<AluFn, 32> Esp2Core::Binder::kAlu = aluTable(std::make_integer_sequence<int, 32>{});
