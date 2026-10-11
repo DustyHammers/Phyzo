@@ -160,6 +160,11 @@ the OS loads through the host port.
 - Execution is translated: each instruction is classified when the host writes it (pure NOPs, plain operands,
   MAC seed/shift/latch behaviour, discarded results); `--esp2-ref` runs the reference interpreter instead.
   `--esp2-checkpoint` restores the pre-spec SPR semantics of the v0.5 checkpoint.
+- Threaded dispatch: every line has its own routine (`runT<...>` for the specialised lines, `runStep`, `runNop`), and
+  each routine ends by jumping to the next line's routine. Since v0.8.5 that jump is a guaranteed tail call
+  (`[[clang::musttail]]`, or `[[gnu::musttail]]` with gcc 15 or later; other compilers: a plain call, as before), so
+  a chain of up to 256 lines never nests calls and each routine keeps its own indirect jump for the branch predictor.
+  The output is the same to the bit either way.
 - Clock: 192 instruction cycles per 44.1 kHz period (Assumed; the OS-built image needs 188).
 
 Board wiring (derived from the OS's shell program): the voice chip's ten output channels are read by the ESP2 as
@@ -190,6 +195,12 @@ epochs), `esp2stats <label>` (saturations, stale reads, region-bound violations,
 (ESP2 host commands only), `--esp2-ram-alias` (decode unmapped ESP2 addresses into RAM by their low 16 bits; default
 drops them). Every run writes `esp2_external_writes.csv` and lists CPU accesses outside the mapped devices; the clip
 report gives, per destination register, the count and the largest overshoot in 24-bit LSBs.
+
+The bookkeeping behind these on every delay-RAM access and AGEN (the RAM range used `ramLow` / `ramHigh`, the write
+epochs `wEpoch`, the stale reads `staleReads` / `staleLow` / `staleHigh`, the region-bound violations
+`regionViolations`) is an option, `Esp2Core::audit` (default on: the tools and the tests). The plugin's engine turns it
+off for its machines (v0.8.5): those four are then not updated (they keep the values they were loaded with), every
+other statistic is kept, and the output is the same to the bit. The option is not part of the saved state.
 
 ## Plugin engine (src/engine.*, src/resampler.*)
 

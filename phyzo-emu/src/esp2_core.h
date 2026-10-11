@@ -61,6 +61,11 @@ public:
     int32_t dacOut[2] = {0, 0};                // latched at the last tick (24-bit)
     int32_t auxOut[8] = {0};                   // SER 0x3E4-0x3EB at the last tick
     // audit instrumentation
+    // Option: keep the audit bookkeeping on delay-RAM accesses and AGEN (ramLow / ramHigh, the write epochs wEpoch, the
+    // stale-read window staleReads / staleLow / staleHigh, regionViolations) for the development tools. Off: those are
+    // skipped (they never affect the output); every other statistic is kept. Not state. The plugin's engine runs with
+    // it off.
+    bool audit = true;
     bool ramAlias = false;                     // option: decode unmapped addresses into RAM by the low 16 bits (64K alias)
     FILE* extLog = nullptr;                    // every external write outside RAM and the voice port (t, pc, addr, value)
     uint32_t staleWinLo = 0, staleWinHi = 0xFFFFFF;   // stale reads are counted only inside this address window
@@ -133,10 +138,11 @@ private:
     static void bind(Decoded& d);
     inline void step();
     template <int SK, int AG, int MAC, int ALU, int OP = -1> inline void stepT(const Decoded& d);
-    template <int SK, int AG, int MAC, int ALU, int OP = -1> static void runT(Esp2Core& c, const Decoded& d) { c.stepT<SK, AG, MAC, ALU, OP>(d); }
+    // The line routines: each runs its line, counts the cycle and continues with the next line's routine as a
+    // guaranteed tail call (ESP2_NEXT_LINE in esp2_core.cpp).
+    template <int SK, int AG, int MAC, int ALU, int OP = -1> static void runT(Esp2Core& c, const Decoded& d);
     static void runStep(Esp2Core& c, const Decoded&);
     static void runNop(Esp2Core& c, const Decoded&);
-    inline void next();                        // end of a line: count the cycle, continue with the next line's routine
     uint64_t stop_ = 0;                        // runTo: the current chain of lines ends here (not state)
     template <int OP> inline uint32_t aluFast(const Decoded& d, uint32_t ua, uint32_t ub, bool setFlags);
     void aluSatCold(const Decoded& d, int64_t exact);

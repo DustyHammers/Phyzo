@@ -6,6 +6,10 @@
 //     statistics must match after every sample period.
 //  3. Golden hash: the translated core's DAC output over all random programs must equal the recorded value, so
 //     speed work cannot change the output by accident (update it only for an intended behaviour change).
+//  3b. Audit off (the plugin's setting): the same programs on the translated core and the reference interpreter with
+//     the audit bookkeeping off, in lockstep with each other and with the translated core with it on: registers,
+//     DAC/aux, RAM and every non-audit statistic equal after every sample period, the same golden hash, and the audit
+//     statistics left untouched.
 #include <cinttypes>
 #include <cstdio>
 #include <cstring>
@@ -154,6 +158,34 @@ std::string diff(const Esp2Core& f, const Esp2Core& r) {
     return "";
 }
 
+// As diff, without the audit statistics (ramLow / ramHigh, staleReads, regionViolations) and with every other one.
+std::string nonAuditDiff(const Esp2Core& f, const Esp2Core& r) {
+    char b[160];
+    if (f.pc() != r.pc()) { std::snprintf(b, sizeof b, "pc %03X vs %03X", f.pc(), r.pc()); return b; }
+    if (f.cycle() != r.cycle()) return "cycle";
+    for (int i = 0; i < 2; ++i) if (f.dacOut[i] != r.dacOut[i]) { std::snprintf(b, sizeof b, "dac %d: %d vs %d", i, f.dacOut[i], r.dacOut[i]); return b; }
+    for (int i = 0; i < 8; ++i) if (f.auxOut[i] != r.auxOut[i]) return "aux";
+    for (int a = 0; a < Esp2Core::kRegs; ++a)
+        if (f.reg(a) != r.reg(a)) { std::snprintf(b, sizeof b, "reg %03X: %06X vs %06X", a, f.reg(a), r.reg(a)); return b; }
+    for (int i = 0; i < 32; ++i) if (f.voicePort[i] != r.voicePort[i]) return "voice port";
+    for (uint32_t i = 0; i < 0x100; ++i) if (f.ramWord(i) != r.ramWord(i)) { std::snprintf(b, sizeof b, "ram %02X", i); return b; }
+    const uint64_t fs[] = {f.regWrites, f.regReads, f.instrWrites, f.instrReads, f.controlWrites, f.readoutReads, f.mailboxReadsWhileRunning,
+                           f.mailboxReadsNonZero, f.badInstrAddr, f.executed, f.suspendedCycles, f.haltedCycles, f.biozPasses, f.biozSuspends,
+                           f.overruns, f.macSat, f.aluSat, f.dacSatSamples, f.ticks, f.memReads, f.memWrites, f.memUnmapped, f.voicePortReads,
+                           f.voicePortWrites, f.reservedMacOps, f.unknownSprReads, f.unknownSprWrites, f.satToDac, f.extWrites};
+    const uint64_t rs[] = {r.regWrites, r.regReads, r.instrWrites, r.instrReads, r.controlWrites, r.readoutReads, r.mailboxReadsWhileRunning,
+                           r.mailboxReadsNonZero, r.badInstrAddr, r.executed, r.suspendedCycles, r.haltedCycles, r.biozPasses, r.biozSuspends,
+                           r.overruns, r.macSat, r.aluSat, r.dacSatSamples, r.ticks, r.memReads, r.memWrites, r.memUnmapped, r.voicePortReads,
+                           r.voicePortWrites, r.reservedMacOps, r.unknownSprReads, r.unknownSprWrites, r.satToDac, r.extWrites};
+    for (size_t i = 0; i < sizeof fs / sizeof fs[0]; ++i) if (fs[i] != rs[i]) { std::snprintf(b, sizeof b, "statistic %zu: %llu vs %llu", i, (unsigned long long)fs[i], (unsigned long long)rs[i]); return b; }
+    if (f.satDest != r.satDest) return "saturation destinations";
+    return "";
+}
+
+bool auditUntouched(const Esp2Core& e) {
+    return e.ramLow == 0xFFFFFFFF && e.ramHigh == 0 && e.staleReads == 0 && e.staleLow == 0xFFFFFFFF && e.staleHigh == 0 && e.regionViolations == 0;
+}
+
 }  // namespace
 
 int main() {
@@ -243,6 +275,49 @@ int main() {
                 " ALU saturations, %" PRIu64 " memory and %" PRIu64 " voice-port accesses; translated == reference: %s; DAC hash %016" PRIx64 "\n",
                 programs, totals[4], totals[5], totals[0], totals[1], totals[2], totals[3], divergent ? "NO" : "yes", hash);
     if (hash != kGolden) { std::printf("FAIL: DAC hash differs from the recorded %016" PRIx64 "\n", kGolden); ++failures; }
+
+    // 3b. Audit off (the plugin's setting), on the translated core and the reference interpreter, in lockstep with each
+    // other and with the translated core with audit on (the default, as in 2 + 3).
+    uint64_t hashOff = 1469598103934665603ull;
+    int offDivergent = 0, onOffDivergent = 0, auditTouched = 0, auditRecorded = 0;
+    for (uint64_t seed = 1; seed <= 300; ++seed) {
+        Rng r{seed};
+        std::vector<Line> body;
+        const int n = 20 + r.below(100);
+        for (int i = 0; i < n; ++i) body.push_back(randomLine(r));
+        const auto prog = harness(body);
+        const bool mag = seed % 3 == 0;
+        Esp2Core on, off, offRef;
+        on.fastPath = true; off.fastPath = true; offRef.fastPath = false;
+        off.audit = false; offRef.audit = false;
+        Rng r1{seed * 977}, r2{seed * 977}, r3{seed * 977};
+        setup(on, prog, r1, mag); setup(off, prog, r2, mag); setup(offRef, prog, r3, mag);
+        for (uint64_t s = 0; s < 300; ++s) {
+            feed(on, s); feed(off, s); feed(offRef, s);
+            on.runTo((s + 1) * ips); off.runTo((s + 1) * ips); offRef.runTo((s + 1) * ips);
+            on.sampleTick(); off.sampleTick(); offRef.sampleTick();
+            const std::string d = nonAuditDiff(off, offRef), e = nonAuditDiff(off, on);
+            if (!d.empty()) {
+                if (offDivergent < 5) std::printf("audit off, seed %" PRIu64 " sample %" PRIu64 ": translated and reference differ (%s)\n", seed, s, d.c_str());
+                ++offDivergent; break;
+            }
+            if (!e.empty()) {
+                if (onOffDivergent < 5) std::printf("seed %" PRIu64 " sample %" PRIu64 ": audit off and on differ (%s)\n", seed, s, e.c_str());
+                ++onOffDivergent; break;
+            }
+            for (int i = 0; i < 2; ++i) { hashOff ^= uint32_t(off.dacOut[i]); hashOff *= 1099511628211ull; }
+        }
+        bool sameRam = true;
+        for (uint32_t i = 0; i < Esp2Core::kRamWords; ++i) sameRam = sameRam && off.ramWord(i) == offRef.ramWord(i) && off.ramWord(i) == on.ramWord(i);
+        if (!sameRam) { if (offDivergent < 5) std::printf("audit off, seed %" PRIu64 ": delay RAM differs\n", seed); ++offDivergent; }
+        if (!auditUntouched(off) || !auditUntouched(offRef)) ++auditTouched;
+        if (on.memReads + on.memWrites > 0 && on.ramLow != 0xFFFFFFFF) ++auditRecorded;
+    }
+    std::printf("esp2_core_test: audit off: translated == reference: %s; == audit on: %s; DAC hash %016" PRIx64 "\n",
+                offDivergent ? "NO" : "yes", onOffDivergent ? "NO" : "yes", hashOff);
+    CHECK(offDivergent == 0 && onOffDivergent == 0);
+    CHECK(hashOff == kGolden);                       // the same output as with the audit bookkeeping on
+    CHECK(auditTouched == 0 && auditRecorded > 0);   // off: the audit statistics untouched; on: they record
 
     // 4. State round trip: save mid-run, load into a fresh core, and both must continue identically.
     int roundTripBad = 0;
