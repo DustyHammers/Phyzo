@@ -263,6 +263,14 @@ void PhyzoProcessor::timerCallback() {
     logEngineState();
     if (!processedLogged_ && processed_.load(std::memory_order_relaxed)) { processedLogged_ = true; phyzodiag::log("audio running (first processBlock)"); }
     if (!bypassedLogged_ && bypassed_.load(std::memory_order_relaxed)) { bypassedLogged_ = true; phyzodiag::log("the host bypasses Phyzo (processBlockBypassed)"); }
+    // Idle runner (F-63): with the window open and the host rendering in real time but not processing audio (Logic Pro:
+    // a track that is not live or playing), the machine runs on its own so the panel answers; never in offline renders.
+    engine_.setIdleRun(getActiveEditor() != nullptr && !isNonRealtime() && prepared_.load());
+    if (const bool idle = engine_.idleRunning(); idle != idleLogged_) {
+        idleLogged_ = idle;
+        phyzodiag::log(idle ? "idle runner started: no audio from the host, the machine runs on its own while the window is open"
+                            : "idle runner stopped");
+    }
     serviceLearn();
     // The skin's editor calls while the editor unit is closed: the library controls in the main document (LIBRARY
     // opens the unit; SAVE, IMPORT, EXPORT and FOLDER work without it). While it is open, its own ticker runs them.
@@ -284,6 +292,7 @@ void PhyzoProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) {
     engine_.prepare(sampleRate, samplesPerBlock, inputActive_);
     engine_.setProfiling(true);                      // per-part times for the debug overlay (output unchanged)
     setLatencySamples(engine_.latencySamples());
+    prepared_ = true;
     phyzodiag::log("prepareToPlay " + juce::String(sampleRate, 0) + " Hz, block " + juce::String(samplesPerBlock) + ", Audio In "
                    + (inputActive_ ? juce::String(in->getNumberOfChannels()) + " ch" : juce::String("off")) + ", latency "
                    + juce::String(engine_.latencySamples()) + " samples");

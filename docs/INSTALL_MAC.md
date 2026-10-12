@@ -240,6 +240,10 @@ which host loaded it and how, the ROMs found, the machine booting and running, t
 skin opening. If Phyzo fails to load, shows a blank or plain window, or stays silent (for example in Logic Pro), send
 that file with your report.
 
+Some hosts stop running an instrument while nothing plays (Logic Pro: a track that is not selected or record-enabled).
+While Phyzo's window is open, its panel keeps working then (buttons, knobs, display, the editor, the virtual MIDI port);
+the log says `idle runner started`. Sound needs the host to run the track: select it or press play.
+
 ## Uninstalling
 
 Quit REAPER and move `Phyzo.vst3` and `Phyzo.component` (in `~/Library/Audio/Plug-Ins/...` or

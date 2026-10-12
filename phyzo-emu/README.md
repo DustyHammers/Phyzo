@@ -220,6 +220,18 @@ save: its OS read the service pointer at boot, when it was null, and indexed bla
 machines can run in one process: Musashi's single CPU is shared under a lock, with each machine's CPU state parked
 while another one runs.
 
+Idle runner (v0.8.6, F-63; `Engine::setIdleRun`, `idle_test`): some hosts stop calling the plugin while its window is
+open (Logic Pro renders an instrument only while its track is live or playing). With the runner on, a background
+thread checks every 10 ms; once no host block came for 250 ms it runs the machine in real time (10 ms on the first
+step, then the real time that passed, at most 50 ms per step), in slices of at most 10 ms of machine time, each under
+the engine lock taken with `try_lock` (busy: the step ends; the host's block keeps its blocking lock and announces
+itself before taking it, so it waits for one slice at most). It serves panel buttons and knobs, the virtual port both
+ways, the editor's requests, replies and standing read, LEDs and the display, and reboot requests; the audio is
+discarded, Audio In is silence and nothing goes to the host. Never while a machine boots, restores or is stopped (a
+slice under way ends on the machine that was running). The next host block retimes. Off by default: the tools, the
+tests and offline renders are as before; the plugin turns it on only while its window is open, the host renders in
+real time and `prepareToPlay` has run.
+
 Factory user flash (`src/user_flash.*`, `Engine::setFactoryUserFlash`, on in the plugin): what the OS's own factory
 restore writes (164,352 bytes). It is made once per OS image in a hidden machine: a freshly booted machine plays the
 restore on its panel (Save down, Compare pressed, Save up; the display asks `r5t?`; +/Yes; the display shows `burn`,

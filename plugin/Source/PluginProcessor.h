@@ -283,6 +283,8 @@ private:
     // startup log (Diag.h): the audio thread only sets these flags; the timer writes the lines
     std::atomic<bool> processed_{false}, bypassed_{false};
     bool processedLogged_ = false, bypassedLogged_ = false;
+    std::atomic<bool> prepared_{false};              // prepareToPlay has run (the idle runner needs the host rate)
+    bool idleLogged_ = false;                        // the idle runner's state last logged
     int loggedState_ = -1;                           // the engine state last logged
     juce::String loggedRoms_;                        // the ROM scan result last logged
     void logRoms();

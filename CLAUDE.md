@@ -133,6 +133,11 @@ owner step by step through anything they must do by hand on github.com or on the
   boot positions are per-control atomics); buttons go through a bounded lock-free multi-producer queue and are never
   merged or dropped. setControl and pressRaw are lock-free and allocation-free from any thread, the audio thread
   included. `phyzo_stress` measures this.
+- Idle runner (v0.8.6, F-63, `Engine::setIdleRun`): off by default; the plugin turns it on only while its window is
+  open, the host renders in real time and prepareToPlay has run. After 250 ms without a host block a background thread
+  runs the machine in real time (panel, virtual port, editor; audio discarded, Audio In silent, nothing to the host) in
+  slices of at most 10 ms of machine time under `mtx_` taken with try_lock only; process() keeps its lock and sets
+  lastProcessMs_ before taking it; the next host block retimes; never while booting, restoring or stopped.
 - MIDI learn (v0.8.4, F-55, docs/MIDI_LEARN.md, `phyzo-emu/src/midi_learn.*`): a controller is a second front panel.
   Learned CCs (notes for buttons) from the host's MIDI drive panel controls (knobs cc 0-22, panel buttons by raw; never
   cc 23-25 or the keys) through setControl / pressRaw exactly as the mouse, and are swallowed; unbound MIDI passes
