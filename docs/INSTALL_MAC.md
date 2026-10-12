@@ -233,6 +233,13 @@ To send a track (for example speech) into Phyzo in REAPER:
 4. In Phyzo's FX window, click **2 in 2 out** (the pin connector) and connect **Audio In L / R** to channels **3 / 4**.
    Leave the outputs on 1/2.
 
+## Troubleshooting
+
+Phyzo writes a short startup log to `~/Documents/Phyzo/Phyzo-log.txt` (also in Console.app: search for `Phyzo:`):
+which host loaded it and how, the ROMs found, the machine booting and running, the audio starting, the window and its
+skin opening. If Phyzo fails to load, shows a blank or plain window, or stays silent (for example in Logic Pro), send
+that file with your report.
+
 ## Uninstalling
 
 Quit REAPER and move `Phyzo.vst3` and `Phyzo.component` (in `~/Library/Audio/Plug-Ins/...` or

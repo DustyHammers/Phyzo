@@ -69,6 +69,9 @@ owner step by step through anything they must do by hand on github.com or on the
   States from before v0.8.3 (no user flash) load exactly as then, erased (they can't save). With the factory user flash
   the OS indexes its user memory at boot (about 0.2 s longer): audio is not byte-identical to v0.8.2 (LFO, arp, random
   timing), by design; every preset and sound is.
+- Startup log (F-65, `plugin/Source/Diag.h`): `~/Documents/Phyzo/Phyzo-log.txt` (under 256 KB) and NSLog `Phyzo:`,
+  always on: host, ROMs, machine state, prepareToPlay, refused layouts, audio start, bypass, editor/GL/skin steps. Never
+  written from the audio thread (it sets flags the processor's timer logs). Separate from the skin log.
 - Skins: `plugin/skin/` (no JUCE) is the runtime: RmlUi 6.3 + Lua 5.4 (sandboxed, 3 s limit) + FreeType, the custom
   elements knob/pbutton/led/vfdigit and the `panel`/`plugin` Lua API; `skin_test` drives the test skin in CI.
   `plugin/Source/RmlSkinComponent.*` draws a file skin with OpenGL (all RmlUi/Lua work on the GL thread);

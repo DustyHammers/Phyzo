@@ -27,10 +27,12 @@ public:
     ~PhyzoProcessor() override;
 
     void prepareToPlay(double sampleRate, int samplesPerBlock) override;
-    void releaseResources() override { learn_.releaseHeld(); }   // a learned button held: released first
+    void releaseResources() override;
     bool isBusesLayoutSupported(const BusesLayout& layouts) const override;
     using AudioProcessor::processBlock;
     void processBlock(juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
+    using AudioProcessor::processBlockBypassed;
+    void processBlockBypassed(juce::AudioBuffer<float>&, juce::MidiBuffer&) override;   // logged, then JUCE's own
 
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
@@ -278,6 +280,13 @@ private:
     std::vector<Engine::MidiEvent> events_;
     bool inputActive_ = false;                       // Audio In bus enabled by the host (set in prepareToPlay)
     std::vector<float> inL_, inR_;                   // Audio In copied out of the in-place buffer
+    // startup log (Diag.h): the audio thread only sets these flags; the timer writes the lines
+    std::atomic<bool> processed_{false}, bypassed_{false};
+    bool processedLogged_ = false, bypassedLogged_ = false;
+    int loggedState_ = -1;                           // the engine state last logged
+    juce::String loggedRoms_;                        // the ROM scan result last logged
+    void logRoms();
+    void logEngineState();
     // meter accumulation (audio thread only)
     double winTime_ = 0, winBudget_ = 0, winPeak_ = 0;
     std::array<double, Meter::kParts> winPart_{}, winPartPeak_{};

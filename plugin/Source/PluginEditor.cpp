@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include "Diag.h"
 #include "RmlSkinComponent.h"
 #include "SkinSettings.h"
 #include "skin_discovery.h"
@@ -291,6 +292,8 @@ PhyzoEditor::PhyzoEditor(PhyzoProcessor& p) : AudioProcessorEditor(&p), proc(p) 
     setSize(BuiltinView::kWidth, BuiltinView::kHeight);
     applying_ = false;
     showSkin(want);
+    phyzodiag::log("editor opened: " + juce::String(getWidth()) + " x " + juce::String(getHeight()) + " pt at "
+                   + juce::String(juce::roundToInt(scale_ * 100)) + " %, skin \"" + current_ + "\"");
     startTimer(1000);
 }
 
@@ -319,6 +322,7 @@ void PhyzoEditor::timerCallback() {
 }
 
 PhyzoEditor::~PhyzoEditor() {
+    phyzodiag::log("editor closed");
     stopTimer();
     proc.setEditorActive(false);                     // no window shows it: the editor sends nothing
     if (scaleDirty_) SkinSettings::setScale(scale_);
@@ -353,6 +357,7 @@ void PhyzoEditor::showSkin(const juce::String& name, const juce::String& notice)
     current_ = name;
     rml_->onLoaded = [this, name, notice](bool ok, const juce::String& error) {
         if (!ok) { skinFailed(name, error); return; }
+        phyzodiag::log("skin \"" + name + "\" loaded");
         if (notice.isNotEmpty() && rml_) rml_->showMessage(notice);
         proc.loadWaveNames(skinFolder(name));
         updateEditorUnit();
@@ -375,6 +380,7 @@ void PhyzoEditor::showBuiltIn(const juce::String& notice) {
         addAndMakeVisible(*builtin_);
     }
     current_ = SkinSettings::kBuiltIn;
+    phyzodiag::log("Built-in skin shown");
     if (notice.isNotEmpty()) builtin_->setNotice(notice);
     applyScale(scale_);
 }
@@ -383,12 +389,16 @@ void PhyzoEditor::showBuiltIn(const juce::String& notice) {
 // (Deferred: this can be called from inside the failed skin's own callback.)
 void PhyzoEditor::skinFailed(const juce::String& name, const juce::String& reason) {
     const juce::String why = "The skin \"" + name + "\" could not be shown: " + reason.trim();
+    phyzodiag::log("skin \"" + name + "\" failed: " + reason.trim());
     juce::MessageManager::callAsync([sp = juce::Component::SafePointer<PhyzoEditor>(this), name, why] {
         if (!sp) return;
-        if (name != SkinSettings::kDefaultSkin && sp->skinNames().contains(SkinSettings::kDefaultSkin))
+        if (name != SkinSettings::kDefaultSkin && sp->skinNames().contains(SkinSettings::kDefaultSkin)) {
+            phyzodiag::log("fallback: skin \"" + juce::String(SkinSettings::kDefaultSkin) + "\"");
             sp->showSkin(SkinSettings::kDefaultSkin, why + juce::String::fromUTF8(" \xe2\x80\x94 showing \"rack\"."));
-        else
+        } else {
+            phyzodiag::log("fallback: Built-in");
             sp->showBuiltIn(why);
+        }
     });
 }
 

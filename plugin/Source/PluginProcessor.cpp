@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include <chrono>
+#include "Diag.h"
 #include "PluginEditor.h"
 #include "SkinSettings.h"
 #include "os_image.h"
@@ -19,6 +20,9 @@ PhyzoProcessor::PhyzoProcessor()
     : AudioProcessor(BusesProperties()
                          .withInput("Audio In", juce::AudioChannelSet::stereo(), false)   // ESP2 line input; off by default
                          .withOutput("Output", juce::AudioChannelSet::stereo(), true)) {
+    phyzodiag::log(juce::String("processor created: Phyzo ") + JucePlugin_VersionString + " " + phyzodiag::arch() + ", "
+                   + juce::AudioProcessor::getWrapperTypeDescription(wrapperType) + ", host \"" + juce::PluginHostType().getHostDescription()
+                   + "\", " + juce::File::getSpecialLocation(juce::File::hostApplicationPath).getFullPathName());
     dataFolder_ = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile("Phyzo");
     dataFolder_.getChildFile("roms").createDirectory();
     dataFolder_.getChildFile("skins").createDirectory();
@@ -30,9 +34,11 @@ PhyzoProcessor::PhyzoProcessor()
     // OS, cached in cache/ (never shipped). New instances start from it (Engine).
     engine_.setFactoryUserFlash(true, dataFolder_.getChildFile("cache").getFullPathName().toStdString());
     editor_.setLibrary(&libraryBridge_);
+    phyzodiag::log("data folder " + dataFolder_.getFullPathName() + (dataFolder_.isDirectory() ? "" : " (could not be made)"));
     scanRoms();
     applyMidiSettings();
     { std::lock_guard<std::mutex> lk(g_instancesMtx); g_instances.push_back(this); }
+    logEngineState();
     startTimer(kTimerMs);
 }
 
@@ -61,9 +67,40 @@ void PhyzoProcessor::applyMidiSettingsToAll() {
 
 void PhyzoProcessor::scanRoms() {
     scan_ = romid::scanFolder(romFolder().getFullPathName().toStdString());
+    logRoms();
     if (scan_.complete()) {
         engine_.setRoms(scan_.osPath, scan_.wavePath, romid::kOsImageMd5, romid::kWaveImageMd5);
         loadEditorTables();
+    }
+}
+
+// Startup log: the ROM scan (file names only), each time its result changes.
+void PhyzoProcessor::logRoms() {
+    auto name = [](const std::string& path) { return juce::File(juce::String::fromUTF8(path.c_str())).getFileName(); };
+    juce::String line = "ROMs: OS " + (scan_.hasOs() ? name(scan_.osPath) + " (" + osFormName(scan_.osForm) + ")" : juce::String("missing"))
+                        + ", wave " + (scan_.hasWave() ? name(scan_.wavePath) : juce::String("missing"));
+    if (!scan_.folderExists) line << " (no folder " << romFolder().getFullPathName() << ")";
+    else if (!scan_.rejected.empty()) {
+        juce::StringArray others;
+        for (const auto& r : scan_.rejected)
+            if (others.size() < 8) others.add(juce::String::fromUTF8(r.name.c_str()));
+        line << "; other files: " << others.joinIntoString(", ") << (scan_.rejected.size() > 8 ? ", ..." : "");
+    }
+    if (line == loggedRoms_) return;
+    loggedRoms_ = line;
+    phyzodiag::log(line);
+}
+
+// Startup log: the machine booting, running or stopped (and why), each time it changes.
+void PhyzoProcessor::logEngineState() {
+    const Engine::State st = engine_.state();
+    if (int(st) == loggedState_) return;
+    loggedState_ = int(st);
+    switch (st) {
+        case Engine::State::NoRoms: phyzodiag::log("machine not started: ROMs missing"); break;
+        case Engine::State::Booting: phyzodiag::log("machine booting"); break;
+        case Engine::State::Running: phyzodiag::log("machine running"); break;
+        case Engine::State::Stopped: phyzodiag::log("machine stopped: " + juce::String::fromUTF8(engine_.message().c_str())); break;
     }
 }
 
@@ -223,6 +260,9 @@ void PhyzoProcessor::EditorPort::editorState(skin::EditorState& out) {
 
 void PhyzoProcessor::timerCallback() {
     engine_.service();
+    logEngineState();
+    if (!processedLogged_ && processed_.load(std::memory_order_relaxed)) { processedLogged_ = true; phyzodiag::log("audio running (first processBlock)"); }
+    if (!bypassedLogged_ && bypassed_.load(std::memory_order_relaxed)) { bypassedLogged_ = true; phyzodiag::log("the host bypasses Phyzo (processBlockBypassed)"); }
     serviceLearn();
     // The skin's editor calls while the editor unit is closed: the library controls in the main document (LIBRARY
     // opens the unit; SAVE, IMPORT, EXPORT and FOLDER work without it). While it is open, its own ticker runs them.
@@ -244,18 +284,41 @@ void PhyzoProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) {
     engine_.prepare(sampleRate, samplesPerBlock, inputActive_);
     engine_.setProfiling(true);                      // per-part times for the debug overlay (output unchanged)
     setLatencySamples(engine_.latencySamples());
+    phyzodiag::log("prepareToPlay " + juce::String(sampleRate, 0) + " Hz, block " + juce::String(samplesPerBlock) + ", Audio In "
+                   + (inputActive_ ? juce::String(in->getNumberOfChannels()) + " ch" : juce::String("off")) + ", latency "
+                   + juce::String(engine_.latencySamples()) + " samples");
+}
+
+void PhyzoProcessor::releaseResources() {
+    learn_.releaseHeld();                            // a learned button held: released first
+    phyzodiag::log("releaseResources");
 }
 
 // Output stereo; Audio In off, mono (fed to both sides) or stereo.
 bool PhyzoProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const {
     const auto in = layouts.getMainInputChannelSet();
-    return layouts.getMainOutputChannelSet() == juce::AudioChannelSet::stereo() &&
-           (in.isDisabled() || in == juce::AudioChannelSet::mono() || in == juce::AudioChannelSet::stereo());
+    const bool ok = layouts.getMainOutputChannelSet() == juce::AudioChannelSet::stereo() &&
+                    (in.isDisabled() || in == juce::AudioChannelSet::mono() || in == juce::AudioChannelSet::stereo());
+    if (!ok) {
+        static std::atomic<int> logged{0};          // startup log: the first layouts a host asked for in vain
+        if (logged.fetch_add(1) < 12)
+            phyzodiag::log("layout refused: " + juce::String(layouts.inputBuses.size()) + " input bus(es) ["
+                           + (in.isDisabled() ? juce::String("off") : juce::String(in.size()) + " ch " + in.getDescription()) + "], "
+                           + juce::String(layouts.outputBuses.size()) + " output bus(es) [" + juce::String(layouts.getMainOutputChannelSet().size())
+                           + " ch " + layouts.getMainOutputChannelSet().getDescription() + "]");
+    }
+    return ok;
+}
+
+void PhyzoProcessor::processBlockBypassed(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi) {
+    bypassed_.store(true, std::memory_order_relaxed);   // logged by the timer, never here
+    AudioProcessor::processBlockBypassed(buffer, midi);
 }
 
 void PhyzoProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi) {
     juce::ScopedNoDenormals noDenormals;
     const auto t0 = std::chrono::steady_clock::now();
+    processed_.store(true, std::memory_order_relaxed);   // startup log (written by the timer, never here)
     const int n = buffer.getNumSamples();
     events_.clear();
     for (const auto meta : midi)
@@ -311,7 +374,10 @@ void PhyzoProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
     }
 }
 
-juce::AudioProcessorEditor* PhyzoProcessor::createEditor() { return new PhyzoEditor(*this); }
+juce::AudioProcessorEditor* PhyzoProcessor::createEditor() {
+    phyzodiag::log("createEditor");
+    return new PhyzoEditor(*this);
+}
 
 // State: magic, version, UI flags, the engine state (complete machine, gzip-compressed), then the skin's knob
 // element positions (count, then id and raw for each), then the window size (winscale) and whether it is still on
@@ -353,18 +419,19 @@ void PhyzoProcessor::getStateInformation(juce::MemoryBlock& dest) {
 
 void PhyzoProcessor::setStateInformation(const void* data, int size) {
     juce::MemoryInputStream in(data, size_t(size), false);
-    if (uint32_t(in.readInt()) != kStateMagic) return;
+    auto refused = [size](const char* why) { phyzodiag::log("project state not loaded (" + juce::String(size) + " bytes): " + why); };
+    if (uint32_t(in.readInt()) != kStateMagic) { refused("not a Phyzo state"); return; }
     const int version = in.readInt();
-    if (version < 1 || version > int(kStateVersion)) return;
+    if (version < 1 || version > int(kStateVersion)) { refused("unknown version"); return; }
     showDebug = in.readInt() != 0;
     const juce::int64 rawSize = in.readInt64(), packedSize = in.readInt64();
-    if (rawSize <= 0 || rawSize > (juce::int64(256) << 20) || packedSize <= 0 || packedSize > in.getNumBytesRemaining()) return;
+    if (rawSize <= 0 || rawSize > (juce::int64(256) << 20) || packedSize <= 0 || packedSize > in.getNumBytesRemaining()) { refused("damaged"); return; }
     juce::MemoryBlock packed;
     in.readIntoMemoryBlock(packed, packedSize);
     juce::MemoryInputStream packedIn(packed, false);
     juce::GZIPDecompressorInputStream gz(packedIn);
     std::vector<uint8_t> engineState(static_cast<size_t>(rawSize));
-    if (gz.read(engineState.data(), int(rawSize)) != int(rawSize)) return;
+    if (gz.read(engineState.data(), int(rawSize)) != int(rawSize)) { refused("damaged"); return; }
     std::map<std::string, int> knobs;
     if (version >= 2) {
         const int n = in.readInt();
@@ -397,6 +464,7 @@ void PhyzoProcessor::setStateInformation(const void* data, int size) {
     }
     learn_.setBindings(bindings);
     { std::lock_guard<std::mutex> lk(port_.mtx); port_.knobs = std::move(knobs); }
+    phyzodiag::log("project state loaded: version " + juce::String(version) + ", machine state " + juce::String(int(rawSize / 1024)) + " KB");
     engine_.setState(engineState);
 }
 
