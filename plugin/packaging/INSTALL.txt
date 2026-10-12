@@ -1,5 +1,5 @@
-Phyzo for macOS (Apple Silicon): installing
-===========================================
+Phyzo for macOS (universal: Apple Silicon and Intel; Intel untested): installing
+================================================================================
 
 The full step-by-step guide is docs/INSTALL_MAC.md in the repository.
 

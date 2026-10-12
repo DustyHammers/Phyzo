@@ -90,7 +90,9 @@ images). Keep them out of this repository.** `.gitignore` excludes the usual out
 locations.
 
 `ctest` runs the tests that need no ROM data (`rom_id`: MD5 and ROM identification), plus the boot test when
-configured with `-DOS_IMAGE=/path/to/image`.
+configured with `-DOS_IMAGE=/path/to/image`. `state_xarch_test save <file>` / `load <file>` moves a complete machine
+state (68k with interrupts, 8 voices, an ESP2 program; no ROM data) between builds: the macOS CI job saves on arm64,
+loads under Rosetta (x86_64) and the other way round, and checks the same continuation and the same saved bytes.
 
 ## Voice-chip core (src/voice_core.*)
 
@@ -164,7 +166,9 @@ the OS loads through the host port.
   each routine ends by jumping to the next line's routine. Since v0.8.5 that jump is a guaranteed tail call
   (`[[clang::musttail]]`, or `[[gnu::musttail]]` with gcc 15 or later; other compilers: a plain call, as before), so
   a chain of up to 256 lines never nests calls and each routine keeps its own indirect jump for the branch predictor.
-  The output is the same to the bit either way.
+  The output is the same to the bit either way. `scripts/check_esp2_dispatch.py` disassembles the core and checks
+  that every line routine reaches the next line by a jump; the macOS CI job runs it for arm64 and x86_64 (the plugin
+  is universal since v0.8.6).
 - Clock: 192 instruction cycles per 44.1 kHz period (Assumed; the OS-built image needs 188).
 
 Board wiring (derived from the OS's shell program): the voice chip's ten output channels are read by the ESP2 as

@@ -1,7 +1,12 @@
 # Phyzo plugin (VST3 + AU). JUCE is fetched at the pinned commit by scripts/fetch_deps.sh into <repo>/work/deps/JUCE.
 cmake_minimum_required(VERSION 3.22)
 
+# macOS 11+, universal (Apple Silicon + Intel). Must be set before project(). The Intel half is also what a host running
+# under Rosetta loads in its own process (Logic Pro: otherwise the AU runs out of process, without its panel).
 set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
+if(CMAKE_HOST_APPLE AND NOT CMAKE_OSX_ARCHITECTURES)
+  set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "Target architectures")
+endif()
 project(Phyzo VERSION 0.8.5 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)

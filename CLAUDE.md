@@ -49,9 +49,11 @@ owner step by step through anything they must do by hand on github.com or on the
 
 - Dependencies are pinned in `scripts/deps.env` and fetched by `scripts/fetch_deps.sh` into `work/deps/` (ignored).
 - `.github/workflows/ci.yml`: data-file guard over every commit (`scripts/check_no_data.py`), ROM-free tests on
-  Linux (`ctest` in `phyzo-emu` and `tools/rombuilder`), and the macOS plugin build with identity check, auval and
-  the downloadable zip. The ESP2 and voice-core tests hold golden hashes of the current output: a speed change
-  that alters them has changed the sound.
+  Linux (`ctest` in `phyzo-emu` and `tools/rombuilder`), and, on `workflow_dispatch` only, the macOS plugin build
+  (universal arm64 + x86_64, `lipo` checked; x86_64 tests and the cross-architecture state test under Rosetta) with
+  identity check, auval, pluginval (strictness 10) and the downloadable zip (kept 7 days). The ESP2 and voice-core
+  tests hold golden hashes of the current output: a speed change that alters them has changed the sound.
+- To give the owner a build: once the branch is ready to test, trigger CI's `workflow_dispatch` on that branch.
 - Owner's install guide: `docs/INSTALL_MAC.md`.
 - Plugin architecture: `phyzo-emu/src/engine.*` (no JUCE) runs the machine per host block, boots/restores on a worker
   thread, delivers MIDI sample-accurately with a constant reported latency, and converts 44.1 kHz to the host rate

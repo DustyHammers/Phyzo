@@ -1,22 +1,27 @@
 # Installing a Phyzo build on your Mac
 
-Every push to `main` and every pull request builds the plugin on GitHub Actions (Apple Silicon, VST3 and AU,
-ad-hoc signed). This guide takes you from that build to Phyzo loaded in REAPER.
+The plugin is built on GitHub Actions only when a CI run is started by hand (**Actions ▸ CI ▸ Run workflow**, on the
+branch to build). Pushes to `main` and pull requests run only the data check and the Linux tests, so they make no
+download. A build is VST3 and AU, ad-hoc signed and universal: it runs on Apple Silicon and on Intel Macs (Intel is
+untested), and in hosts running under Rosetta. This guide takes you from that build to Phyzo loaded in REAPER.
 
 ## 1. Download the build from GitHub
 
-You must be signed in to GitHub to download builds.
+You must be signed in to GitHub to start a build and to download it. When a branch is ready to test, Claude starts its
+build; you can also start one yourself:
 
 1. Open https://github.com/DustyHammers/Phyzo-/actions
 2. In the left column, click **CI**.
-3. Click the newest run with a green tick for the branch you want: `main` for merged work, or the pull request
-   you are testing (its title is shown on the run).
-4. On the run's page, scroll down to **Artifacts** and click the file named like
-   `Phyzo-0.4.0-macOS-1a2b3c4.zip`. The last part is the commit it was built from.
+3. On the right, click **Run workflow**, choose the branch under **Use workflow from** (`main` for merged work, or the
+   pull request's branch), and click the green **Run workflow** button.
+4. After a few seconds the run appears in the list. Click it and wait for the green tick (about 20-30 minutes; the
+   job **macOS plugin (VST3 + AU, universal)** makes the build).
+5. On the run's page, scroll down to **Artifacts** and click the file named like
+   `Phyzo-0.8.6-macOS-1a2b3c4.zip`. The last part is the commit it was built from.
 
-From a pull request page you can also get there with the **Checks** tab, then **CI** on the left, then **Summary**.
-
-Builds are kept for 30 days. If the newest run has a red cross, its plugin was not built; use an older green run.
+Only runs started this way have an artifact: runs for pushes and pull requests show no macOS job. Builds are kept for
+7 days; after that, start a new run. If a run has a red cross, its plugin was not built; use an older green run or
+start a new one.
 
 ## 2. Unzip
 
