@@ -1,4 +1,5 @@
-# CI: data-file guard, ROM-free tests on Linux, and the macOS plugin build (VST3 + AU, ad-hoc signed).
+# CI: data-file guard, ROM-free tests on Linux, and the macOS plugin build (VST3 + AU, universal, ad-hoc signed). The
+# macOS build runs only on a manual run (workflow_dispatch); its download is kept for 7 days.
 # No job uses ROM files, and none may ever need them.
 name: CI
 
@@ -57,14 +58,19 @@ jobs:
       - name: Skin runtime tests (text-only test skin)
         run: ctest --test-dir build/skin --output-on-failure
 
+  # The plugin build runs only when started by hand (Actions > CI > Run workflow, on the branch to build): pushes to
+  # main and pull requests run the data check and the Linux tests only.
   macos-plugin:
-    name: macOS plugin (VST3 + AU, Apple Silicon)
+    name: macOS plugin (VST3 + AU, universal)
+    if: github.event_name == 'workflow_dispatch'
     runs-on: macos-15
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_MAXSIZE: 500M
+      CCACHE_MAXSIZE: 1G
       HOMEBREW_NO_AUTO_UPDATE: 1
       HOMEBREW_NO_INSTALL_CLEANUP: 1
+      PHYZO_ARCHS: arm64;x86_64    # universal: Apple Silicon and Intel (and hosts running under Rosetta)
+      PHYZO_ARCHS_KEY: arm64-x86_64
     steps:
       - uses: actions/checkout@v7
       - name: Install build tools
@@ -78,22 +84,56 @@ jobs:
         uses: actions/cache@v6
         with:
           path: .ccache
-          key: ccache-macos-${{ hashFiles('scripts/deps.env') }}-${{ github.sha }}
-          restore-keys: ccache-macos-${{ hashFiles('scripts/deps.env') }}-
+          key: ccache-macos-${{ env.PHYZO_ARCHS_KEY }}-${{ hashFiles('scripts/deps.env') }}-${{ github.sha }}
+          restore-keys: ccache-macos-${{ env.PHYZO_ARCHS_KEY }}-${{ hashFiles('scripts/deps.env') }}-
       - name: Fetch Musashi, JUCE, RmlUi, Lua and FreeType (pinned)
         run: scripts/fetch_deps.sh
-      - name: Emulator tests on macOS
+      - name: Emulator tests on macOS (universal build, arm64)
         run: |
-          cmake -S phyzo-emu -B build/emu -G Ninja -DCMAKE_BUILD_TYPE=Release \
+          cmake -S phyzo-emu -B build/emu -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_OSX_ARCHITECTURES=$PHYZO_ARCHS" \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build/emu
+          for t in machine_test state_xarch_test; do lipo -info "build/emu/$t"; lipo "build/emu/$t" -verify_arch arm64 x86_64; done
           ctest --test-dir build/emu --output-on-failure
-      - name: Build plugin
+      - name: ESP2 dispatch is a jump on both architectures (F-57; Apple clang)
         run: |
-          cmake -S plugin -B build/plugin -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 \
+          clang++ --version | head -1
+          python3 scripts/check_esp2_dispatch.py --arch arm64 --arch x86_64
+      - name: Rosetta (for the x86_64 tests)
+        id: rosetta
+        run: |
+          if arch -x86_64 /usr/bin/true 2>/dev/null; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "Rosetta is available: the x86_64 slices are tested too."
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Rosetta is not installed on this runner: the x86_64 tests are skipped (nothing is installed)."
+          fi
+      - name: Emulator tests under Rosetta (x86_64)
+        if: steps.rosetta.outputs.available == 'true'
+        run: python3 scripts/ctest_arch.py build/emu x86_64
+      - name: Machine state across architectures (saved on arm64, loaded on x86_64, and the other way)
+        if: steps.rosetta.outputs.available == 'true'
+        run: |
+          t="$RUNNER_TEMP"
+          arch -arm64 build/emu/state_xarch_test save "$t/xarch-arm64.state"
+          arch -x86_64 build/emu/state_xarch_test load "$t/xarch-arm64.state"
+          arch -x86_64 build/emu/state_xarch_test save "$t/xarch-x86_64.state"
+          arch -arm64 build/emu/state_xarch_test load "$t/xarch-x86_64.state"
+          cmp "$t/xarch-arm64.state" "$t/xarch-x86_64.state" && echo "Both architectures save the same state."
+      - name: Build plugin (universal)
+        run: |
+          cmake -S plugin -B build/plugin -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_OSX_ARCHITECTURES=$PHYZO_ARCHS" \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build/plugin
           ccache --show-stats
+      - name: Both architectures in the plugin (lipo)
+        run: |
+          cd build/plugin/Phyzo_artefacts/Release
+          for b in VST3/Phyzo.vst3/Contents/MacOS/Phyzo AU/Phyzo.component/Contents/MacOS/Phyzo; do
+            lipo -info "$b"
+            lipo "$b" -verify_arch arm64 x86_64 || { echo "::error::$b lacks a slice (needs arm64 and x86_64)"; exit 1; }
+          done
       - name: Virtual MIDI port loopback test (CoreMIDI, no ROMs)
         run: build/plugin/midi_port_test
       - name: Virtual MIDI port shutdown stress test (CoreMIDI, no ROMs)
@@ -107,6 +147,16 @@ jobs:
         run: build/plugin/window_scale_test plugin/skin/tests/skins/test
       - name: MIDI learn in the plugin (project state v6 and older, default bindings, host MIDI; no ROMs)
         run: build/plugin/midi_learn_plugin_test
+      - name: Plugin test tools under Rosetta (x86_64)
+        if: steps.rosetta.outputs.available == 'true'
+        run: |
+          arch -x86_64 build/plugin/midi_port_test
+          arch -x86_64 build/plugin/midi_port_stress_test
+          arch -x86_64 build/plugin/editor_cycle_test plugin/skin/tests/skins/test builtin
+          arch -x86_64 build/plugin/editor_cycle_test x bare
+          arch -x86_64 build/plugin/editor_cycle_test plugin/skin/tests/skins/test
+          arch -x86_64 build/plugin/window_scale_test plugin/skin/tests/skins/test
+          arch -x86_64 build/plugin/midi_learn_plugin_test
       - name: Ad-hoc sign
         run: |
           cd build/plugin/Phyzo_artefacts/Release
@@ -123,6 +173,26 @@ jobs:
           killall -9 AudioComponentRegistrar 2>/dev/null || true
           auval -a | grep -i phyz || true
           auval -v aumu Phyz DHmr
+      - name: Validate the Audio Unit under Rosetta (auval, x86_64; as Logic Pro running under Rosetta loads it)
+        if: steps.rosetta.outputs.available == 'true'
+        run: arch -x86_64 auval -v aumu Phyz DHmr
+      - name: Host tests with pluginval (VST3 and AU, strictness 10; no ROMs)
+        run: |
+          curl -sSL -o "$RUNNER_TEMP/pluginval.zip" https://github.com/Tracktion/pluginval/releases/download/v1.0.4/pluginval_macOS.zip
+          unzip -q -o "$RUNNER_TEMP/pluginval.zip" -d "$RUNNER_TEMP/pluginval"
+          pv="$RUNNER_TEMP/pluginval/pluginval.app/Contents/MacOS/pluginval"
+          mkdir -p ~/Library/Audio/Plug-Ins/VST3
+          cp -R build/plugin/Phyzo_artefacts/Release/VST3/Phyzo.vst3 ~/Library/Audio/Plug-Ins/VST3/
+          "$pv" --strictness-level 10 --timeout-ms 300000 --output-dir pluginval-logs ~/Library/Audio/Plug-Ins/VST3/Phyzo.vst3
+          "$pv" --strictness-level 10 --timeout-ms 300000 --output-dir pluginval-logs ~/Library/Audio/Plug-Ins/Components/Phyzo.component
+      - name: Upload pluginval logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pluginval-logs
+          path: pluginval-logs
+          retention-days: 7
+          if-no-files-found: ignore
       - name: Package
         id: package
         run: |
@@ -139,5 +209,5 @@ jobs:
         with:
           path: ${{ steps.package.outputs.zip }}
           archive: false
-          retention-days: 30
+          retention-days: 7
           if-no-files-found: error

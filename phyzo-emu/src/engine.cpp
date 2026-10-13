@@ -24,6 +24,16 @@ std::atomic<uint64_t> g_factoryRuns{0};
 
 struct Blob { std::string osMd5, waveMd5; std::vector<uint8_t> machine; };
 
+int64_t steadyMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+// Audio In while the idle runner runs the machine: silence (no host audio arrives then).
+struct SilentInput : Machine::LiveInput {
+    void next(int32_t& l, int32_t& r) override { l = r = 0; }
+};
+SilentInput g_silence;
+
 std::vector<uint8_t> packBlob(const Blob& b) {
     StateWriter w;
     w.raw("PHZE", 4); w.put(kEngineStateVersion); w.str(b.osMd5); w.str(b.waveMd5); w.vec(b.machine);
@@ -69,6 +79,11 @@ Engine::Engine() : fifo_(std::make_unique<InputFifo>()) {
 }
 
 Engine::~Engine() {
+    {
+        std::lock_guard<std::mutex> lk(idleMtx_);     // the idle runner first: it must never see the machine go
+        idleStop_ = true;
+    }
+    if (idle_.joinable()) idle_.join();
     stopJob();
     std::lock_guard<std::mutex> lk(mtx_);
     live_.reset();
@@ -510,9 +525,10 @@ void Engine::drainButtons(Machine& m) {
 
 void Engine::process(float* left, float* right, int n, const MidiEvent* events, int numEvents, const float* inLeft, const float* inRight) {
     const auto t0 = std::chrono::steady_clock::now();
+    // Before the lock: an idle slice holding it sees the host is back and gives the lock up after that slice.
+    lastProcessMs_ = std::chrono::duration_cast<std::chrono::milliseconds>(t0.time_since_epoch()).count();
     std::unique_lock<std::mutex> lk(mtx_);
     const auto t1 = std::chrono::steady_clock::now();
-    lastProcessMs_ = std::chrono::duration_cast<std::chrono::milliseconds>(t1.time_since_epoch()).count();
     const double waitUs = std::chrono::duration<double, std::micro>(t1 - t0).count();
     if (waitUs > maxLockWaitUs_.load(std::memory_order_relaxed)) maxLockWaitUs_ = waitUs;
     if (!live_ || state_.load() != State::Running || hostRate_ <= 0) {
@@ -547,44 +563,16 @@ void Engine::process(float* left, float* right, int n, const MidiEvent* events, 
         const uint64_t at = uint64_t(s * cyclesPerSample);
         return at < m.cycles() ? m.cycles() : at;
     };
-    if (vin_.peekSize()) {
-        const uint64_t at = blockStart();
-        while (const size_t sz = vin_.peekSize()) {
-            const size_t backlog = m.serial.rxBacklog(1);
-            if (backlog > 0 && backlog + sz > kVirtualBacklog) break;
-            size_t k = 0;
-            vin_.pop([&](uint8_t b) { if (k < scratch_.size()) scratch_[k++] = b; });
-            m.serial.queueRx(1, scratch_.data(), k, at);
-            externalMidi_.fetch_add(1, std::memory_order_relaxed);
-            if ((editor || pendingCount_) && edproto::isRequest(scratch_.data(), k)) noteRequest(false, scratch_.data(), k, m.samplesProduced());
-            if (edproto::isPresetTrigger(scratch_.data(), k)) {
-                ++presetTriggers_;
-                if (editor) queueStandingRead(m, at);    // directly behind it: the read sees the new preset
-            }
-        }
-    }
+    if (vin_.peekSize()) takeVirtualIn(m, blockStart(), editor);
     // Editor: whole messages after the virtual port's, paced like them (nothing while it is closed).
     if (edOut_.peekSize()) {
         if (!editor) {
             while (edOut_.peekSize()) edOut_.pop([](uint8_t) {});
         } else {
-            const uint64_t at = blockStart();
-            while (const size_t sz = edOut_.peekSize()) {
-                const size_t backlog = m.serial.rxBacklog(1);
-                if (backlog > 0 && backlog + sz > kVirtualBacklog) break;
-                size_t k = 0;
-                edOut_.pop([&](uint8_t b) { if (k < scratch_.size()) scratch_[k++] = b; });
-                queueEditor(m, scratch_.data(), k, at);
-            }
+            takeEditorOut(m, blockStart());
         }
     }
-    // Requests the OS never answered expire one by one (they are in the order they were sent).
-    size_t expired = 0;
-    while (expired < pendingCount_ && m.samplesProduced() - pending_[expired].sample > kEditorReplyTimeoutSamples) ++expired;
-    if (expired) {
-        std::copy(pending_.begin() + long(expired), pending_.begin() + long(pendingCount_), pending_.begin());
-        pendingCount_ -= expired;
-    }
+    expireRequests(m);
     for (int i = 0; i < numEvents; ++i) {
         const double s = double(anchorSample_) + double(hostPos_ + events[i].offset) * r + resampler_.lookahead() + marginIn_;
         uint64_t at = uint64_t(s * cyclesPerSample);
@@ -624,16 +612,7 @@ void Engine::process(float* left, float* right, int n, const MidiEvent* events, 
         const uint64_t target = m.samplesProduced() + uint64_t(need - int64_t(m.wet.size() / 2));
         const Machine::Stop st = m.runUntil(std::max(m.cycles() + 1, m.cycleOfSample(target)));
         if (st == Machine::Stop::Trap || st == Machine::Stop::HardStall) {
-            if (st == Machine::Stop::Trap && m.trapReason.rfind("reboot", 0) == 0) {
-                setMessage("The synth's OS restarted itself; booting again.");
-                rebootRequested_ = true;
-            } else {
-                std::string why = st == Machine::Stop::Trap ? m.trapReason : std::string("error loop");
-                if (st == Machine::Stop::HardStall)
-                    for (const auto& e : profile::kErrorLoops) if (e.pc == m.stallPc) why = e.meaning;
-                setMessage("The synth's OS stopped: " + why);
-            }
-            state_ = State::Stopped;
+            machineStopped(m, int(st));
             std::fill(left, left + n, 0.0f); std::fill(right, right + n, 0.0f);
             return;
         }
@@ -666,6 +645,124 @@ void Engine::process(float* left, float* right, int n, const MidiEvent* events, 
     serveSnapshot(m);
 }
 
+// Under mtx_: the virtual port's waiting messages, whole, at machine cycle `at`, while the MIDI port keeps up (a
+// message larger than the backlog limit goes alone into an empty port).
+void Engine::takeVirtualIn(Machine& m, uint64_t at, bool editor) {
+    while (const size_t sz = vin_.peekSize()) {
+        const size_t backlog = m.serial.rxBacklog(1);
+        if (backlog > 0 && backlog + sz > kVirtualBacklog) break;
+        size_t k = 0;
+        vin_.pop([&](uint8_t b) { if (k < scratch_.size()) scratch_[k++] = b; });
+        m.serial.queueRx(1, scratch_.data(), k, at);
+        externalMidi_.fetch_add(1, std::memory_order_relaxed);
+        if ((editor || pendingCount_) && edproto::isRequest(scratch_.data(), k)) noteRequest(false, scratch_.data(), k, m.samplesProduced());
+        if (edproto::isPresetTrigger(scratch_.data(), k)) {
+            ++presetTriggers_;
+            if (editor) queueStandingRead(m, at);        // directly behind it: the read sees the new preset
+        }
+    }
+}
+
+// Under mtx_, editor open: its waiting messages after the virtual port's, paced like them.
+void Engine::takeEditorOut(Machine& m, uint64_t at) {
+    while (const size_t sz = edOut_.peekSize()) {
+        const size_t backlog = m.serial.rxBacklog(1);
+        if (backlog > 0 && backlog + sz > kVirtualBacklog) break;
+        size_t k = 0;
+        edOut_.pop([&](uint8_t b) { if (k < scratch_.size()) scratch_[k++] = b; });
+        queueEditor(m, scratch_.data(), k, at);
+    }
+}
+
+// Requests the OS never answered expire one by one (they are in the order they were sent).
+void Engine::expireRequests(const Machine& m) {
+    size_t expired = 0;
+    while (expired < pendingCount_ && m.samplesProduced() - pending_[expired].sample > kEditorReplyTimeoutSamples) ++expired;
+    if (expired) {
+        std::copy(pending_.begin() + long(expired), pending_.begin() + long(pendingCount_), pending_.begin());
+        pendingCount_ -= expired;
+    }
+}
+
+// The OS stopped (a trap or an error loop): say why; a restart it asked for boots again (service()).
+void Engine::machineStopped(Machine& m, int stop) {
+    const auto st = Machine::Stop(stop);
+    if (st == Machine::Stop::Trap && m.trapReason.rfind("reboot", 0) == 0) {
+        setMessage("The synth's OS restarted itself; booting again.");
+        rebootRequested_ = true;
+    } else {
+        std::string why = st == Machine::Stop::Trap ? m.trapReason : std::string("error loop");
+        if (st == Machine::Stop::HardStall)
+            for (const auto& e : profile::kErrorLoops) if (e.pc == m.stallPc) why = e.meaning;
+        setMessage("The synth's OS stopped: " + why);
+    }
+    state_ = State::Stopped;
+}
+
+// ------------------------------------------------------------------ idle runner (F-63)
+
+void Engine::setIdleRun(bool on) {
+    idleOn_ = on;
+    if (!on) return;
+    std::lock_guard<std::mutex> lk(idleMtx_);
+    if (!idle_.joinable() && !idleStop_.load()) idle_ = std::thread(&Engine::idleLoop, this);
+}
+
+// Every kIdlePollMs: when on, a machine runs and no host block came for kIdleQuietMs, run it for the real time that
+// passed (kIdlePollMs on the first step, at most kIdleMaxStepMs), in slices of at most kIdleSliceMs of machine time,
+// each under the lock taken with try_lock (a step ends when it is busy).
+void Engine::idleLoop() {
+    int64_t last = 0;                                // when the previous step ran (0: not idling)
+    while (!idleStop_.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(kIdlePollMs));
+        const int64_t now = steadyMs();
+        if (!idleOn_.load() || now - lastProcessMs_.load() < kIdleQuietMs || state_.load() != State::Running) {
+            idling_ = false;
+            last = 0;
+            continue;
+        }
+        int64_t ms = last == 0 ? kIdlePollMs : std::min(kIdleMaxStepMs, std::max<int64_t>(0, now - last));
+        last = now;
+        while (ms > 0 && !idleStop_.load()) {
+            const int64_t slice = std::min(ms, kIdleSliceMs);
+            std::unique_lock<std::mutex> lk(mtx_, std::try_to_lock);
+            if (!lk.owns_lock() || !idleSlice(slice)) break;
+            ms -= slice;
+        }
+    }
+    idling_ = false;
+}
+
+// Under mtx_: one slice of machine time with the panel, the virtual port and the editor; audio discarded, Audio In
+// silent, nothing for the host.
+bool Engine::idleSlice(int64_t ms) {
+    if (!live_ || state_.load() != State::Running || hostRate_ <= 0) { idling_ = false; return false; }
+    if (steadyMs() - lastProcessMs_.load() < kIdleQuietMs) { idling_ = false; return false; }   // the host is back
+    Machine& m = *live_;
+    if (!idling_.exchange(true)) outParser_.reset();  // starting: no partial output message carried over
+    retime_ = true;                                  // the next host block starts afresh
+    m.liveIn = &g_silence;
+    m.profile = false;
+    drainButtons(m);
+    sendControls(m);
+    const bool editor = editorOpen_.load(std::memory_order_relaxed);
+    if (vin_.peekSize()) takeVirtualIn(m, m.cycles(), editor);
+    if (edOut_.peekSize()) {
+        if (!editor) { while (edOut_.peekSize()) edOut_.pop([](uint8_t) {}); }
+        else takeEditorOut(m, m.cycles());
+    }
+    expireRequests(m);
+    const Machine::Stop st = m.runUntil(m.cycles() + m.cyclesFromMs(double(ms)));
+    m.wet.clear(); m.audio.clear();
+    midiOut(m, 1, false);                            // the virtual port and the editor's replies; never the host
+    m.midiOut.clear();
+    ++idleSlices_;
+    if (st == Machine::Stop::Trap || st == Machine::Stop::HardStall) { machineStopped(m, int(st)); return false; }
+    publishDisplay(m);
+    serveSnapshot(m);                                // a getState asked just before the host stopped
+    return true;
+}
+
 // ------------------------------------------------------------------ MIDI ports
 
 void Engine::virtualMidiIn(const uint8_t* bytes, size_t n) {
@@ -677,7 +774,7 @@ void Engine::virtualMidiIn(const uint8_t* bytes, size_t n) {
 
 // The OS's MIDI output of this block: whole messages to the virtual port and, at the time their audio plays, to the
 // host. A machine sample T sounds at host sample (T - anchor + lookahead) / r.
-void Engine::midiOut(Machine& m, int n) {
+void Engine::midiOut(Machine& m, int n, bool toHost) {
     if (m.midiOut.empty()) return;
     const double r = 44100.0 / hostRate_, cyclesPerSample = m.config().cpuHz / 44100.0;
     for (const auto& e : m.midiOut) {
@@ -689,14 +786,15 @@ void Engine::midiOut(Machine& m, int n) {
             edReplies_.push(outParser_.data(), outParser_.size());
             continue;
         }
+        if (!toHost) { emitMidiOut(outParser_.data(), outParser_.size(), 0, false); continue; }
         const double h = (double(e.first) / cyclesPerSample - double(anchorSample_) + resampler_.lookahead()) / r - double(hostPos_);
         emitMidiOut(outParser_.data(), outParser_.size(), std::clamp(int(h), 0, n - 1));
     }
 }
 
-void Engine::emitMidiOut(const uint8_t* d, size_t size, int offset) {
+void Engine::emitMidiOut(const uint8_t* d, size_t size, int offset, bool toHost) {
     if (virtualOn_.load(std::memory_order_relaxed) && !vout_.push(d, size)) ++voutDropped_;
-    if (!hostOutOn_.load(std::memory_order_relaxed)) return;
+    if (!toHost || !hostOutOn_.load(std::memory_order_relaxed)) return;
     if (hostUsed_ + size > hostBytes_.size() || hostEvents_.size() == hostEvents_.capacity()) { ++hostOutDropped_; return; }
     std::memcpy(hostBytes_.data() + hostUsed_, d, size);
     hostEvents_.push_back({offset, uint32_t(hostUsed_), uint32_t(size)});

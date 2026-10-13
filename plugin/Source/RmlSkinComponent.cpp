@@ -1,4 +1,5 @@
 #include "RmlSkinComponent.h"
+#include "Diag.h"
 #include "SkinSettings.h"
 #include <RmlUi/Core/Input.h>
 #include "gl/RmlGLRenderer.h"
@@ -189,6 +190,7 @@ void RmlSkinComponent::newOpenGLContextCreated() {
         renderer_ = std::make_unique<RmlGLRenderer>(decodeImage);
         if (!renderer_->ok()) { error = "The OpenGL skin renderer could not be started."; renderer_.reset(); }
     }
+    phyzodiag::log(error.isEmpty() ? juce::String("OpenGL context created") : error);
     if (error.isNotEmpty()) {
         juce::Component::SafePointer<RmlSkinComponent> self(this);
         juce::MessageManager::callAsync([self, error] { if (self && self->onLoaded) self->onLoaded(false, error); });
@@ -228,7 +230,7 @@ void RmlSkinComponent::renderOpenGL() {
     renderer_->beginFrame(w, h);
     view_->render();
     renderer_->endFrame();
-    ++framesDrawn_;
+    if (framesDrawn_++ == 0) phyzodiag::log("first frame drawn: " + juce::String(w) + " x " + juce::String(h) + " px");
 }
 
 void RmlSkinComponent::openGLContextClosing() {

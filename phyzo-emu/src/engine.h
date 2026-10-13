@@ -114,6 +114,21 @@ public:
     const BlockTimes& lastBlockTimes() const { return times_; }
     void setProfiling(bool on) { profiling_ = on; }   // per-part timing (a few clock reads per sample)
 
+    // ---- idle runner (F-63): the machine runs only inside host blocks, and some hosts stop calling process() while
+    // the window is open (Logic Pro renders an instrument only while its track is live or playing; REAPER can stop
+    // with the transport). With setIdleRun(true), a background thread runs the machine in real time once no host
+    // block came for kIdleQuietMs: panel buttons and knobs, the virtual port in and out, the editor's requests and
+    // replies (and its standing read), LEDs and the display, reboot requests. Its audio is discarded, Audio In is
+    // silence and the OS's MIDI output for the host is dropped. It never waits for the lock (try_lock; a step is
+    // skipped when the host or a restore has it), holds it for at most kIdleSliceMs of machine time at a time, and
+    // never runs while a machine boots, restores or is stopped. The next host block retimes. Off by default (offline
+    // renders and the tests stay as they were); the plugin turns it on only while its window is open, the host renders
+    // in real time and prepare() has run. Any thread.
+    void setIdleRun(bool on);
+    bool idleRunning() const { return idling_.load(); }
+    uint64_t idleSlicesForTest() const { return idleSlices_.load(); }
+    static constexpr int64_t kIdleQuietMs = 250, kIdlePollMs = 10, kIdleMaxStepMs = 50, kIdleSliceMs = 10;
+
     // ---- virtual MIDI port (the plugin's CoreMIDI binding)
     // MIDI in: raw bytes as they arrive, from one producer thread (the port's receive thread). They are cut into whole
     // messages here and passed to the audio thread through a lock-free queue; each block delivers the waiting
@@ -205,8 +220,14 @@ private:
     void sendControls(Machine& m);
     void serveSnapshot(Machine& m);
     void publishLeds(const Machine& m);
-    void midiOut(Machine& m, int n);
-    void emitMidiOut(const uint8_t* d, size_t size, int offset);
+    void midiOut(Machine& m, int n, bool toHost = true);
+    void emitMidiOut(const uint8_t* d, size_t size, int offset, bool toHost = true);
+    void takeVirtualIn(Machine& m, uint64_t at, bool editor);
+    void takeEditorOut(Machine& m, uint64_t at);
+    void expireRequests(const Machine& m);
+    void machineStopped(Machine& m, int stop);       // a Machine::Stop of Trap or HardStall: why, then Stopped
+    void idleLoop();
+    bool idleSlice(int64_t ms);                      // under mtx_; false: not now (host back, not running)
     void queueEditor(Machine& m, const uint8_t* d, size_t n, uint64_t at);
     void queueStandingRead(Machine& m, uint64_t at);
 
@@ -310,6 +331,12 @@ private:
     std::vector<uint8_t> snap_;                      // written by the audio thread between request and done
     std::atomic<int64_t> lastProcessMs_{-100000};    // when process() last ran (steady clock, ms)
     std::atomic<double> maxLockWaitUs_{0};
+
+    // idle runner: its thread starts with the first setIdleRun(true) and stops in the destructor, before the machine
+    std::mutex idleMtx_;
+    std::thread idle_;
+    std::atomic<bool> idleOn_{false}, idleStop_{false}, idling_{false};
+    std::atomic<uint64_t> idleSlices_{0};
 
     // panel controls: latest value per cc (bit 15 = new), sent by the audio thread, paced
     std::array<std::atomic<uint16_t>, 26> pendingControl_{};

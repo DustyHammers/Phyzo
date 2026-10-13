@@ -49,9 +49,11 @@ owner step by step through anything they must do by hand on github.com or on the
 
 - Dependencies are pinned in `scripts/deps.env` and fetched by `scripts/fetch_deps.sh` into `work/deps/` (ignored).
 - `.github/workflows/ci.yml`: data-file guard over every commit (`scripts/check_no_data.py`), ROM-free tests on
-  Linux (`ctest` in `phyzo-emu` and `tools/rombuilder`), and the macOS plugin build with identity check, auval and
-  the downloadable zip. The ESP2 and voice-core tests hold golden hashes of the current output: a speed change
-  that alters them has changed the sound.
+  Linux (`ctest` in `phyzo-emu` and `tools/rombuilder`), and, on `workflow_dispatch` only, the macOS plugin build
+  (universal arm64 + x86_64, `lipo` checked; x86_64 tests and the cross-architecture state test under Rosetta) with
+  identity check, auval, pluginval (strictness 10) and the downloadable zip (kept 7 days). The ESP2 and voice-core
+  tests hold golden hashes of the current output: a speed change that alters them has changed the sound.
+- To give the owner a build: once the branch is ready to test, trigger CI's `workflow_dispatch` on that branch.
 - Owner's install guide: `docs/INSTALL_MAC.md`.
 - Plugin architecture: `phyzo-emu/src/engine.*` (no JUCE) runs the machine per host block, boots/restores on a worker
   thread, delivers MIDI sample-accurately with a constant reported latency, and converts 44.1 kHz to the host rate
@@ -67,6 +69,9 @@ owner step by step through anything they must do by hand on github.com or on the
   States from before v0.8.3 (no user flash) load exactly as then, erased (they can't save). With the factory user flash
   the OS indexes its user memory at boot (about 0.2 s longer): audio is not byte-identical to v0.8.2 (LFO, arp, random
   timing), by design; every preset and sound is.
+- Startup log (F-65, `plugin/Source/Diag.h`): `~/Documents/Phyzo/Phyzo-log.txt` (under 256 KB) and NSLog `Phyzo:`,
+  always on: host, ROMs, machine state, prepareToPlay, refused layouts, audio start, bypass, editor/GL/skin steps. Never
+  written from the audio thread (it sets flags the processor's timer logs). Separate from the skin log.
 - Skins: `plugin/skin/` (no JUCE) is the runtime: RmlUi 6.3 + Lua 5.4 (sandboxed, 3 s limit) + FreeType, the custom
   elements knob/pbutton/led/vfdigit and the `panel`/`plugin` Lua API; `skin_test` drives the test skin in CI.
   `plugin/Source/RmlSkinComponent.*` draws a file skin with OpenGL (all RmlUi/Lua work on the GL thread);
@@ -128,6 +133,11 @@ owner step by step through anything they must do by hand on github.com or on the
   boot positions are per-control atomics); buttons go through a bounded lock-free multi-producer queue and are never
   merged or dropped. setControl and pressRaw are lock-free and allocation-free from any thread, the audio thread
   included. `phyzo_stress` measures this.
+- Idle runner (v0.8.6, F-63, `Engine::setIdleRun`): off by default; the plugin turns it on only while its window is
+  open, the host renders in real time and prepareToPlay has run. After 250 ms without a host block a background thread
+  runs the machine in real time (panel, virtual port, editor; audio discarded, Audio In silent, nothing to the host) in
+  slices of at most 10 ms of machine time under `mtx_` taken with try_lock only; process() keeps its lock and sets
+  lastProcessMs_ before taking it; the next host block retimes; never while booting, restoring or stopped.
 - MIDI learn (v0.8.4, F-55, docs/MIDI_LEARN.md, `phyzo-emu/src/midi_learn.*`): a controller is a second front panel.
   Learned CCs (notes for buttons) from the host's MIDI drive panel controls (knobs cc 0-22, panel buttons by raw; never
   cc 23-25 or the keys) through setControl / pressRaw exactly as the mouse, and are swallowed; unbound MIDI passes

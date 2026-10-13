@@ -8,3 +8,6 @@ bool phyzoWindowVisible(void* nsView) {
     if (window == nil || ![window isVisible] || [window isMiniaturized]) return false;
     return ([window occlusionState] & NSWindowOcclusionStateVisible) != 0;
 }
+
+// The startup log's copy in the system log (Diag.h).
+void phyzoSystemLog(const char* line) { NSLog(@"%s", line); }
