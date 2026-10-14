@@ -602,6 +602,15 @@ juce::PopupMenu PhyzoEditor::learnListMenu() {
     return m;
 }
 
+// Sync to host tempo (F-68): this instance's setting, saved with the project.
+juce::PopupMenu PhyzoEditor::syncMenu(PhyzoProcessor& proc) {
+    juce::PopupMenu m;
+    const midiclock::Mode cur = proc.syncMode();
+    for (midiclock::Mode mode : {midiclock::Mode::Off, midiclock::Mode::WhilePlaying, midiclock::Mode::Always})
+        m.addItem(PhyzoProcessor::syncModeName(mode), true, cur == mode, [&proc, mode] { proc.setSyncMode(mode); });
+    return m;
+}
+
 void PhyzoEditor::showMenu(const juce::MouseEvent&, int control) { openMenu(control, -1); }
 
 void PhyzoEditor::openMenu(int control, int valueRef) {
@@ -658,6 +667,7 @@ void PhyzoEditor::openMenu(int control, int valueRef) {
         SkinSettings::setMidiToHost(!SkinSettings::midiToHost());
         PhyzoProcessor::applyMidiSettingsToAll();
     });
+    midi.addSubMenu("Sync to host tempo", syncMenu(proc));
     midi.addSubMenu("MIDI learn", learnListMenu());
     menu.addSubMenu("Skin", skins);
     menu.addItem("Reload skin    F5", fileSkin, false, [this] { if (rml_) rml_->reload(); });

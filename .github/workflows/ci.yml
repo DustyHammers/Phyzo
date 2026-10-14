@@ -147,6 +147,8 @@ jobs:
         run: build/plugin/window_scale_test plugin/skin/tests/skins/test
       - name: MIDI learn in the plugin (project state v6 and older, default bindings, host MIDI; no ROMs)
         run: build/plugin/midi_learn_plugin_test
+      - name: Sync to host tempo in the plugin (project state v7, menu, clock with a fake playhead; no ROMs)
+        run: build/plugin/midi_clock_plugin_test
       - name: Plugin test tools under Rosetta (x86_64)
         if: steps.rosetta.outputs.available == 'true'
         run: |
@@ -157,6 +159,7 @@ jobs:
           arch -x86_64 build/plugin/editor_cycle_test plugin/skin/tests/skins/test
           arch -x86_64 build/plugin/window_scale_test plugin/skin/tests/skins/test
           arch -x86_64 build/plugin/midi_learn_plugin_test
+          arch -x86_64 build/plugin/midi_clock_plugin_test
       - name: Ad-hoc sign
         run: |
           cd build/plugin/Phyzo_artefacts/Release

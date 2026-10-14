@@ -24,6 +24,10 @@ std::atomic<uint64_t> g_factoryRuns{0};
 
 struct Blob { std::string osMd5, waveMd5; std::vector<uint8_t> machine; };
 
+// MIDI clock (F8, 24 a quarter note while the host's tempo is followed, F-68) is not "other MIDI" for the editor's arp
+// edits: it changes neither the panel mode nor the preset.
+bool isClock(const uint8_t* d, size_t n) { return n == 1 && d[0] == 0xF8; }
+
 int64_t steadyMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
@@ -579,7 +583,7 @@ void Engine::process(float* left, float* right, int n, const MidiEvent* events, 
         if (at < m.cycles()) { at = m.cycles(); ++lateMidi_; }
         midiTimes_[midiCount_++ % midiTimes_.size()] = at;
         m.serial.queueRx(1, events[i].data, size_t(events[i].size), at);
-        externalMidi_.fetch_add(1, std::memory_order_relaxed);
+        if (!isClock(events[i].data, size_t(events[i].size))) externalMidi_.fetch_add(1, std::memory_order_relaxed);
         if ((editor || pendingCount_) && edproto::isRequest(events[i].data, size_t(events[i].size)))
             noteRequest(false, events[i].data, size_t(events[i].size), m.samplesProduced());
         if (edproto::isPresetTrigger(events[i].data, size_t(events[i].size))) {
@@ -654,7 +658,7 @@ void Engine::takeVirtualIn(Machine& m, uint64_t at, bool editor) {
         size_t k = 0;
         vin_.pop([&](uint8_t b) { if (k < scratch_.size()) scratch_[k++] = b; });
         m.serial.queueRx(1, scratch_.data(), k, at);
-        externalMidi_.fetch_add(1, std::memory_order_relaxed);
+        if (!isClock(scratch_.data(), k)) externalMidi_.fetch_add(1, std::memory_order_relaxed);
         if ((editor || pendingCount_) && edproto::isRequest(scratch_.data(), k)) noteRequest(false, scratch_.data(), k, m.samplesProduced());
         if (edproto::isPresetTrigger(scratch_.data(), k)) {
             ++presetTriggers_;

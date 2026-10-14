@@ -218,6 +218,13 @@ message says so if it sends only one. The bindings are saved with the project; *
 **Save as default for new instances** keeps them for new Phyzo instances. They apply only to MIDI from REAPER, not to
 the virtual port. Details: `docs/MIDI_LEARN.md`.
 
+**Sync to host tempo** (right-click menu, **MIDI > Sync to host tempo**): Phyzo sends the synth MIDI clock at REAPER's
+tempo, so the arpeggiator, tempo-synced LFOs and noise, and tempo-based effects follow the project. **While playing**
+(the default) sends clock only while the transport plays: when you stop, the synth keeps the last tempo and its own
+panel Tempo works again. **Always** sends clock whenever REAPER has a tempo, playing or not. **Off** sends none (as
+before 0.8.7). While clock arrives, the synth's Tempo display shows the project tempo and panel Tempo edits don't
+stick, as on the original hardware fed by a sequencer. The choice is saved with the project.
+
 ## 9. Audio input
 
 Phyzo has an optional stereo input, **Audio In**, that feeds the synth's effects processor the way the hardware's line

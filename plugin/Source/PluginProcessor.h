@@ -16,6 +16,7 @@
 #include "editor/editor_controller.h"
 #include "engine.h"
 #include "library/service.h"
+#include "midi_clock.h"
 #include "midi_learn.h"
 #include "rom_id.h"
 #include "skin_port.h"
@@ -93,6 +94,16 @@ public:
     void forgetAllLearn();
     void saveLearnDefaults();                        // for new instances and older projects
     void clearLearnDefaults();
+
+    // ---- Sync to host tempo (F-68): MIDI clock (F8) from the host's playhead into the OS's MIDI input, which follows
+    // it. A plugin setting saved with the project (version 7; older projects and new instances: While playing), never
+    // a synth or host parameter. Any thread; the audio thread reads it once per block.
+    midiclock::Mode syncMode() const { return midiclock::Mode(syncMode_.load()); }
+    void setSyncMode(midiclock::Mode m);
+    static const char* syncModeName(midiclock::Mode m);
+    // The block's MIDI as it went to the engine (host events after MIDI learn, the clock merged in; audio thread, for
+    // the tests right after processBlock).
+    const std::vector<Engine::MidiEvent>& blockEventsForTest() const { return events_; }
     static std::vector<midilearn::Binding> learnDefaults();
     struct Meter {                                   // CPU per block, written by the audio thread
         std::atomic<float> avg{0}, peak{0}, last{0}, lastMs{0}, blockMs{0};
@@ -278,6 +289,11 @@ private:
     int timerTicks_ = 0;
     std::atomic<double> hostRate_{0};
     std::vector<Engine::MidiEvent> events_;
+    static constexpr size_t kMaxHostEvents = 4096;   // the host's MIDI events taken per block (the rest is dropped)
+    std::atomic<int> syncMode_{int(midiclock::Mode::WhilePlaying)};
+    midiclock::Generator clock_;                     // audio thread
+    std::vector<int> ticks_;                         // the block's clock ticks (sized in prepareToPlay)
+    void logSyncMode();
     bool inputActive_ = false;                       // Audio In bus enabled by the host (set in prepareToPlay)
     std::vector<float> inL_, inR_;                   // Audio In copied out of the in-place buffer
     // startup log (Diag.h): the audio thread only sets these flags; the timer writes the lines
