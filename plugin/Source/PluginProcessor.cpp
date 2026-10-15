@@ -8,8 +8,9 @@
 
 namespace {
 constexpr uint32_t kStateMagic = 0x505A4850;     // "PHZP" (little-endian)
-constexpr uint32_t kStateVersion = 6;          // 2: + skin knob positions; 3: + window size; 4: + its scale's version;
-                                                // 5: + the editor unit open; 6: + the MIDI learn bindings (older still read)
+constexpr uint32_t kStateVersion = 7;          // 2: + skin knob positions; 3: + window size; 4: + its scale's version;
+                                                // 5: + the editor unit open; 6: + the MIDI learn bindings;
+                                                // 7: + Sync to host tempo (older still read)
 constexpr int kTimerMs = 100, kScanEveryTicks = 20;   // rescan the ROM folder every 2 s while something is missing
 
 std::mutex g_instancesMtx;
@@ -26,7 +27,7 @@ PhyzoProcessor::PhyzoProcessor()
     dataFolder_ = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile("Phyzo");
     dataFolder_.getChildFile("roms").createDirectory();
     dataFolder_.getChildFile("skins").createDirectory();
-    events_.reserve(4096);
+    events_.reserve(kMaxHostEvents);
     port_.ed = &editorPort_;
     port_.learn = &learn_;
     learn_.setBindings(learnDefaults());            // a new instance: the default bindings (none unless saved)
@@ -35,6 +36,7 @@ PhyzoProcessor::PhyzoProcessor()
     engine_.setFactoryUserFlash(true, dataFolder_.getChildFile("cache").getFullPathName().toStdString());
     editor_.setLibrary(&libraryBridge_);
     phyzodiag::log("data folder " + dataFolder_.getFullPathName() + (dataFolder_.isDirectory() ? "" : " (could not be made)"));
+    logSyncMode();
     scanRoms();
     applyMidiSettings();
     { std::lock_guard<std::mutex> lk(g_instancesMtx); g_instances.push_back(this); }
@@ -289,6 +291,11 @@ void PhyzoProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) {
     const auto* in = getBus(true, 0);
     inputActive_ = in != nullptr && in->isEnabled() && in->getNumberOfChannels() > 0;
     inL_.assign(size_t(std::max(1, samplesPerBlock)), 0.0f); inR_.assign(inL_.size(), 0.0f);
+    // MIDI clock (F-68): room for the ticks of a block of up to 4096 samples (or the host's block, if larger) at up to
+    // 999 bpm, and for them in the block's event list, so the audio thread never allocates.
+    ticks_.assign(size_t(midiclock::Generator::maxTicks(sampleRate, std::max(samplesPerBlock, 4096))), 0);
+    events_.reserve(kMaxHostEvents + ticks_.size());
+    clock_.reset();
     engine_.prepare(sampleRate, samplesPerBlock, inputActive_);
     engine_.setProfiling(true);                      // per-part times for the debug overlay (output unchanged)
     setLatencySamples(engine_.latencySamples());
@@ -331,12 +338,33 @@ void PhyzoProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBu
     const int n = buffer.getNumSamples();
     events_.clear();
     for (const auto meta : midi)
-        if (events_.size() < events_.capacity()) events_.push_back({meta.samplePosition, meta.data, meta.numBytes});
+        if (events_.size() < kMaxHostEvents) events_.push_back({meta.samplePosition, meta.data, meta.numBytes});
     midi.clear();
     // MIDI learn: bound messages (and the one that completes a learn) drive the panel and are taken out; everything
     // else passes as it came. No lock, no allocation (with no bindings, nothing is even looked at).
     events_.resize(size_t(learn_.process(events_.data(), int(events_.size()), learnClockMs_)));
     learnClockMs_ += n * 1000.0 / std::max(1.0, hostRate_.load());
+    // Sync to host tempo (F-68): MIDI clock on the host's grid, merged in sample order after the host's events at the
+    // same offset; the host's own clock is taken out. Off: the block's events are untouched. No lock, no allocation
+    // (the room was made in prepareToPlay).
+    const auto sync = midiclock::Mode(syncMode_.load(std::memory_order_relaxed));
+    if (sync != midiclock::Mode::Off) {
+        midiclock::Transport tr;
+        if (juce::AudioPlayHead* ph = getPlayHead())
+            if (const auto pos = ph->getPosition()) {
+                if (const auto bpm = pos->getBpm()) { tr.hasBpm = true; tr.bpm = *bpm; }
+                if (const auto ppq = pos->getPpqPosition()) { tr.hasPpq = true; tr.ppq = *ppq; }
+                tr.playing = pos->getIsPlaying();
+            }
+        const int ticks = clock_.process(sync, tr, hostRate_.load(), n, ticks_.data(), int(ticks_.size()));
+        const size_t hostCount = events_.size();
+        if (hostCount + size_t(ticks) <= events_.capacity()) {
+            events_.resize(hostCount + size_t(ticks));
+            events_.resize(size_t(midiclock::merge(sync, events_.data(), int(hostCount), ticks_.data(), ticks)));
+        }
+    } else {
+        clock_.reset();
+    }
     // Audio In shares the buffer with the output (in place): copy it out first.
     const float* inL = nullptr; const float* inR = nullptr;
     if (inputActive_ && n <= int(inL_.size())) {
@@ -392,7 +420,8 @@ juce::AudioProcessorEditor* PhyzoProcessor::createEditor() {
 // element positions (count, then id and raw for each), then the window size (winscale) and whether it is still on
 // the old scale (version 3 projects store sizes relative to the full body size), then whether the editor unit is
 // open (version 5), then the MIDI learn bindings (version 6: count, then for each: control id (int), channel (0 =
-// Any), CC or note number, kind (0 CC, 1 note), 14-bit seen; an empty list means no bindings).
+// Any), CC or note number, kind (0 CC, 1 note), 14-bit seen; an empty list means no bindings), then Sync to host
+// tempo (version 7: one byte, 0 Off, 1 While playing, 2 Always).
 void PhyzoProcessor::getStateInformation(juce::MemoryBlock& dest) {
     ++meter.stateRequests;
     const std::vector<uint8_t> engineState = engine_.getState();
@@ -424,6 +453,7 @@ void PhyzoProcessor::getStateInformation(juce::MemoryBlock& dest) {
         out.writeByte(b.note ? 1 : 0);
         out.writeByte(b.fine ? 1 : 0);
     }
+    out.writeByte(char(syncMode_.load()));
 }
 
 void PhyzoProcessor::setStateInformation(const void* data, int size) {
@@ -472,10 +502,34 @@ void PhyzoProcessor::setStateInformation(const void* data, int size) {
         bindings = learnDefaults();
     }
     learn_.setBindings(bindings);
+    // Sync to host tempo (version 7); older projects: While playing (the default).
+    int sync = int(midiclock::Mode::WhilePlaying);
+    if (version >= 7 && in.getNumBytesRemaining() >= 1) {
+        const int b = in.readByte();
+        if (b >= int(midiclock::Mode::Off) && b <= int(midiclock::Mode::Always)) sync = b;
+    }
+    setSyncMode(midiclock::Mode(sync));
     { std::lock_guard<std::mutex> lk(port_.mtx); port_.knobs = std::move(knobs); }
     phyzodiag::log("project state loaded: version " + juce::String(version) + ", machine state " + juce::String(int(rawSize / 1024)) + " KB");
     engine_.setState(engineState);
 }
+
+// ------------------------------------------------------------------ Sync to host tempo (F-68)
+
+const char* PhyzoProcessor::syncModeName(midiclock::Mode m) {
+    switch (m) {
+        case midiclock::Mode::Off: return "Off";
+        case midiclock::Mode::WhilePlaying: return "While playing";
+        case midiclock::Mode::Always: return "Always";
+    }
+    return "?";
+}
+
+void PhyzoProcessor::setSyncMode(midiclock::Mode m) {
+    if (syncMode_.exchange(int(m)) != int(m)) logSyncMode();
+}
+
+void PhyzoProcessor::logSyncMode() { phyzodiag::log(juce::String("sync to host tempo: ") + syncModeName(syncMode())); }
 
 // ------------------------------------------------------------------ MIDI learn (F-55, docs/MIDI_LEARN.md)
 

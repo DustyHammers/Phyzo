@@ -7,7 +7,7 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 if(CMAKE_HOST_APPLE AND NOT CMAKE_OSX_ARCHITECTURES)
   set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "Target architectures")
 endif()
-project(Phyzo VERSION 0.8.6 LANGUAGES C CXX)
+project(Phyzo VERSION 0.8.7 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -133,6 +133,24 @@ endif()
 if(APPLE)
   target_sources(midi_learn_plugin_test PRIVATE Source/MacWindow.mm)
   target_link_libraries(midi_learn_plugin_test PRIVATE "-framework CoreMIDI" "-framework OpenGL")
+endif()
+
+# Sync to host tempo in the plugin (F-68): the setting in the project state, the MIDI menu's submenu, and the clock in
+# processBlock with a fake playhead (no ROMs, no editor window; CI on macOS).
+add_executable(midi_clock_plugin_test tests/midi_clock_plugin_test.cpp
+  Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/RmlSkinComponent.cpp Source/VirtualMidiPort.cpp)
+target_include_directories(midi_clock_plugin_test PRIVATE Source)
+target_compile_definitions(midi_clock_plugin_test PRIVATE
+  JucePlugin_Name="Phyzo" JucePlugin_VersionString="0.0-test" JUCE_MODAL_LOOPS_PERMITTED=1
+  JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_STANDALONE_APPLICATION=0)
+target_link_libraries(midi_clock_plugin_test PRIVATE phyzo_core phyzo_skin_gl
+  juce::juce_audio_processors juce::juce_audio_utils juce::juce_opengl juce::juce_recommended_config_flags)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_link_libraries(midi_clock_plugin_test PRIVATE X11)
+endif()
+if(APPLE)
+  target_sources(midi_clock_plugin_test PRIVATE Source/MacWindow.mm)
+  target_link_libraries(midi_clock_plugin_test PRIVATE "-framework CoreMIDI" "-framework OpenGL")
 endif()
 
 # Window size test: the scale rules, project state migration and the editor's sizes (needs a display; CI on macOS).

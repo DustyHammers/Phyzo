@@ -86,6 +86,22 @@ int main() {
         CHECK(e.peekForTest(0x0BE00200, 1) == 0x90 || rate != 44100.0);
     }
 
+    // MIDI clock (F8, F-68) reaches the OS but is not "other MIDI" for the editor's arp edits; a note is.
+    {
+        std::vector<float> l(256), rr(256);
+        const uint8_t clock = 0xF8, noteOn[3] = {0x90, 0x40, 0x40};
+        const uint64_t before = e.externalMidi();
+        Engine::MidiEvent ev[2] = {{0, &clock, 1}, {100, &clock, 1}};
+        e.process(l.data(), rr.data(), 256, ev, 2);
+        CHECK(e.externalMidi() == before);
+        Engine::MidiEvent nv[1] = {{0, noteOn, 3}};
+        e.process(l.data(), rr.data(), 256, nv, 1);
+        CHECK(e.externalMidi() == before + 1);
+        e.virtualMidiIn(&clock, 1);
+        e.process(l.data(), rr.data(), 256, nullptr, 0);
+        CHECK(e.externalMidi() == before + 1);
+    }
+
     // Knob move (panel control): applied to the running machine and kept as the position.
     {
         CHECK(e.controlPosition(11) == 1023 && e.controlPosition(23) == 512);   // fresh positions

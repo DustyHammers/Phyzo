@@ -171,7 +171,7 @@ public:
     uint64_t panelGestures() const { return panelGestures_.load(); }         // panel knob moves and button presses
     int lastPanelControl() const { return lastPanelControl_.load(); }        // the last panel control moved (0-25), -1: none
     uint64_t panelControlMoves() const { return panelControlMoves_.load(); } // panel knob moves only (Follow on knobs)
-    uint64_t externalMidi() const { return externalMidi_.load(); }           // messages from the host and the virtual port
+    uint64_t externalMidi() const { return externalMidi_.load(); }           // messages from the host and the virtual port (not clock)
     uint64_t editorRequestsForTest() const { return editorRequests_; }
     static constexpr uint64_t kEditorReplyTimeoutSamples = 5 * 44100;
     static constexpr size_t kStandingReadBytes = 4096;

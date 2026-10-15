@@ -73,6 +73,8 @@ public:
     void showExportMenu();
     // MIDI learn's messages while the editor unit is closed: the window's banner, 3 s.
     void showLearnMessage(const juce::String& text);
+    // MIDI > Sync to host tempo (F-68): Off, While playing, Always; the current one ticked.
+    static juce::PopupMenu syncMenu(PhyzoProcessor& proc);
 
 private:
     juce::StringArray skinNames() const;             // discovered file skins

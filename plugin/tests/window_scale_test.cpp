@@ -53,8 +53,9 @@ juce::MemoryBlock projectState(int version, float scale, bool legacy) {
     return dest;
 }
 
-// What follows the editor-open byte since version 6: the MIDI learn bindings (count, then 8 bytes each).
-size_t learnBytes(juce::AudioProcessor& p) { return 4 + 8 * static_cast<PhyzoProcessor&>(p).learn().bindings().size(); }
+// What follows the editor-open byte: the MIDI learn bindings (version 6: count, then 8 bytes each), then Sync to host
+// tempo (version 7: one byte).
+size_t learnBytes(juce::AudioProcessor& p) { return 4 + 8 * static_cast<PhyzoProcessor&>(p).learn().bindings().size() + 1; }
 
 // The scale part of what a processor saves now: float, then the old-scale flag, then the editor-open byte.
 std::pair<float, bool> savedScale(juce::AudioProcessor& p) {
