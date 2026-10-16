@@ -1,5 +1,6 @@
 #include "PluginEditor.h"
 #include "Diag.h"
+#include "PhyzoWindow.h"
 #include "RmlSkinComponent.h"
 #include "SkinSettings.h"
 #include "skin_discovery.h"
@@ -323,9 +324,11 @@ void PhyzoEditor::timerCallback() {
 
 PhyzoEditor::~PhyzoEditor() {
     phyzodiag::log("editor closed");
+    juce::PopupMenu::dismissAllActiveMenus();        // their look and their actions belong to this editor
     stopTimer();
     proc.setEditorActive(false);                     // no window shows it: the editor sends nothing
     if (scaleDirty_) SkinSettings::setScale(scale_);
+    window_.reset();
     rml_.reset();                                    // closes its OpenGL context first
     builtin_.reset();
 }
@@ -360,7 +363,9 @@ void PhyzoEditor::showSkin(const juce::String& name, const juce::String& notice)
         phyzodiag::log("skin \"" + name + "\" loaded");
         if (notice.isNotEmpty() && rml_) rml_->showMessage(notice);
         proc.loadWaveNames(skinFolder(name));
+        loadUiFont(rml_ ? rml_->uiFontFile() : juce::String());
         updateEditorUnit();
+        if (window_) window_->refresh();
     };
     rml_->setDebugger(debugger_);
     rml_->setPersistentMessage(romMessage(proc));
@@ -369,7 +374,10 @@ void PhyzoEditor::showSkin(const juce::String& name, const juce::String& notice)
 }
 
 void PhyzoEditor::showBuiltIn(const juce::String& notice) {
+    if (window_ && window_->getParentComponent() != this) addChildComponent(*window_);   // off the file skin first
     rml_.reset();
+    debugger_ = false;
+    loadUiFont({});                                  // Built-in: JUCE's default sans
     editorShown_ = false;                            // Built-in has no editor unit
     proc.setEditorActive(false);
     if (!builtin_) {
@@ -383,6 +391,7 @@ void PhyzoEditor::showBuiltIn(const juce::String& notice) {
     phyzodiag::log("Built-in skin shown");
     if (notice.isNotEmpty()) builtin_->setNotice(notice);
     applyScale(scale_);
+    if (window_) window_->refresh();
 }
 
 // A skin that is missing or fails to load: rack, then Built-in, saying why.
@@ -486,27 +495,16 @@ void PhyzoEditor::resized() {
         rml_->setZoom(float(getWidth()) / float(base.x));   // the dp ratio follows the window: art drawn at its size
         rml_->setBounds(getLocalBounds());
     }
+    placeWindow();
 }
 
-// LIBRARY pressed while the editor unit is closed: open it (the project's choice, as right-click > Editor).
-void PhyzoEditor::openEditorUnit() {
-    if (!rml_ || !rml_->hasEditor() || editorShown_) return;
-    proc.setEditorWanted(true);
-    updateEditorUnit();
-}
-
-// EXPORT: a menu of the two banks, like the editor's value lists; a choice runs EXPORT B1 / B2, dismissing does nothing.
-void PhyzoEditor::showExportMenu() {
-    juce::PopupMenu menu;
-    menu.addItem("Bank 1 (presets 1-32)", [this] { proc.editorController().command("library", "EXPORT B1"); });
-    menu.addItem("Bank 2 (presets 33-64)", [this] { proc.editorController().command("library", "EXPORT B2"); });
-    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition());
-}
-
-// Right-click on an editor value (F-56): the usual plugin menu, with Revert on top when the value was edited since the
-// preset loaded. Values are set by click-and-drag and typed entry; the OS's value lists are not shown.
+// Right-click on an editor value (F-56): its Revert (when the value was edited since the preset loaded) and "Open
+// window..."; a value with nothing to revert opens the window. Values are set by click-and-drag and typed entry; the
+// OS's value lists are not shown.
 bool PhyzoEditor::showValueMenu(int ref) {
-    openMenu(-1, ref);
+    juce::PopupMenu m = menuFor(-1, ref);
+    if (m.getNumItems() > 0) showThemedMenu(m);
+    else openWindow(PhyzoWindow::kSystem);
     return true;
 }
 
@@ -536,7 +534,8 @@ bool PhyzoEditor::editorKey(const juce::KeyPress& k) {
 }
 
 void PhyzoEditor::showLearnMessage(const juce::String& text) {
-    if (rml_) rml_->showMessage(text, 3);
+    if (windowOpen()) window_->message(text);
+    else if (rml_) rml_->showMessage(text, 3);
     else if (builtin_) builtin_->setNotice(text, 3);
 }
 
@@ -587,97 +586,120 @@ void PhyzoEditor::addLearnItems(juce::PopupMenu& menu, int control) {
     menu.addSeparator();
 }
 
-// MIDI > MIDI learn: every binding (choosing one forgets it), then the defaults for new instances and Forget all.
-juce::PopupMenu PhyzoEditor::learnListMenu() {
-    juce::PopupMenu m;
-    const midilearn::PerfLabels labels = proc.perfLabels();
-    const std::vector<midilearn::Binding> all = proc.learn().bindings();
-    for (const midilearn::Binding& b : all)
-        m.addItem(juce::String::fromUTF8(midilearn::listEntry(b, labels).c_str()), [this, c = b.control] { proc.forgetLearn(c); });
-    if (all.empty()) m.addItem("No bindings", false, false, [] {});
-    m.addSeparator();
-    m.addItem("Save as default for new instances", [this] { proc.saveLearnDefaults(); });
-    m.addItem("Clear default", SkinSettings::midiLearnDefaults().isNotEmpty(), false, [this] { proc.clearLearnDefaults(); });
-    m.addItem("Forget all", !all.empty(), false, [this] { proc.forgetAllLearn(); });
-    return m;
+void PhyzoEditor::showMenu(const juce::MouseEvent&, int control) { rightClick(control); }
+
+void PhyzoEditor::rightClick(int control) {
+    juce::PopupMenu m = menuFor(control, -1);
+    if (m.getNumItems() > 0) showThemedMenu(m);
+    else openWindow(PhyzoWindow::kSystem);           // the background, a legend, a control that cannot be learned
 }
 
-// Sync to host tempo (F-68): this instance's setting, saved with the project.
-juce::PopupMenu PhyzoEditor::syncMenu(PhyzoProcessor& proc) {
-    juce::PopupMenu m;
-    const midiclock::Mode cur = proc.syncMode();
-    for (midiclock::Mode mode : {midiclock::Mode::Off, midiclock::Mode::WhilePlaying, midiclock::Mode::Always})
-        m.addItem(PhyzoProcessor::syncModeName(mode), true, cur == mode, [&proc, mode] { proc.setSyncMode(mode); });
-    return m;
-}
-
-void PhyzoEditor::showMenu(const juce::MouseEvent&, int control) { openMenu(control, -1); }
-
-void PhyzoEditor::openMenu(int control, int valueRef) {
-    const juce::StringArray names = skinNames();
-    const bool fileSkin = rml_ != nullptr;
-    juce::PopupMenu skins, zoom, dev, menu;
+juce::PopupMenu PhyzoEditor::menuFor(int control, int valueRef) {
+    juce::PopupMenu menu;
     if (valueRef >= 0) {
         const editor::Menu m = proc.editorController().menu(valueRef);
-        if (m.revert) {
-            menu.addItem(juce::String::fromUTF8(editor::revertItemText(m).c_str()), [this, valueRef] {
-                editor::Controller& c = proc.editorController();
-                c.command("focus", std::to_string(valueRef));
-                c.revert(valueRef);
-            });
-            menu.addSeparator();
-        }
-    } else if (midilearn::learnable(control)) {
-        addLearnItems(menu, control);
-    }
-    skins.addItem(SkinSettings::kBuiltIn, true, current_ == SkinSettings::kBuiltIn, [this] {
-        SkinSettings::setSkin(SkinSettings::kBuiltIn);
-        showSkin(SkinSettings::kBuiltIn);
-    });
-    for (const juce::String& n : names)
-        skins.addItem(n, true, current_ == n, [this, n] { SkinSettings::setSkin(n); showSkin(n); });
-    const float limit = maxScale();                  // sizes that would not fit the screen are greyed out (F-32)
-    for (int z : winscale::kSteps)
-        zoom.addItem(juce::String(winscale::stepLabel(z, fileSkin)), winscale::stepFits(z, limit), winscale::isStep(scale_, z), [this, z] {
-            applyScale(winscale::stepScale(z));
-            scaleDirty_ = false;
-            SkinSettings::setScale(scale_);
+        if (!m.revert) return {};
+        menu.addItem(juce::String::fromUTF8(editor::revertItemText(m).c_str()), [this, valueRef] {
+            editor::Controller& c = proc.editorController();
+            c.command("focus", std::to_string(valueRef));
+            c.revert(valueRef);
         });
-    dev.addItem("RmlUi debugger", fileSkin, fileSkin && debugger_, [this] {
-        debugger_ = !debugger_;
-        if (rml_) rml_->setDebugger(debugger_);
-    });
-    dev.addItem("Write skin log", true, SkinSettings::skinLog(), [] { SkinSettings::setSkinLog(!SkinSettings::skinLog()); });
-    // MIDI ports (approved mockup): global settings, applied to every open instance.
-    juce::PopupMenu midi;
-    const VirtualMidiPort& vp = proc.virtualPort();
-    const bool portWanted = SkinSettings::virtualMidiPort();
-    const juce::String portLabel = vp.isOpen() ? "Virtual port \"" + juce::String(vp.name()) + "\""
-                                   : portWanted ? juce::String("Virtual port (unavailable)") : juce::String("Virtual port");
-    midi.addItem(portLabel, true, vp.isOpen(), [this, portWanted] {
-        SkinSettings::setVirtualMidiPort(!portWanted);
-        PhyzoProcessor::applyMidiSettingsToAll();
-        const VirtualMidiPort& p = proc.virtualPort();
-        if (!portWanted && !p.isOpen()) {
-            const juce::String why = "The virtual MIDI port could not be opened: " + juce::String(p.error());
-            if (rml_) rml_->showMessage(why); else if (builtin_) builtin_->setNotice(why);
-        }
-    });
-    midi.addItem("Send MIDI to host", true, SkinSettings::midiToHost(), [] {
-        SkinSettings::setMidiToHost(!SkinSettings::midiToHost());
-        PhyzoProcessor::applyMidiSettingsToAll();
-    });
-    midi.addSubMenu("Sync to host tempo", syncMenu(proc));
-    midi.addSubMenu("MIDI learn", learnListMenu());
-    menu.addSubMenu("Skin", skins);
-    menu.addItem("Reload skin    F5", fileSkin, false, [this] { if (rml_) rml_->reload(); });
-    menu.addSubMenu("Zoom", zoom);
-    menu.addItem("Editor", fileSkin && rml_->hasEditor(), editorShown_, [this] {
-        proc.setEditorWanted(!proc.editorWanted());
-        updateEditorUnit();
-    });
-    menu.addSubMenu("MIDI", midi);
-    menu.addSeparator();
-    menu.addSubMenu("Developer", dev);
+        menu.addSeparator();
+    } else if (midilearn::learnable(control)) {
+        addLearnItems(menu, control);                // ends with a separator
+    } else {
+        return {};
+    }
+    menu.addItem(juce::String::fromUTF8("Open window\xe2\x80\xa6"), [this] { openWindow(PhyzoWindow::kSystem); });
+    return menu;
+}
+
+void PhyzoEditor::showThemedMenu(juce::PopupMenu& menu) {
+    menus_.setScale(fileSkin() ? float(getWidth()) / float(baseSize().x) : 1.0f);
+    menu.setLookAndFeel(&menus_);
     menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this).withMousePosition());
+}
+
+// ------------------------------------------------------------------ the plugin window (v0.9.0)
+
+void PhyzoEditor::openWindow(int tab) {
+    if (!window_) {
+        window_ = std::make_unique<PhyzoWindow>(*this, proc, theme_, menus_);
+        phyzodiag::log("window opened");
+    } else if (!window_->isVisible()) {
+        phyzodiag::log("window opened");
+    }
+    placeWindow();
+    window_->setVisible(true);
+    window_->showTab(tab);
+    window_->grabKeyboardFocus();
+}
+
+void PhyzoEditor::closeWindow() {
+    if (!windowOpen()) return;
+    window_->cancelEditing();
+    window_->setVisible(false);
+    phyzodiag::log("window closed");
+    if (rml_) rml_->grabKeyboardFocus();
+    else if (builtin_) builtin_->grabKeyboardFocus();
+}
+
+// Over the whole plugin area (panel and editor unit), at the skin's dp scale (Built-in: fitted to its small size).
+void PhyzoEditor::placeWindow() {
+    if (!window_) return;
+    juce::Component* parent = rml_ ? static_cast<juce::Component*>(rml_.get()) : static_cast<juce::Component*>(this);
+    if (window_->getParentComponent() != parent) parent->addChildComponent(*window_);
+    const auto area = parent->getLocalBounds();
+    float dpScale;
+    if (rml_) dpScale = float(getWidth()) / float(baseSize().x);
+    else dpScale = std::min(float(area.getWidth()) / 1100.0f, float(area.getHeight()) / 700.0f);
+    window_->place(area, dpScale);
+    window_->toFront(false);
+}
+
+void PhyzoEditor::rackCommand(const juce::String& value) {
+    if (value == "EDITOR") setEditorUnit(!editorShown_);
+    else if (value == "SAVE") { openWindow(PhyzoWindow::kLibrary); if (window_) window_->startSave(); }
+}
+
+void PhyzoEditor::chooseSkin(const juce::String& name) {
+    if (name == current_) return;
+    SkinSettings::setSkin(name);
+    showSkin(name);
+    placeWindow();
+}
+
+void PhyzoEditor::reloadSkin() { if (rml_) rml_->reload(); }
+
+bool PhyzoEditor::hasEditorUnit() const { return rml_ != nullptr && rml_->hasEditor(); }
+
+void PhyzoEditor::setEditorUnit(bool on) {
+    if (on && !hasEditorUnit()) return;
+    proc.setEditorWanted(on);
+    updateEditorUnit();
+    if (window_) window_->refresh();
+}
+
+void PhyzoEditor::setZoomStep(int percent) {
+    if (!winscale::stepFits(percent, maxScale())) return;
+    applyScale(winscale::stepScale(percent));
+    scaleDirty_ = false;
+    SkinSettings::setScale(scale_);
+    if (window_) window_->refresh();
+}
+
+void PhyzoEditor::setDebugger(bool on) {
+    debugger_ = on && rml_ != nullptr;
+    if (rml_) rml_->setDebugger(debugger_);
+}
+
+// The skin's UI font for the window and the menus; JUCE's default sans without one (and for Built-in).
+void PhyzoEditor::loadUiFont(const juce::String& fontFile) {
+    theme_.typeface = nullptr;
+    if (fontFile.isNotEmpty()) {
+        theme_.typeface = ui::Theme::loadTypeface(juce::File(fontFile));
+        if (theme_.typeface == nullptr && rml_)
+            rml_->writeSkinLog("warning: ui-font \"" + juce::File(fontFile).getFileName() + "\" could not be read as a font; the plugin window and menus use the default font");
+    }
+    if (window_) { window_->refresh(); window_->repaint(); }
 }

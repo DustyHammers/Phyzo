@@ -266,7 +266,7 @@ void testEngine() {
 }
 // 6. The plugin window's bank load (v0.9.0, Engine::libraryInput): a bank-sized message goes into the MIDI port whole
 // (the echo returns it as one message), the host's MIDI sent meanwhile waits behind it (never inside it), one at a
-// time, busy until the OS has read its last byte, and the audio thread allocates nothing for it.
+// time in order, busy until the OS has read the last one's last byte, and the audio thread allocates nothing for it.
 void testLibraryInput() {
     const fs::path dir = fs::temp_directory_path() / "phyzo_midi_lib_test";
     fs::remove_all(dir); fs::create_directories(dir);
@@ -304,8 +304,9 @@ void testLibraryInput() {
     bank.push_back(0xF7);
     CHECK(!e.libraryInputBusy());
     CHECK(!e.libraryInput(bank.data(), Engine::kLibraryMessageMax + 1) && !e.libraryInput(bank.data(), 0));
+    const Msg preset = {0xF0, 0x0F, 0x11, 0x01, 0x00, 0x02, 0x17, 0x01, 0x02, 0x03, 0xF7};
     CHECK(e.libraryInput(bank.data(), bank.size()));
-    CHECK(e.libraryInputBusy() && !e.libraryInput(bank.data(), bank.size()));   // one at a time
+    CHECK(e.libraryInputBusy() && e.libraryInput(preset.data(), preset.size()));   // queued behind it
     out.clear();
     g_allocs = 0;
     std::vector<Msg> notes;
@@ -322,10 +323,10 @@ void testLibraryInput() {
     CHECK(!e.libraryInputBusy());
     CHECK(seconds > 30 && seconds < 40);                     // at cable speed
     CHECK(g_allocs.load() == 0);
-    CHECK(out.size() == notes.size() + 1);
-    if (!out.empty()) CHECK(out[0] == bank);                  // whole, first
-    bool inOrder = out.size() == notes.size() + 1;
-    for (size_t i = 0; inOrder && i < notes.size(); ++i) inOrder = out[i + 1] == notes[i];
+    CHECK(out.size() == notes.size() + 2);
+    if (out.size() >= 2) CHECK(out[0] == bank && out[1] == preset);   // whole, first, in order
+    bool inOrder = out.size() == notes.size() + 2;
+    for (size_t i = 0; inOrder && i < notes.size(); ++i) inOrder = out[i + 2] == notes[i];
     CHECK(inOrder);
     CHECK(e.virtualInDropped() == 0 && e.virtualOutDropped() == 0);
     // Taken again once the first is through.

@@ -295,7 +295,13 @@ int sourceOf(Service& s, const std::string& title) {
     return -1;
 }
 const std::string kOs = "0123456789abcdef0123456789abcdef";
-Service::Config config(const fs::path& data) { return {data.string(), kOs, [] { return Bytes{1, 2, 3}; }}; }
+Service::Config config(const fs::path& data) {
+    Service::Config c;
+    c.dataDir = data.string();
+    c.osMd5 = kOs;
+    c.machineState = [] { return Bytes{1, 2, 3}; };
+    return c;
+}
 // With the bank load's hooks: the running machine's MIDI input (the OS takes a bank message into the bank its byte 6
 // names, as the real OS does) and the Trash (a folder of the test's own).
 Service::Config config(const fs::path& data, Shared& sh, const fs::path& trash) {

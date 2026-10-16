@@ -79,15 +79,24 @@ owner step by step through anything they must do by hand on github.com or on the
 - Skins: `plugin/skin/` (no JUCE) is the runtime: RmlUi 6.3 + Lua 5.4 (sandboxed, 3 s limit) + FreeType, the custom
   elements knob/pbutton/led/vfdigit and the `panel`/`plugin` Lua API; `skin_test` drives the test skin in CI.
   `plugin/Source/RmlSkinComponent.*` draws a file skin with OpenGL (all RmlUi/Lua work on the GL thread);
-  `PluginEditor.*` has the Built-in skin, the right-click menu, zoom and the fallback (rack, then Built-in).
+  `PluginEditor.*` has the Built-in skin, the right-click routing (a learnable control: MIDI learn's menu; an edited
+  editor value: Revert; each then "Open window…"; anything else opens the window), zoom and the fallback (rack, then
+  Built-in). The plugin window (v0.9.0, `PhyzoWindow.*`): over the panel and the editor unit, never changing the
+  plugin's size; tabs SYSTEM, LIBRARY, SKIN, MIDI (the old menu's Skin, Reload, Zoom, Editor, MIDI and Developer moved
+  there) and a footer for messages, questions and progress; Esc or its round close button closes it (Esc goes to the
+  host only when no window, menu or inline edit is open). Its shared, themeable parts are in `plugin/Source/ui/` (no
+  plugin includes): the font is the skin's `<meta name="ui-font">` file (loaded with JUCE on load and F5), else JUCE's
+  default sans; never commit a font. Rack legends `<legend action="rack" value="EDITOR|SAVE">` (`skin_view.cpp`)
+  toggle the editor unit / open Save with a name; `action="library"` is obsolete (unavailable, one skin-log line).
   Skin authoring guide: `docs/SKINS.md`. The skin is a global setting; the window scale (`WindowScale.h`: 50-200 %; a file
   skin's 100 % is 3/4 of its 1795 x 848 dp body in points, 133 % is full size; Built-in's 100 % is its own size;
   aspect locked, resized by our own corner drag, never larger than the screen's usable area (F-32): Zoom steps that
   don't fit are greyed out and a saved size that doesn't fit steps down) is saved globally and per project; neither is
   a parameter.
-  Per-element knob positions and the window scale are project state (processor state version 7; version 3 sizes are
+  Per-element knob positions and the window scale are project state (processor state version 8; version 3 sizes are
   on the old scale and are converted x 4/3 for file skins when an editor opens; version 5 adds the editor unit's
-  open state; version 6 the MIDI learn bindings; version 7 Sync to host tempo).
+  open state; version 6 the MIDI learn bindings; version 7 Sync to host tempo; version 8 the files last loaded into
+  Bank 1 / 2, older: none).
 - Editor screens (F-30, docs/editor/): `phyzo-emu/src/editor/` (no JUCE) reads the OS's parameter tables from the
   user's OS image at run time (never copied into the repo), builds the pages and reads the visible page with SysEx
   partial reads; `Engine` queues its messages whole at cable speed, puts the page read directly behind program changes,
@@ -116,27 +125,31 @@ owner step by step through anything they must do by hand on github.com or on the
   in the code); PATTERN / RIFF (types 9 / 11) display only, FEEL with its type-10 name. Follow also jumps to the page of the panel knob last moved (`Engine::lastPanelControl`).
   The skin side: `<name>-editor.rml`, `<vfdrow>` (values take drags, double-click, right-click), `<legend>`, the Lua
   `editor` API with `editor.knobLabels` (docs/SKINS.md).
-  LIBRARY (v0.8.3 step 2, docs/editor/LIBRARY.md, `phyzo-emu/src/library/`): `.syx` files in
-  `~/Documents/Phyzo/Library/`, never the synth's memory.
-  - A clicked preset's stored single-preset message goes into the MIDI input (the OS puts it in Compare; Save on the
-    panel keeps it).
+  LIBRARY (v0.8.3 step 2; the plugin window's LIBRARY tab since v0.9.0; docs/editor/LIBRARY.md,
+  `phyzo-emu/src/library/`): `.syx` files in `~/Documents/Phyzo/Library/`. The editor unit has no LIBRARY area.
+  - A clicked preset's stored single-preset message goes into the running machine's MIDI input
+    (`Engine::libraryInput`; the OS puts it in Compare; Save on the panel keeps it).
   - Files are read by hidden machines on a worker thread, one job at a time in the process. Fresh machines boot the
     v0.8.3 way; clones restore the running machine's snapshot, which is never paused, pressed or read otherwise.
   - The machines are driven only through the OS: panel Dump 0x0C and +/Yes 0x0D, program changes, SysEx in, name
     reads (#0, 0x40 + n).
-  - Index cache: `cache/library/<file MD5>.idx`. Factory bank files: `Library/Factory/`, from the user's OS, never
-    shipped.
-  - SAVE is refused while the Compare LED (0x16) is lit. New files are never overwritten. Entries go across the rows,
-    as on the PRESETS page.
-  - Five controls, `<legend action="library">` LIBRARY, SAVE, IMPORT, EXPORT (a menu of the two banks), FOLDER: empty
-    legends in the main rack document (lit/avail also with the editor unit closed), from any editor page; LIBRARY
-    opens the unit on the list and goes back to it from a source's presets.
+  - Index cache: `cache/library/<file MD5>.idx` (so Rename reads nothing again). Factory bank files:
+    `Library/Factory/`, from the user's OS, never shipped. Groups: FACTORY, BANKS (`folder/name`), SINGLES, BACKUPS.
+  - Save with a name (rack SAVE): refused while the Compare LED (0x16) is lit; a clone's draft (P nn, the OS's name,
+    the dump), then the typed name made safe (`_`), empty = the OS's name, never overwriting (` 2`). Rename / Delete
+    (to the Trash) for library files only, never the factory files.
+  - Bank load into Bank 1 / 2 (the only write to the synth's memory): a clone backs the bank up to
+    `Library/Backups/Bank N YYYY-MM-DD HHMM.syx` first (no backup, no load; Cancel only then), then the file's bank
+    message with byte 6 = the target and nothing else changed, then done when the bank's 32 stored names (a clone)
+    equal the index's (30 s after the OS read it all). One bank job at a time; last-loaded names in project state.
 - Real-time rules for `engine.*`: the audio thread never waits on other threads. `getState` asks the audio thread
   for a snapshot at a block boundary (`Machine::saveStateInto`, preallocated); panel controls go through a
   lock-free latest-value slot per cc, sent at most once per 10 ms each and only while the panel link keeps up (the
   boot positions are per-control atomics); buttons go through a bounded lock-free multi-producer queue and are never
   merged or dropped. setControl and pressRaw are lock-free and allocation-free from any thread, the audio thread
-  included. `phyzo_stress` measures this.
+  included. `phyzo_stress` measures this. The window's library messages (`Engine::libraryInput`) go through a
+  preallocated ring and are queued whole only when the MIDI port's input queue (`Serial::kMidiRxRoom`, made
+  beforehand) has room: no allocation, no waiting.
 - Idle runner (v0.8.6, F-63, `Engine::setIdleRun`): off by default; the plugin turns it on only while its window is
   open, the host renders in real time and prepareToPlay has run. After 250 ms without a host block a background thread
   runs the machine in real time (panel, virtual port, editor; audio discarded, Audio In silent, nothing to the host) in
@@ -147,7 +160,7 @@ owner step by step through anything they must do by hand on github.com or on the
   merged after the host's events at the same offset in processBlock (after MIDI learn); modes Off (events untouched,
   identical to v0.8.6), While playing (default), Always (free-running at the bpm while stopped); no bpm: nothing; the
   host's own F8 is dropped unless Off; a plugin setting in processor state version 7 (older: While playing), never a
-  parameter; MIDI > Sync to host tempo. F8 does not count as other MIDI for the editor's arp edits.
+  parameter; the window's MIDI tab. F8 does not count as other MIDI for the editor's arp edits.
 - MIDI learn (v0.8.4, F-55, docs/MIDI_LEARN.md, `phyzo-emu/src/midi_learn.*`): a controller is a second front panel.
   Learned CCs (notes for buttons) from the host's MIDI drive panel controls (knobs cc 0-22, panel buttons by raw; never
   cc 23-25 or the keys) through setControl / pressRaw exactly as the mouse, and are swallowed; unbound MIDI passes

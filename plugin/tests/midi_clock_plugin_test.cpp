@@ -1,13 +1,15 @@
-// Sync to host tempo in the plugin (F-68; no ROMs, no editor window): the setting in the project state (version 7,
-// round trip; version 6 and older load as While playing; new instances start at While playing), the MIDI menu's
-// "Sync to host tempo" submenu (three items, the current one ticked, each sets it), and processBlock with a fake
+// Sync to host tempo in the plugin (F-68; no ROMs): the setting in the project state (version 7 and later, round trip;
+// version 6 and older load as While playing; new instances start at While playing), the window's MIDI tab (v0.9.0: Off,
+// While playing, Always; the current one selected, each sets it; needs a display), and processBlock with a fake
 // playhead: the ticks reach the block's MIDI on the host's grid after the host's events at the same offset, the host's
 // own F8 is taken out when the setting is not Off, and Off leaves the block's MIDI exactly as the host sent it.
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <algorithm>
 #include <cstdio>
+#include "PhyzoWindow.h"
 #include "PluginEditor.h"
 #include "PluginProcessor.h"
+#include "ui/Widgets.h"
 #include "state_io.h"
 
 using midiclock::Mode;
@@ -52,6 +54,7 @@ juce::MemoryBlock projectState(int version, int sync) {
     out.writeByte(0);
     if (version >= 6) out.writeInt(0);               // no MIDI learn bindings
     if (version >= 7) out.writeByte(char(sync));
+    if (version >= 8) { out.writeString({}); out.writeString({}); }   // no files loaded into the banks
     out.flush();
     return dest;
 }
@@ -76,7 +79,7 @@ int main() {
     {
         auto p = make();
         CHECK(p->syncMode() == Mode::WhilePlaying);  // a new instance
-        load(*p, projectState(7, 1));                // a stand-in engine state (no ROMs: the engine keeps it)
+        load(*p, projectState(8, 1));                // a stand-in engine state (no ROMs: the engine keeps it)
         for (Mode m : {Mode::Off, Mode::Always, Mode::WhilePlaying}) {
             p->setSyncMode(m);
             auto q = make();
@@ -87,9 +90,11 @@ int main() {
         }
         for (int s = 0; s <= 2; ++s) {
             auto q = make();
-            load(*q, projectState(7, s));
+            load(*q, projectState(8, s));
             CHECK(int(q->syncMode()) == s);
-            CHECK(stateOf(*q) == projectState(7, s));   // byte for byte
+            CHECK(stateOf(*q) == projectState(8, s));   // byte for byte
+            load(*q, projectState(7, s));               // version 7: the same setting
+            CHECK(int(q->syncMode()) == s && stateOf(*q) == projectState(8, s));
         }
         for (int v = 1; v <= 6; ++v) {               // older projects: While playing
             auto q = make();
@@ -104,29 +109,31 @@ int main() {
         std::printf("midi_clock_plugin_test: the setting round-trips; version 6 and older load as While playing\n");
     }
 
-    // The menu: three items, the current one ticked; choosing one sets it.
+    // The window's MIDI tab (v0.9.0; the old menu's three items): the current one selected; choosing one sets it.
     {
         auto p = make();
-        for (Mode cur : {Mode::Off, Mode::WhilePlaying, Mode::Always}) {
-            p->setSyncMode(cur);
-            const juce::PopupMenu m = PhyzoEditor::syncMenu(*p);
-            std::vector<juce::String> names;
-            std::vector<bool> ticked;
-            for (juce::PopupMenu::MenuItemIterator it(m); it.next();) {
-                names.push_back(it.getItem().text);
-                ticked.push_back(it.getItem().isTicked);
+        std::unique_ptr<juce::AudioProcessorEditor> base(p->createEditor());
+        auto& ed = static_cast<PhyzoEditor&>(*base);
+        ed.openWindow(PhyzoWindow::kMidi);
+        juce::Component* found = nullptr;
+        std::function<void(juce::Component*)> look = [&](juce::Component* c) {
+            if (c->getComponentID() == "sync") found = c;
+            for (auto* k : c->getChildren()) look(k);
+        };
+        look(ed.window());
+        auto* sync = dynamic_cast<ui::Segmented*>(found);
+        CHECK(sync != nullptr);
+        if (sync) {
+            CHECK((sync->items() == juce::StringArray{"Off", "While playing", "Always"}));
+            for (Mode cur : {Mode::Off, Mode::WhilePlaying, Mode::Always}) {
+                p->setSyncMode(cur);
+                ed.window()->refresh();
+                CHECK(sync->selected() == int(cur));
             }
-            CHECK((names == std::vector<juce::String>{"Off", "While playing", "Always"}));
-            CHECK(ticked.size() == 3 && std::count(ticked.begin(), ticked.end(), true) == 1 && ticked[size_t(cur)]);
+            for (int i : {0, 1, 2}) { sync->choose(i); CHECK(int(p->syncMode()) == i); }
         }
-        const juce::PopupMenu m = PhyzoEditor::syncMenu(*p);
-        int i = 0;
-        for (juce::PopupMenu::MenuItemIterator it(m); it.next(); ++i) {
-            CHECK(it.getItem().action != nullptr);
-            if (it.getItem().action) it.getItem().action();
-            CHECK(int(p->syncMode()) == i);
-        }
-        std::printf("midi_clock_plugin_test: the menu has the three items, one ticked\n");
+        base.reset();
+        std::printf("midi_clock_plugin_test: the MIDI tab has the three choices, the current one selected\n");
     }
 
     // processBlock with a fake playhead: 120 bpm at 48 kHz, a tick every 1000 samples.

@@ -8,9 +8,10 @@
 
 namespace {
 constexpr uint32_t kStateMagic = 0x505A4850;     // "PHZP" (little-endian)
-constexpr uint32_t kStateVersion = 7;          // 2: + skin knob positions; 3: + window size; 4: + its scale's version;
+constexpr uint32_t kStateVersion = 8;          // 2: + skin knob positions; 3: + window size; 4: + its scale's version;
                                                 // 5: + the editor unit open; 6: + the MIDI learn bindings;
-                                                // 7: + Sync to host tempo (older still read)
+                                                // 7: + Sync to host tempo; 8: + the files last loaded into the banks
+                                                // (older still read)
 constexpr int kTimerMs = 100, kScanEveryTicks = 20;   // rescan the ROM folder every 2 s while something is missing
 
 std::mutex g_instancesMtx;
@@ -30,11 +31,11 @@ PhyzoProcessor::PhyzoProcessor()
     events_.reserve(kMaxHostEvents);
     port_.ed = &editorPort_;
     port_.learn = &learn_;
+    port_.proc = this;
     learn_.setBindings(learnDefaults());            // a new instance: the default bindings (none unless saved)
     // The factory user flash (what the OS's own factory restore writes): made once per OS image from the user's own
     // OS, cached in cache/ (never shipped). New instances start from it (Engine).
     engine_.setFactoryUserFlash(true, dataFolder_.getChildFile("cache").getFullPathName().toStdString());
-    editor_.setLibrary(&libraryBridge_);
     phyzodiag::log("data folder " + dataFolder_.getFullPathName() + (dataFolder_.isDirectory() ? "" : " (could not be made)"));
     logSyncMode();
     scanRoms();
@@ -51,6 +52,7 @@ PhyzoProcessor::~PhyzoProcessor() {
     chooser_.reset();
     library_.reset();                                // cancels the running library job and joins its thread
     port_.ed = nullptr;
+    port_.proc = nullptr;
     { std::lock_guard<std::mutex> lk(g_instancesMtx); g_instances.erase(std::find(g_instances.begin(), g_instances.end(), this)); }
     vport_.close();
 }
@@ -106,43 +108,36 @@ void PhyzoProcessor::logEngineState() {
     }
 }
 
-// ------------------------------------------------------------------ preset library (v0.8.3 step 2)
+// ------------------------------------------------------------------ preset library (v0.8.3 step 2, v0.9.0 window)
 
 library::Service* PhyzoProcessor::libraryService() {
     if (!library_ && scan_.complete()) {
         auto machines = std::make_unique<library::RealMachines>(scan_.osPath, scan_.wavePath,
                                                                  [] { return Engine::factoryUserFlashFor(romid::kOsImageMd5); });
-        library::Service::Config cfg{dataFolder_.getFullPathName().toStdString(), romid::kOsImageMd5,
-                                     [this] { return engine_.machineState(); }};
+        library::Service::Config cfg;
+        cfg.dataDir = dataFolder_.getFullPathName().toStdString();
+        cfg.osMd5 = romid::kOsImageMd5;
+        cfg.machineState = [this] { return engine_.machineState(); };
+        // The bank load: the message into the running machine's MIDI input as host SysEx goes (Engine::libraryInput).
+        cfg.sendToMachine = [this](const std::vector<uint8_t>& m) { return engine_.libraryInput(m.data(), m.size()); };
+        cfg.machineInputBusy = [this] { return engine_.libraryInputBusy(); };
+        cfg.moveToTrash = [](const std::string& path) { return juce::File(juce::String::fromUTF8(path.c_str())).moveToTrash(); };
         library_ = std::make_unique<library::Service>(std::move(cfg), std::move(machines));
     }
     return library_.get();
 }
 
-std::vector<editor::LibraryLink::Source> PhyzoProcessor::LibraryBridge::sources() const {
-    std::vector<Source> out;
-    if (proc.library_)
-        for (const auto& s : proc.library_->sources()) out.push_back({s.title, s.count, s.done, s.total, s.busy});
-    return out;
+bool PhyzoProcessor::sendLibraryPreset(int source, int entry, juce::String& why) {
+    library::Service* s = libraryService();
+    std::vector<uint8_t> m;
+    if (!s || !s->message(source, entry, m)) return false;
+    if (engine_.state() != Engine::State::Running) { why = "The synth is not running"; return false; }
+    if (s->bankJob().active) { why = "A bank is loading: try again when it is done"; return false; }
+    if (!engine_.libraryInput(m.data(), m.size())) { why = "The synth's MIDI input is busy: try again"; return false; }
+    return true;
 }
 
-std::vector<editor::LibraryLink::Entry> PhyzoProcessor::LibraryBridge::entries(int source) const {
-    std::vector<Entry> out;
-    if (proc.library_)
-        for (const auto& e : proc.library_->entries(source)) out.push_back({e.name, e.ready, e.accepted});
-    return out;
-}
-
-bool PhyzoProcessor::LibraryBridge::takeNotice(std::string& text) {
-    if (!proc.libraryNotices_.empty()) {
-        text = proc.libraryNotices_.front();
-        proc.libraryNotices_.pop_front();
-        return true;
-    }
-    return proc.library_ && proc.library_->takeNotice(text);
-}
-
-// IMPORT: .syx files chosen in the open dialog are copied into the library (never overwriting) and read.
+// Import...: .syx files chosen in the open dialog are copied into the library (never overwriting) and read.
 void PhyzoProcessor::chooseImport() {
     if (chooserBusy_ || !libraryService()) return;
     chooserBusy_ = true;
@@ -157,30 +152,61 @@ void PhyzoProcessor::chooseImport() {
                           });
 }
 
-void PhyzoProcessor::showExportMenu() {
-    if (auto* ed = dynamic_cast<PhyzoEditor*>(getActiveEditor())) ed->showExportMenu();
-}
-
-void PhyzoProcessor::openEditorUnit() {
-    if (auto* ed = dynamic_cast<PhyzoEditor*>(getActiveEditor())) ed->openEditorUnit();
-}
-
-// FOLDER: the Library folder opened in Finder (or Explorer).
+// Folder: the Library folder opened in Finder (or Explorer).
 void PhyzoProcessor::revealLibrary() {
     const juce::File lib = dataFolder_.getChildFile("Library");
     lib.createDirectory();
     lib.startAsProcess();
 }
 
-// EXPORT B1 / B2: once the clone has dumped the bank, the save dialog (default name Phyzo Bank n.syx).
+void PhyzoProcessor::exportBank(int bank) {
+    if (library::Service* s = libraryService()) s->exportBank(bank);
+}
+
+juce::String PhyzoProcessor::lastLoaded(int bank) const {
+    std::lock_guard<std::mutex> lk(lastLoadedMtx_);
+    return bank == 0 || bank == 1 ? lastLoaded_[bank] : juce::String();
+}
+
+void PhyzoProcessor::setLastLoaded(int bank, const juce::String& file) {
+    std::lock_guard<std::mutex> lk(lastLoadedMtx_);
+    if (bank == 0 || bank == 1) lastLoaded_[bank] = file;
+}
+
+void PhyzoProcessor::windowMessage(const juce::String& text) {
+    if (text.isEmpty()) return;
+    windowMessages_.push_back(text);
+    while (windowMessages_.size() > 16) windowMessages_.pop_front();
+}
+
+bool PhyzoProcessor::takeWindowMessage(juce::String& text) {
+    if (windowMessages_.empty()) return false;
+    text = windowMessages_.front();
+    windowMessages_.pop_front();
+    return true;
+}
+
+void PhyzoProcessor::postRack(const std::string& value) {
+    std::lock_guard<std::mutex> lk(rackMtx_);
+    rackQueue_.push_back(value);
+}
+
+// Timer: the library's messages for the window's footer, confirmed bank loads (the Memory column's titles, saved
+// with the project), and Save as file's dialog once the clone has dumped the bank (default name Phyzo Bank n.syx).
 void PhyzoProcessor::serviceLibrary() {
+    if (library_) {
+        std::string text;
+        while (library_->takeNotice(text)) windowMessage(juce::String::fromUTF8(text.c_str()));
+        int b = 0;
+        while (library_->takeLoaded(b, text)) setLastLoaded(b, juce::String::fromUTF8(text.c_str()));
+    }
     if (chooser_ && !chooserBusy_) chooser_.reset();   // a dialog that has closed
     int bank = 0;
     std::vector<uint8_t> bytes;
     if (chooserBusy_ || !library_ || !library_->takeExport(bank, bytes)) return;
     chooserBusy_ = true;
     const juce::String name = "Phyzo Bank " + juce::String(bank + 1) + ".syx";
-    chooser_ = std::make_unique<juce::FileChooser>("Export Bank " + juce::String(bank + 1),
+    chooser_ = std::make_unique<juce::FileChooser>("Save Bank " + juce::String(bank + 1) + " as a file",
                                                    dataFolder_.getChildFile("Library").getChildFile(name), "*.syx");
     auto data = std::make_shared<std::vector<uint8_t>>(std::move(bytes));
     chooser_->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles |
@@ -189,9 +215,9 @@ void PhyzoProcessor::serviceLibrary() {
                               juce::File f = fc.getResult();
                               if (f != juce::File()) {
                                   if (!f.hasFileExtension("syx")) f = f.withFileExtension("syx");
-                                  libraryNotice(f.replaceWithData(data->data(), data->size())
-                                                    ? "EXPORTED BANK " + std::to_string(bank + 1)
-                                                    : std::string("NOT EXPORTED  CANNOT WRITE THE FILE"));
+                                  windowMessage(f.replaceWithData(data->data(), data->size())
+                                                    ? "SAVED BANK " + juce::String(bank + 1) + "  " + f.getFileName()
+                                                    : juce::String("NOT SAVED  CANNOT WRITE THE FILE"));
                               }
                               chooserBusy_ = false;
                           });
@@ -274,10 +300,22 @@ void PhyzoProcessor::timerCallback() {
                             : "idle runner stopped");
     }
     serviceLearn();
-    // The skin's editor calls while the editor unit is closed: the library controls in the main document (LIBRARY
-    // opens the unit; SAVE, IMPORT, EXPORT and FOLDER work without it). While it is open, its own ticker runs them.
+    // The skin's editor calls while the editor unit is closed (while it is open, its own ticker runs them).
     if (!editorActive_.load()) runEditorQueue();
     serviceLibrary();
+    {                                                // rack legends: the editor shows or opens what they ask
+        std::vector<std::string> rack;
+        { std::lock_guard<std::mutex> lk(rackMtx_); rack.swap(rackQueue_); }
+        for (const std::string& v : rack)
+            if (auto* ed = dynamic_cast<PhyzoEditor*>(getActiveEditor())) ed->rackCommand(juce::String::fromUTF8(v.c_str()));
+    }
+    {                                                // the preset the display shows (P nn), kept through other texts
+        const std::array<char, 4> d = engine_.display();
+        if (engine_.state() == Engine::State::Running && d[0] == 'P' && d[1] == ' ' && d[2] >= '0' && d[2] <= '9' && d[3] >= '0' && d[3] <= '9') {
+            const int n = (d[2] - '0') * 10 + (d[3] - '0') - 1;
+            if (n >= 0 && n < 64) playing_ = n;
+        }
+    }
     if (!scan_.complete() && ++timerTicks_ >= kScanEveryTicks) {
         timerTicks_ = 0;
         if (!romFolder().isDirectory()) romFolder().createDirectory();
@@ -421,7 +459,8 @@ juce::AudioProcessorEditor* PhyzoProcessor::createEditor() {
 // the old scale (version 3 projects store sizes relative to the full body size), then whether the editor unit is
 // open (version 5), then the MIDI learn bindings (version 6: count, then for each: control id (int), channel (0 =
 // Any), CC or note number, kind (0 CC, 1 note), 14-bit seen; an empty list means no bindings), then Sync to host
-// tempo (version 7: one byte, 0 Off, 1 While playing, 2 Always).
+// tempo (version 7: one byte, 0 Off, 1 While playing, 2 Always), then the files last loaded into Bank 1 and Bank 2
+// (version 8: two strings, empty for none).
 void PhyzoProcessor::getStateInformation(juce::MemoryBlock& dest) {
     ++meter.stateRequests;
     const std::vector<uint8_t> engineState = engine_.getState();
@@ -454,6 +493,8 @@ void PhyzoProcessor::getStateInformation(juce::MemoryBlock& dest) {
         out.writeByte(b.fine ? 1 : 0);
     }
     out.writeByte(char(syncMode_.load()));
+    out.writeString(lastLoaded(0));
+    out.writeString(lastLoaded(1));
 }
 
 void PhyzoProcessor::setStateInformation(const void* data, int size) {
@@ -509,6 +550,8 @@ void PhyzoProcessor::setStateInformation(const void* data, int size) {
         if (b >= int(midiclock::Mode::Off) && b <= int(midiclock::Mode::Always)) sync = b;
     }
     setSyncMode(midiclock::Mode(sync));
+    // The files last loaded into the banks (version 8); older projects: none.
+    for (int b = 0; b < 2; ++b) setLastLoaded(b, version >= 8 && !in.isExhausted() ? in.readString() : juce::String());
     { std::lock_guard<std::mutex> lk(port_.mtx); port_.knobs = std::move(knobs); }
     phyzodiag::log("project state loaded: version " + juce::String(version) + ", machine state " + juce::String(int(rawSize / 1024)) + " KB");
     engine_.setState(engineState);
@@ -556,10 +599,8 @@ void PhyzoProcessor::serviceLearn() {
     learn_.releaseOrphans();
 }
 
-// Row 4 of the editor unit while it shows (one message at a time, 3 s each, as the library's), else the window's
-// banner for 3 s; with no window, nowhere.
+// The window's footer while it is open, else the banner for 3 s; with no editor, nowhere.
 void PhyzoProcessor::learnMessage(const std::string& text) {
-    if (editorActive_.load()) { libraryNotice(text); return; }
     if (auto* ed = dynamic_cast<PhyzoEditor*>(getActiveEditor())) ed->showLearnMessage(juce::String::fromUTF8(text.c_str()));
 }
 

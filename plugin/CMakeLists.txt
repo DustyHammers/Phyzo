@@ -7,7 +7,7 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 if(CMAKE_HOST_APPLE AND NOT CMAKE_OSX_ARCHITECTURES)
   set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "Target architectures")
 endif()
-project(Phyzo VERSION 0.8.7 LANGUAGES C CXX)
+project(Phyzo VERSION 0.9.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -62,11 +62,18 @@ juce_add_plugin(Phyzo
   AU_MAIN_TYPE kAudioUnitType_MusicDevice
   COPY_PLUGIN_AFTER_BUILD FALSE)
 
-target_sources(Phyzo PRIVATE
+# The editor's sources (also built into the tests below): the processor, the editor and its skins, the plugin window
+# (v0.9.0) and the shared window parts (Source/ui: no plugin-specific includes).
+set(PHYZO_EDITOR_SOURCES
   Source/PluginProcessor.cpp
   Source/PluginEditor.cpp
+  Source/PhyzoWindow.cpp
   Source/RmlSkinComponent.cpp
-  Source/VirtualMidiPort.cpp)
+  Source/VirtualMidiPort.cpp
+  Source/ui/Theme.cpp
+  Source/ui/Widgets.cpp)
+target_sources(Phyzo PRIVATE ${PHYZO_EDITOR_SOURCES})
+target_include_directories(Phyzo PRIVATE Source)
 
 target_compile_definitions(Phyzo PUBLIC
   JUCE_VST3_CAN_REPLACE_VST2=0      # part of the identity: there was never a VST2 version (fixes the VST3 class ID)
@@ -102,7 +109,7 @@ target_link_libraries(Phyzo
 # Editor open/close test (F-27): the processor and editor sources with JUCE, without a plugin wrapper; opens and
 # closes the editor on the test skin 50 times (needs a display; run in CI on macOS).
 add_executable(editor_cycle_test tests/editor_cycle_test.cpp
-  Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/RmlSkinComponent.cpp Source/VirtualMidiPort.cpp)
+  ${PHYZO_EDITOR_SOURCES})
 target_include_directories(editor_cycle_test PRIVATE Source)
 target_compile_definitions(editor_cycle_test PRIVATE
   JucePlugin_Name="Phyzo" JucePlugin_VersionString="0.0-test" JUCE_MODAL_LOOPS_PERMITTED=1
@@ -120,7 +127,7 @@ endif()
 # MIDI learn in the plugin (docs/MIDI_LEARN.md): project state version 6 and older, the default bindings, the host's
 # MIDI in processBlock (no ROMs, no editor window; CI on macOS).
 add_executable(midi_learn_plugin_test tests/midi_learn_plugin_test.cpp
-  Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/RmlSkinComponent.cpp Source/VirtualMidiPort.cpp)
+  ${PHYZO_EDITOR_SOURCES})
 target_include_directories(midi_learn_plugin_test PRIVATE Source)
 target_compile_definitions(midi_learn_plugin_test PRIVATE
   JucePlugin_Name="Phyzo" JucePlugin_VersionString="0.0-test" JUCE_MODAL_LOOPS_PERMITTED=1
@@ -138,7 +145,7 @@ endif()
 # Sync to host tempo in the plugin (F-68): the setting in the project state, the MIDI menu's submenu, and the clock in
 # processBlock with a fake playhead (no ROMs, no editor window; CI on macOS).
 add_executable(midi_clock_plugin_test tests/midi_clock_plugin_test.cpp
-  Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/RmlSkinComponent.cpp Source/VirtualMidiPort.cpp)
+  ${PHYZO_EDITOR_SOURCES})
 target_include_directories(midi_clock_plugin_test PRIVATE Source)
 target_compile_definitions(midi_clock_plugin_test PRIVATE
   JucePlugin_Name="Phyzo" JucePlugin_VersionString="0.0-test" JUCE_MODAL_LOOPS_PERMITTED=1
@@ -155,7 +162,7 @@ endif()
 
 # Window size test: the scale rules, project state migration and the editor's sizes (needs a display; CI on macOS).
 add_executable(window_scale_test tests/window_scale_test.cpp
-  Source/PluginProcessor.cpp Source/PluginEditor.cpp Source/RmlSkinComponent.cpp Source/VirtualMidiPort.cpp)
+  ${PHYZO_EDITOR_SOURCES})
 target_include_directories(window_scale_test PRIVATE Source)
 target_compile_definitions(window_scale_test PRIVATE
   JucePlugin_Name="Phyzo" JucePlugin_VersionString="0.0-test" JUCE_MODAL_LOOPS_PERMITTED=1
@@ -168,4 +175,21 @@ endif()
 if(APPLE)
   target_sources(window_scale_test PRIVATE Source/MacWindow.mm)
   target_link_libraries(window_scale_test PRIVATE "-framework CoreMIDI" "-framework OpenGL")
+endif()
+
+# The plugin window (v0.9.0): theme, right-click routing, rack legends, the tabs and their settings, LIBRARY with a
+# library of made-up hidden machines, project state version 8 (no ROMs; needs a display; CI on macOS).
+add_executable(window_test tests/window_test.cpp ${PHYZO_EDITOR_SOURCES})
+target_include_directories(window_test PRIVATE Source)
+target_compile_definitions(window_test PRIVATE
+  JucePlugin_Name="Phyzo" JucePlugin_VersionString="0.0-test" JUCE_MODAL_LOOPS_PERMITTED=1
+  JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_STANDALONE_APPLICATION=0)
+target_link_libraries(window_test PRIVATE phyzo_core phyzo_skin_gl
+  juce::juce_audio_processors juce::juce_audio_utils juce::juce_opengl juce::juce_recommended_config_flags)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_link_libraries(window_test PRIVATE X11)
+endif()
+if(APPLE)
+  target_sources(window_test PRIVATE Source/MacWindow.mm)
+  target_link_libraries(window_test PRIVATE "-framework CoreMIDI" "-framework OpenGL")
 endif()

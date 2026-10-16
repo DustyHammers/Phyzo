@@ -23,8 +23,8 @@ skin's letter for perf1 (`Perf 1` … `Perf 5` without a letter); the other knob
 
 ## The menu (approved mockup)
 
-Right-click on a learnable control opens the plugin menu with these items on top (right-click anywhere else is
-unchanged, and an editor-unit value keeps its own list):
+Right-click on a learnable control opens this menu (v0.9.0: right-click anywhere else opens the plugin window, and an
+editor-unit value shows its Revert when it was edited):
 
 ```
 X (Perf 1) · CC 21, ch 1      the control and its binding (or "not learned"); "(14-bit)" once an LSB was seen
@@ -33,7 +33,7 @@ Set CC              ›         CC 0–31 › / CC 32–63 › / CC 64–95 › 
 Channel             ›         Any / 1–16 (when bound)
 Forget CC 21                  only when bound
 ───────────
-Skin › / Reload skin / Zoom › / Editor / MIDI › / Developer ›
+Open window…                  the plugin window (SYSTEM)
 ```
 
 - **Set CC:** the current CC is ticked. A CC the OS itself answers is labelled: CC 1 (OS: mod wheel), CC 12 (perf1,
@@ -41,8 +41,9 @@ Skin › / Reload skin / Zoom › / Editor / MIDI › / Developer ›
   the System Controller numbers are not read from the OS (the editor link does not offer them), so a System Controller
   3 or 4 changed in MIDI Edit is not shown here. A CC another control holds shows it (`CC 22 → Cutoff`). CC 120–127
   (channel mode messages) are never offered or learned. Set CC keeps the binding's channel (Any if it had none).
-- **MIDI › MIDI learn ›** lists every binding (`X (Perf 1)  CC 21 ch 1`); choosing one forgets it. Then **Save as
-  default for new instances**, **Clear default** and **Forget all**.
+- **The plugin window's MIDI tab** (v0.9.0) lists every binding: control, MIDI (`CC 21`, `Note 60`, `(14-bit)`),
+  channel (`Any` or 1–16) and **Forget** per row; then **Save as default**, **Clear default** (greyed out when none is
+  saved) and **Forget all** (greyed out without bindings), and the hint "right-click a knob or button to learn it".
 
 ## Learn
 
@@ -84,8 +85,8 @@ Skin › / Reload skin / Zoom › / Editor / MIDI › / Developer ›
 ## Messages
 
 Upper case, at most 50 columns: `LEARN X  MOVE A CONTROL...`, `X = CC 21 CH 1`, `CC 22 MOVED  O -> X`,
-`X: CC 21 FORGOTTEN`, the one-edge warning. With the editor unit open they show on its row 4, one at a time for 3 s
-(as the library's); with it closed, in the window's message banner for 3 s.
+`X: CC 21 FORGOTTEN`, the one-edge warning. While the plugin window is open they show in its footer; otherwise in the
+skin's message banner for 3 s.
 
 ## Saving
 

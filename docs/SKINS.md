@@ -5,8 +5,9 @@ it to the synth. Skins are not part of this repository; each lives in its own fo
 
     ~/Documents/Phyzo/skins/<name>/<name>.rml      (plus its .rcss, .lua, images and fonts)
 
-Every folder in `~/Documents/Phyzo/skins/` that contains `<folder name>.rml` is a skin and appears in the
-right-click menu under **Skin**. The compiled-in skin **Built-in** is always there too.
+Every folder in `~/Documents/Phyzo/skins/` that contains `<folder name>.rml` is a skin and appears in the plugin
+window's **SKIN** tab (right-click the background to open the window). The compiled-in skin **Built-in** is always
+there too.
 
 RmlUi's own documentation covers RML and RCSS: https://mikke89.github.io/RmlUiDoc/. This page describes only what
 Phyzo adds.
@@ -19,21 +20,27 @@ Phyzo adds.
 - Fonts: every `.ttf` and `.otf` file in the skin folder is loaded when the skin loads. Use the font's family
   name in `font-family`.
 - Scripts: `<script src="rack.lua"></script>` or inline `<script>`.
+- The UI font (v0.9.0, optional): `<meta name="ui-font" content="PhyzoPanelExtended-SemiBold.ttf"/>` in the main
+  document's `<head>` names a font file in the skin folder for the plugin window (SYSTEM, LIBRARY, SKIN, MIDI) and
+  its menus. It is loaded when the skin loads and when it is reloaded (F5). Without it, when the file is missing (one
+  skin-log line says so), or with Built-in, the window uses JUCE's default sans. RmlUi itself ignores the tag; the
+  skin's own text uses `font-family` as before.
 
 ## Size and zoom
 
 The document body is **1795 × 848 dp**. At 100 % the window is 3/4 of that in screen points (1346 × 636); at
 **133 % (full size)** it is 1795 × 848 points, so on a Retina screen 1 dp = 2 px and art drawn at twice the dp size
 (`resolution: 2x` in a `@spritesheet`) is shown at its native resolution. Below 133 % the art is scaled down; above
-133 % it is enlarged beyond its native resolution. The size is 50-200 %, set by dragging the window's corner or from
-the right-click menu (50, 75, 100, 125, 133, 150, 175, 200 %). The dp ratio follows the window continuously; RmlUi
+133 % it is enlarged beyond its native resolution. The size is 50-200 %, set by dragging the window's corner or with
+Zoom in the plugin window's SKIN tab (50, 75, 100, 125, 133, 150, 175, 200 %). The dp ratio follows the window continuously; RmlUi
 redraws the art at each size (no bitmap stretching of the window). The bottom-right corner (24 screen points) is the resize grip: keep controls out of it.
 
 ## The editor unit (optional)
 
 A skin can have an editor unit (F-30, docs/editor/): `<name>-editor.rml` in the skin folder, a second document
-**1795 × 394 dp** shown directly below the body when the user chooses right-click > **Editor** (the window grows from
-848 to 1242 dp at the same scale). Without that file the menu item is greyed out. It shares the skin's Lua environment;
+**1795 × 394 dp** shown directly below the body when the user switches on **Editor unit** in the plugin window's SKIN
+tab or clicks a `rack` legend `EDITOR` (the window grows from 848 to 1242 dp at the same scale). Without that file the
+switch is greyed out. It shares the skin's Lua environment;
 the geometry of the glass and every legend is in `docs/editor/EDITOR_PANEL_LAYOUT.md`.
 
 - `<vfdrow row="0">` … `row="3"`: one row of the glass, 50 character cells. The element creates the cells:
@@ -45,15 +52,16 @@ the geometry of the glass and every legend is in `docs/editor/EDITOR_PANEL_LAYOU
 - `<legend action="…" value="…">`: a legend; actions and values as in `EDITOR_PANEL_LAYOUT.json` (`area`, `section`,
   `target`, `page`, `page_prev`, `page_next`, `toggle_follow`, `indicator`, `label`). Class `lit` when active, `avail`
   when clicking it leads somewhere; style hover with `:hover`. A click goes to the editor.
-- The preset library (v0.8.3, `docs/editor/LIBRARY.md`): five controls, `<legend action="library" value="…">` with
-  `LIBRARY`, `SAVE`, `IMPORT`, `EXPORT` or `FOLDER`.
-  - They usually sit in the **main (rack) document** as empty legends: invisible click areas over lettering in the
-    art. They work in the editor document too.
-  - Clicks, `lit` and `avail` work in either document, also with the editor unit closed.
-  - All five are `avail` on any page once there is a library (LIBRARY also needs an editor unit).
-  - LIBRARY opens the editor unit on the library list (pressed again on a source's presets: back to the list) and is
-    `lit` while the editor shows the library. The four actions are never `lit`; EXPORT opens a menu of the two banks.
-  - Without these legends the library cannot be reached from the skin.
+- Rack legends (v0.9.0): `<legend action="rack" value="EDITOR">` and `<legend action="rack" value="SAVE">`, usually
+  in the **main (rack) document** as empty legends (invisible click areas over lettering in the art); they work in the
+  editor document too. They do not depend on the editor's state or on any area of it:
+  - `EDITOR` is `avail` when the skin has an editor unit and `lit` while it shows; a click shows or hides it.
+  - `SAVE` is always `avail` and never `lit`; a click opens the plugin window on LIBRARY with Save with a name
+    (`docs/editor/LIBRARY.md`).
+  - `editor.click('rack', 'SAVE')` in Lua does the same as the click.
+- The v0.8.3-v0.8.7 library controls (`<legend action="library" value="…">`) are obsolete: never `avail` or `lit`, a
+  click does nothing, and the skin log notes once per load: `legend action 'library' is obsolete, use action='rack'
+  value='EDITOR' / 'SAVE'`. The library is in the plugin window's LIBRARY tab.
 - Lua: `editor.isOpen()`, `editor.state()` (area, section, sound, osc, oscBoth (both oscillators edited), page, pages, follow, data, rows), `editor.click(action,
   value)`, `editor.onChange(fn)` (called when the glass or the legends change), and
   `editor.followLeds{sound = {…4 codes}, osc = {…2}, env = {pitch, filter, amp}, noise = c, lfo = c, filterKbd = c}`: the
@@ -65,7 +73,8 @@ the geometry of the glass and every legend is in `docs/editor/EDITOR_PANEL_LAYOU
   `editor.followLeds`. Without it the labels are PERF1-PERF5.
 - `editor.state()` also has `edited` (an edit since the preset loaded) and `typing` (typed entry in the focused value).
 - Editing needs nothing from the skin: the values on the `<vfdrow>` glass take the mouse (drag up/down, Shift fine;
-  double-click for typed entry; right-click for the plugin menu, with Revert on top when the value was edited; a click
+  double-click for typed entry; right-click for Revert (when the value was edited) and "Open window…", else the plugin
+window; a click
   on a preset name loads it). The
   mouse wheel never changes a value.
 - Wave names (optional): `waves.txt` in the skin folder, one line per wave: number, a tab, the name. The wave value then
@@ -89,7 +98,7 @@ An analog panel control (cc 0-25, see `phyzo-emu/docs/PANEL_CONTROLS.md`).
   keeps its own position, stored by its `id` in the project. Give every knob a unique `id`. A knob seen for the
   first time starts at the value last sent for its cc (the synth's fresh positions in a new instance).
 - When the synth boots it is told, for each cc, the value last sent for that cc.
-- Right-click on a knob (cc 0-22) opens the menu with MIDI learn's items for its panel control on top
+- Right-click on a knob (cc 0-22) opens MIDI learn's menu for its panel control, then "Open window…"
   (docs/MIDI_LEARN.md); stacked knobs are one control. A knob a learned controller moves shows the new position as
   `panel.setKnob` would (the visible knob of that cc; positions saved; `panel.onKnob` is called), but nothing is
   sent again. The wheels and pressure (cc 23-25) are never learnable.
@@ -102,7 +111,7 @@ A front-panel button by its panel id. `led` is optional.
   `pressed` while down.
 - Alt/Option-click: latching hold. It sends `81 raw` and keeps the button held (class `held`) until it is
   clicked again. Esc releases all held buttons.
-- Right-click never presses (it opens the menu, with MIDI learn's items for this panel button on top,
+- Right-click never presses (it opens MIDI learn's menu for this panel button, then "Open window…",
   docs/MIDI_LEARN.md).
 - With `led`: class `lit` follows that LED (see LEDs).
 
@@ -198,10 +207,12 @@ end
 
 ## Working on a skin
 
-- **F5** (with the plugin window focused) or **Reload skin** in the right-click menu reloads the skin from disk;
-  knob positions are kept.
-- **Developer > RmlUi debugger** shows RmlUi's element inspector and event log.
-- **Developer > Write skin log** (off by default; a global setting for all instances) writes the skin log,
+- Right-click the background (anywhere that is not a learnable control) to open the plugin window; Esc or its round
+  close button closes it. It covers the panel (and the editor unit) and never changes the window's size.
+- **F5** (with the plugin focused, the window open or not) or **Reload skin (F5)** in the SKIN tab reloads the skin
+  from disk, its UI font included; knob positions are kept.
+- **RmlUi debugger** (SYSTEM tab, Developer; file skins only) shows RmlUi's element inspector and event log.
+- **Write skin log** (SYSTEM tab, Developer; off by default; a global setting for all instances) writes the skin log,
   `~/Documents/Phyzo/skin-log.txt`: warnings (missing files, CSS problems), Lua errors with their traceback,
   `Log.Message` output and the UI rates. Turn it on while writing a skin; with it off no file is created.
 - If a skin is missing or cannot be loaded, the plugin shows "rack" instead (then Built-in) and says why.
