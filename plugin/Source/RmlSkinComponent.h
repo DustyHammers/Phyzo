@@ -36,12 +36,17 @@ public:
     // showing it below the panel (kept across reloads).
     bool hasEditor() const { return hasEditor_.load(); }
     void setEditorVisible(bool on);
+    // The loaded skin's UI font file (<meta name="ui-font">; empty: none or missing), known when onLoaded comes.
+    const juce::String& uiFontFile() const { return uiFont_; }
+    // A line for the skin log (written only while Write skin log is on).
+    void writeSkinLog(const juce::String& line) { writeLog(this, line.toStdString()); }
 
     std::function<void(bool ok, const juce::String& error)> onLoaded;
     // Right-click outside the editor unit's values: the main menu, with the panel control under the mouse (MIDI
     // learn: a knob's cc, 0x100 | a panel button's id; -1: none or not learnable).
     std::function<void(const juce::MouseEvent&, int control)> onRightClick;
-    // Esc: true if the plugin used it (a MIDI learn cancelled); otherwise Esc releases the held panel buttons.
+    // Esc: true if the plugin used it (a MIDI learn cancelled); otherwise Esc releases the held panel buttons and goes
+    // on to the host.
     std::function<bool()> onEscape;
     // Right-click on a value of the editor unit (its reference): the plugin menu with the value's Revert on top (if
     // edited). Returns false to show the plain menu instead.
@@ -94,7 +99,7 @@ private:
     bool debugger_ = false;
     bool cornerDrag_ = false;
     juce::Point<int> cornerStart_;
-    juce::String message_, persistent_;
+    juce::String message_, persistent_, uiFont_;
     juce::uint32 messageUntil_ = 0;
     juce::String glError_;
 

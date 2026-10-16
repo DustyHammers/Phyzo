@@ -1,6 +1,7 @@
-// MIDI learn in the plugin (F-55, docs/MIDI_LEARN.md; no ROMs, no editor window): the project state (version 6/7 with
-// the bindings, byte-identical round trip; versions 1-5 load as before and get the default bindings; an empty list
-// stays empty; with no bindings the state is v0.8.3.5's plus the version, the empty list and the sync byte), the defaults in the
+// MIDI learn in the plugin (F-55, docs/MIDI_LEARN.md; no ROMs, no editor window): the project state (version 6 and
+// later with the bindings, byte-identical round trip; versions 1-5 load as before and get the default bindings; an empty
+// list stays empty; with no bindings the state is v0.8.3.5's plus the version, the empty list, the sync byte and the two
+// empty last-loaded names of version 8), the defaults in the
 // settings, a held learned button released when a project loads, and the host's MIDI in processBlock (a bound CC
 // moves its panel control). The settings' default bindings are put back as they were.
 #include <juce_audio_processors/juce_audio_processors.h>
@@ -21,8 +22,8 @@ std::vector<uint8_t> engineBlob() {
     return w.bytes;
 }
 
-// A project state as processor version `version` writes it (the layout in PluginProcessor.cpp; version 7 ends with
-// Sync to host tempo, 1 = While playing).
+// A project state as processor version `version` writes it (the layout in PluginProcessor.cpp; version 7 adds Sync to
+// host tempo, 1 = While playing; version 8 the files last loaded into the banks, none here).
 juce::MemoryBlock projectState(int version, const std::vector<Binding>& bindings, float scale = 1.0f, int sync = 1) {
     const std::vector<uint8_t> engine = engineBlob();
     juce::MemoryBlock dest;
@@ -51,6 +52,7 @@ juce::MemoryBlock projectState(int version, const std::vector<Binding>& bindings
         }
     }
     if (version >= 7) out.writeByte(char(sync));
+    if (version >= 8) { out.writeString({}); out.writeString({}); }   // no files loaded into the banks
     out.flush();
     return dest;
 }
@@ -68,22 +70,22 @@ int main() {
                                        {midilearn::button(0x0B), 3, false, 80, false}, {midilearn::button(0x20), 0, true, 60, false}};
     const std::vector<Binding> defaults = {{midilearn::knob(6), 2, false, 30, false}};
 
-    // A new instance with no defaults saved: no bindings. Its state: version 7, the list empty, then the sync byte.
+    // A new instance with no defaults saved: no bindings. Its state: version 8, the list empty, the sync byte, no names.
     {
         auto p = make();
         CHECK(p->learn().bindings().empty());
         load(*p, projectState(5, {}));
         const juce::MemoryBlock s = stateOf(*p);
-        CHECK(s == projectState(7, {}));                              // = v5 + the version + an empty list + While playing
+        CHECK(s == projectState(8, {}));                              // = v5 + the version + an empty list + While playing + 2 empty names
     }
-    // Version 6 and 7 with bindings: they load (14-bit flags included); a version 7 state comes back byte for byte, a
-    // version 6 one as version 7 with While playing.
+    // Version 6 and 8 with bindings: they load (14-bit flags included); a version 8 state comes back byte for byte, a
+    // version 6 one as version 8 with While playing.
     {
         auto p = make();
         load(*p, projectState(6, some, 1.25f));
         CHECK(p->learn().bindings() == some);
-        CHECK(stateOf(*p) == projectState(7, some, 1.25f));
-        const juce::MemoryBlock s = projectState(7, some, 1.25f);
+        CHECK(stateOf(*p) == projectState(8, some, 1.25f));
+        const juce::MemoryBlock s = projectState(8, some, 1.25f);
         load(*p, s);
         CHECK(p->learn().bindings() == some);
         CHECK(stateOf(*p) == s);
@@ -110,7 +112,7 @@ int main() {
         auto empty = make();
         load(*empty, projectState(6, {}));
         CHECK(empty->learn().bindings().empty());
-        CHECK(stateOf(*empty) == projectState(7, {}));
+        CHECK(stateOf(*empty) == projectState(8, {}));
         p->clearLearnDefaults();
         CHECK(SkinSettings::midiLearnDefaults().isEmpty());
         auto none = make();

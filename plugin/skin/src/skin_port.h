@@ -37,7 +37,7 @@ struct EditorState {
     int page = 0, pages = 0;                         // 1-based page in the section, pages in the section
     bool prev = false, next = false, follow = true, data = false, edited = false;
     std::set<std::string> areas, sections;           // legends that lead somewhere
-    bool open = false;                               // the editor unit is shown (the library legend LIBRARY lit)
+    bool open = false;                               // the editor unit is shown
     uint32_t serial = 0;                             // changes when anything above changes
 };
 
@@ -74,6 +74,10 @@ public:
     // has it). Taken once; the view shows it on the cc's visible knobs as panel.setKnob does, without sending it again.
     virtual bool takeLearnedKnob(int /*cc*/, int& /*raw*/) { return false; }
     virtual EditorPort* editor() { return nullptr; }          // the editor unit (F-30); none: no editor
+    // A rack legend was clicked (v0.9.0, `<legend action="rack" value="...">`): EDITOR (show or hide the editor unit)
+    // or SAVE (the plugin window's LIBRARY with the Save footer). Called from the skin's thread; the plugin passes
+    // it to its message thread.
+    virtual void rackCommand(const std::string& /*value*/) {}
 };
 
 struct PluginInfo {

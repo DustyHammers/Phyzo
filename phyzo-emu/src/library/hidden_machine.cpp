@@ -1,6 +1,7 @@
 #include "library/hidden_machine.h"
 #include <cstdio>
 #include <deque>
+#include "editor/editor_fields.h"
 #include "editor/editor_proto.h"
 #include "library/syx.h"
 #include "machine.h"
@@ -12,12 +13,10 @@ namespace {
 constexpr double kStepMs = 5;                       // machine time between checks while waiting
 constexpr double kHoldMs = 110, kGapMs = 250;       // a press as hands do it: held, then a pause before the next
 constexpr double kMidiByteMs = 0.32;                // 31.25 kbaud
-constexpr double kPresetDisplayMs = 5000;           // longest wait for the display to show a preset again (`donE`)
+constexpr double kModeRecheckMs = 250;               // normal mode with another display (a value shown a moment): ask again
 
 std::string presetText(int preset) { char b[16]; std::snprintf(b, sizeof b, "P %02d", preset + 1); return b; }
-bool isPresetText(const std::string& t) {           // "P nn"
-    return t.size() == 4 && t[0] == 'P' && t[1] == ' ' && t[2] >= '0' && t[2] <= '9' && t[3] >= '0' && t[3] <= '9';
-}
+bool isPresetText(const std::string& t) { return isPresetDisplay(t); }
 std::string trimRight(std::string s) { while (!s.empty() && (s.back() == ' ' || s.back() == '\0')) s.pop_back(); return s; }
 
 class HiddenMachine : public Ops {
@@ -69,8 +68,46 @@ public:
     }
 
     bool waitForPreset() override {
-        return wait(kPresetDisplayMs, [&] { return isPresetText(m_->panel.text()); }) ||
-               fail("the display did not come back to a preset");
+        // The machine's own panel, OS reads and presses (this machine is a clone or a fresh one, never the running one).
+        struct Panel : PresetPanel {
+            explicit Panel(HiddenMachine& h) : hm(h) {}
+            std::string text() override { return hm.m_->panel.text(); }
+            bool mode(int& mode) override {
+                std::vector<uint8_t> b;
+                if (!hm.readRaw(edfields::kPanelMode, 1, b) || b.empty()) return false;
+                mode = b[0];
+                return true;
+            }
+            bool press(uint8_t raw) override { return hm.press(raw); }
+            bool run(double ms) override { return hm.idle(ms); }
+            HiddenMachine& hm;
+        } panel(*this);
+        return waitForPresetDisplay(panel, kPresetDisplayMs, kStepMs) || fail("the display did not come back to a preset");
+    }
+
+    // An OS raw-memory read (as the editor's arp edits read the panel mode), answered over MIDI.
+    bool readRaw(uint32_t address, uint32_t length, std::vector<uint8_t>& out) {
+        const edproto::Address a{edproto::kRawMemory, 0, 0, 0, address, length};
+        m_->serial.queueRx(1, edproto::partialRead(a), m_->cycles());
+        bool refused = false;
+        const bool got = wait(3000, [&] {
+            for (auto it = msgs_.begin(); it != msgs_.end(); ++it) {
+                edproto::Message r;
+                if (edproto::parse(it->data(), it->size(), r) && r.command == edproto::kPartialReply && r.address == a) {
+                    out = r.data;
+                    msgs_.erase(it);
+                    return true;
+                }
+                if (edproto::isOsSysex(it->data(), it->size(), edproto::kError)) { refused = true; msgs_.erase(it); return true; }
+            }
+            return false;
+        });
+        return got && !refused;
+    }
+
+    int displayedPreset() override {
+        const std::string t = m_->panel.text();
+        return isPresetText(t) ? (t[2] - '0') * 10 + (t[3] - '0') - 1 : -1;
     }
 
     bool dumpPreset(std::vector<uint8_t>& message) override {
@@ -158,6 +195,33 @@ private:
     std::string err_, shown_;
 };
 }  // namespace
+
+bool isPresetDisplay(const std::string& t) {
+    return t.size() == 4 && t[0] == 'P' && t[1] == ' ' && t[2] >= '0' && t[2] <= '9' && t[3] >= '0' && t[3] <= '9';
+}
+
+bool waitForPresetDisplay(PresetPanel& panel, double limitMs, double stepMs) {
+    bool pressed = false;
+    double waited = 0, modeAskedAt = -1e9;
+    for (;;) {
+        const std::string t = panel.text();
+        if (isPresetDisplay(t)) return true;
+        const bool blank = t.find_first_not_of(' ') == std::string::npos;   // a blink: not a page
+        if (!pressed && !blank && t != "donE" && waited - modeAskedAt >= kModeRecheckMs) {
+            modeAskedAt = waited;
+            int mode = -1;
+            if (panel.mode(mode) && mode != kPanelModeNormal && !isPresetDisplay(panel.text())) {
+                pressed = true;                      // once: an effect, reverb or tempo page goes back to P nn
+                if (!panel.press(kRawBank)) return false;
+                waited = 0;
+                modeAskedAt = -1e9;
+                continue;
+            }
+        }
+        if (waited >= limitMs || !panel.run(stepMs)) return false;
+        waited += stepMs;
+    }
+}
 
 RealMachines::RealMachines(std::string osPath, std::string wavePath, std::function<UserFlash()> factoryUserFlash)
     : osPath_(std::move(osPath)), wavePath_(std::move(wavePath)), factory_(std::move(factoryUserFlash)) {}

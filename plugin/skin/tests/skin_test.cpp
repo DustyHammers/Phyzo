@@ -57,6 +57,8 @@ public:
         return true;
     }
     std::string last() const { return sent.empty() ? std::string() : sent.back(); }
+    std::vector<std::string> rack;                   // rack legend clicks (v0.9.0)
+    void rackCommand(const std::string& value) override { rack.push_back(value); }
 };
 
 // The editor unit as the plugin's controller would show it; records the clicks and the Follow LEDs.
@@ -498,24 +500,31 @@ int main() {
         click(v, 1601 + 10, 848 + 55 + 5);                                       // an indicator: not a control
         v.evalForTest("editor.click('page', '3')");
         CHECK((p3.ed.commands == std::vector<std::string>{"area SOUND", "toggle_follow FOLLOW", "page 3"}));
-        // The library controls (v0.8.3 step 2): available on any page once there is a library; LIBRARY lit while the
-        // open editor shows the library, the actions never lit; a click sends action and value.
-        CHECK(!avail("lSave") && !avail("lLibrary") && !avail("lLibMain"));   // no library
-        st.areas.insert("LIBRARY"); st.open = true; ++st.serial;
+        // Rack legends (v0.9.0): EDITOR available with an editor unit and lit while it shows, SAVE always available and
+        // never lit; a click goes to the plugin (rackCommand), never to the editor. The obsolete library legends:
+        // never available, whatever the editor's state; a click does nothing; one log line per load.
+        CHECK(avail("lRackEditor") && lit("lRackEditor") && avail("lRackSave") && !lit("lRackSave") && avail("lEdSave"));
+        CHECK(!avail("lLibMain") && !lit("lLibMain") && !avail("lExport"));
+        st.areas.insert("LIBRARY"); st.area = "LIBRARY"; st.open = true; ++st.serial;   // as v0.8.7's library area
         v.update(t += 0.02);
-        CHECK(avail("lSave") && avail("lExport") && avail("lLibrary") && !lit("lLibrary") && !lit("lSave"));   // on SOUND
-        CHECK(avail("lLibMain") && !lit("lLibMain"));
-        st.area = "LIBRARY"; st.section = "SOURCES"; st.sections.clear(); ++st.serial;
-        v.update(t += 0.02);
-        CHECK(lit("lLibrary") && lit("lLibMain") && !lit("lSave"));
+        CHECK(!avail("lLibMain") && !lit("lLibMain") && !avail("lExport") && !lit("lExport"));
         p3.ed.commands.clear();
-        click(v, 400 + 10, 848 + 91 + 5);
-        click(v, 460 + 10, 848 + 91 + 5);
-        click(v, 1600 + 10, 600 + 5);                                            // the main document's LIBRARY
-        CHECK((p3.ed.commands == std::vector<std::string>{"library SAVE", "library EXPORT", "library LIBRARY"}));
+        click(v, 400 + 10, 848 + 91 + 5);                                        // SAVE on the editor glass
+        click(v, 460 + 10, 848 + 91 + 5);                                        // obsolete EXPORT: nothing
+        click(v, 1600 + 10, 600 + 5);                                            // obsolete LIBRARY: nothing
+        click(v, 1500 + 10, 600 + 5);                                            // EDITOR
+        click(v, 1500 + 10, 640 + 5);                                            // SAVE
+        v.evalForTest("editor.click('rack', 'SAVE')");
+        v.evalForTest("editor.click('library', 'LIBRARY')");
+        CHECK(p3.ed.commands.empty());
+        CHECK((p3.rack == std::vector<std::string>{"SAVE", "EDITOR", "SAVE", "SAVE"}));
+        int obsolete = 0;
+        for (const auto& l : v.log()) obsolete += l.find("legend action 'library' is obsolete, use action='rack' value='EDITOR' / 'SAVE'") != std::string::npos;
+        CHECK_EQ(obsolete, 1);
         st.area = "SOUND"; st.section = "FILTER"; st.areas.erase("LIBRARY"); st.sections = {"FILTER", "WAVE"}; st.open = false; ++st.serial;
         v.update(t += 0.02);
         p3.ed.commands.clear();
+        p3.rack.clear();
         // Values on the glass (spans from the editor): drag (1 step per 4 dp, Shift per 16 dp), double-click for typed
         // entry, a name to pick; right-click asks which value is under the mouse. The wheel never changes a value.
         st.rows[1] = "01  Big Pad" + std::string(39, ' ');
@@ -560,16 +569,71 @@ int main() {
         CHECK(std::isinf(v.nextWake()));
         v.setEditorVisible(false);
         CHECK(!v.editorVisible());
-        // With the editor unit closed, the main document's library control still works: avail, lit, clicks.
-        st.areas.insert("LIBRARY"); st.area = "LIBRARY"; st.open = false; ++st.serial;
+        // With the editor unit closed: EDITOR available, not lit; a click asks the plugin to open it. SAVE as before.
         v.update(t += 0.02);
-        CHECK(avail("lLibMain") && !lit("lLibMain"));                           // closed: the library is not shown
+        CHECK(avail("lRackEditor") && !lit("lRackEditor") && avail("lRackSave") && !lit("lRackSave"));
         p3.ed.commands.clear();
+        click(v, 1500 + 10, 600 + 5);
+        CHECK((p3.rack == std::vector<std::string>{"EDITOR"}));
+        CHECK(p3.ed.commands.empty());
+    }
+    // Rack legends without an editor unit or an editor port (a skin with no editor document): EDITOR unavailable and
+    // its click does nothing; SAVE works. The UI font: the skin names MissingFont.ttf, which is not in the folder: no
+    // font file (the plugin falls back to its default sans), exactly one log line about it.
+    {
+        const auto tmp = std::filesystem::temp_directory_path() / "phyzo_skin_rack_test" / "rk";
+        std::filesystem::remove_all(tmp.parent_path());
+        std::filesystem::create_directories(tmp);
+        std::filesystem::copy(kSkins + "/test", tmp, std::filesystem::copy_options::recursive);
+        for (const char* f : {"rk.rml", "rk.rcss"}) std::filesystem::remove(tmp / f);
+        std::filesystem::rename(tmp / "test.rml", tmp / "rk.rml");
+        std::filesystem::remove(tmp / "test-editor.rml");
+        FakePort p5;
+        SkinView v(p5, {"Phyzo", "DHammers", "9.9.9"}, nullptr);
+        v.setViewport(1795, 848, 1.0f);
+        std::string err;
+        CHECK(v.load(tmp.u8string(), "rk", err));
+        CHECK(!v.hasEditor());
+        v.update(1.0);
+        CHECK(!hasClass(v, "lRackEditor", "avail") && !hasClass(v, "lRackEditor", "lit"));
+        CHECK(hasClass(v, "lRackSave", "avail") && !hasClass(v, "lRackSave", "lit") && !hasClass(v, "lLibMain", "avail"));
+        click(v, 1500 + 10, 600 + 5);
+        click(v, 1500 + 10, 640 + 5);
         click(v, 1600 + 10, 600 + 5);
-        CHECK((p3.ed.commands == std::vector<std::string>{"library LIBRARY"}));  // the plugin opens the editor on it
-        st.open = true; ++st.serial;
-        v.update(t += 0.02);
-        CHECK(lit("lLibMain"));
+        CHECK((p5.rack == std::vector<std::string>{"SAVE"}));
+        CHECK(v.uiFontFile().empty());
+        int fontLines = 0;
+        for (const auto& l : v.log()) fontLines += l.find("ui-font") != std::string::npos;
+        CHECK_EQ(fontLines, 1);
+        // The font file present: its full path, no log line. Reloading logs nothing more.
+        std::ofstream(tmp / "MissingFont.ttf") << "not really a font";
+        const size_t before = v.log().size();
+        CHECK(v.load(tmp.u8string(), "rk", err));
+        CHECK(v.uiFontFile() == (tmp / "MissingFont.ttf").lexically_normal().u8string());
+        fontLines = 0;
+        for (size_t i = before; i < v.log().size(); ++i) fontLines += v.log()[i].find("ui-font") != std::string::npos;
+        CHECK_EQ(fontLines, 0);
+        std::filesystem::remove_all(tmp.parent_path());
+        // uiFontName: the head's meta only, either quotes, any attribute order, trimmed.
+        CHECK(uiFontName("<rml><head><meta name=\"ui-font\" content=\"A B.ttf\"/></head></rml>") == "A B.ttf");
+        CHECK(uiFontName("<rml><HEAD>\n<title>x</title><META content=' C.otf ' NAME='UI-Font'></HEAD></rml>") == "C.otf");
+        CHECK(uiFontName("<rml><head><meta name=\"other\" content=\"x.ttf\"/></head></rml>").empty());
+        CHECK(uiFontName("<rml><head></head><body><meta name=\"ui-font\" content=\"x.ttf\"/></body></rml>").empty());
+        CHECK(uiFontName("<rml><body/></rml>").empty());
+    }
+    // A ui-font outside the skin folder is never used.
+    {
+        const auto tmp = std::filesystem::temp_directory_path() / "phyzo_skin_font_test" / "fo";
+        std::filesystem::remove_all(tmp.parent_path());
+        std::filesystem::create_directories(tmp);
+        std::ofstream(tmp.parent_path() / "Out.ttf") << "x";
+        std::ofstream(tmp / "fo.rml") << "<rml><head><meta name=\"ui-font\" content=\"../Out.ttf\"/></head><body><led id=\"a\" code=\"1\"/></body></rml>";
+        FakePort p6;
+        SkinView v(p6, {"Phyzo", "DHammers", "9.9.9"}, nullptr);
+        std::string err;
+        CHECK(v.load(tmp.u8string(), "fo", err));
+        CHECK(v.uiFontFile().empty());
+        std::filesystem::remove_all(tmp.parent_path());
     }
     // A broken editor file: logged; the panel still loads, without an editor unit.
     {
@@ -604,10 +668,15 @@ int main() {
         legendState(s, "page_prev", "", l, a); CHECK(!l && !a);
         legendState(s, "label", "PAGE", l, a); CHECK(l && !a);
         legendState(s, "area", "ARP", l, a); CHECK(!l && !a);
-        legendState(s, "library", "SAVE", l, a); CHECK(!l && !a);       // LIBRARY's actions: only in that area
-        s.areas.insert("LIBRARY"); s.area = "LIBRARY";
-        legendState(s, "library", "FOLDER", l, a); CHECK(!l && a);
-        legendState(s, "area", "LIBRARY", l, a); CHECK(l && a);
+        s.areas.insert("LIBRARY"); s.area = "LIBRARY"; s.open = true;
+        legendState(s, "library", "LIBRARY", l, a); CHECK(!l && !a);    // obsolete (v0.9.0): never, whatever the state
+        legendState(s, "library", "FOLDER", l, a); CHECK(!l && !a);
+        legendState(s, "rack", "SAVE", l, a); CHECK(!l && !a);          // rack legends: not the editor's
+        rackLegendState("EDITOR", true, true, l, a); CHECK(l && a);
+        rackLegendState("EDITOR", true, false, l, a); CHECK(!l && a);
+        rackLegendState("EDITOR", false, false, l, a); CHECK(!l && !a);
+        rackLegendState("SAVE", false, true, l, a); CHECK(!l && a);
+        rackLegendState("LIBRARY", true, true, l, a); CHECK(!l && !a);
     }
 
     std::printf("skin_test: %s\n", failures ? "FAILED" : "passed");

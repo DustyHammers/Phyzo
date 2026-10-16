@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <ctime>
 #include <filesystem>
 #include "library/syx.h"
 #include "os_image.h"
@@ -18,7 +19,8 @@ std::string factoryKey(int bank) { return "factory" + std::to_string(bank); }
 
 Service::Service(Config cfg, std::unique_ptr<Machines> machines) : cfg_(std::move(cfg)), machines_(std::move(machines)) {
     for (int k = 0; k < 2; ++k) {                    // the factory sources are always listed
-        Source s; s.type = Source::Type::Factory; s.title = kFactoryTitles[k]; s.factoryBank = k;
+        Source s; s.type = Source::Type::Factory; s.group = Source::Group::Factory; s.title = kFactoryTitles[k]; s.factoryBank = k;
+        s.label = fs::path(factoryFile(libraryDir(), k)).stem().string();
         scan_.sources.push_back(s);
     }
     worker_ = std::thread(&Service::run, this);
@@ -50,19 +52,132 @@ void Service::enqueue(Job job, bool front) {
     cv_.notify_all();
 }
 
-void Service::open() { enqueue({Job::Type::Refresh, {}, {}, 0, {}}, false); }
-void Service::save() { enqueue({Job::Type::Save, {}, {}, 0, {}}, true); }
-void Service::exportBank(int bank) { enqueue({Job::Type::Export, {}, {}, bank, {}}, true); }
-void Service::import(const std::vector<std::string>& paths) { enqueue({Job::Type::Import, {}, {}, 0, paths}, true); }
+void Service::open() { Job j; j.type = Job::Type::Refresh; enqueue(std::move(j), false); }
+void Service::prepareSave() { Job j; j.type = Job::Type::PrepareSave; enqueue(std::move(j), true); }
+void Service::saveAs(const SaveDraft& draft, const std::string& name) {
+    Job j; j.type = Job::Type::SaveAs;
+    j.draft = draft; j.name = name;
+    enqueue(std::move(j), true);
+}
+void Service::exportBank(int bank) { Job j; j.type = Job::Type::Export; j.bank = bank; enqueue(std::move(j), true); }
+void Service::import(const std::vector<std::string>& paths) { Job j; j.type = Job::Type::Import; j.paths = paths; enqueue(std::move(j), true); }
 
 void Service::cancelAll() {
     {
         std::lock_guard<std::mutex> lk(mtx_);
+        for (const Job& j : queue_) if (j.type == Job::Type::LoadBank) bankJob_ = BankJob();
         queue_.clear();
         if (running_) cancel_ = true;
         progress_.clear();
     }
     changed();
+}
+
+bool Service::takeSaveDraft(SaveDraft& out) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    if (drafts_.empty()) return false;
+    out = std::move(drafts_.front());
+    drafts_.pop_front();
+    return true;
+}
+
+bool Service::oneBank(const std::vector<uint8_t>& file, std::vector<uint8_t>* message) {
+    const Split sp = split(file);
+    if (sp.banks.size() != 1 || !sp.presets.empty()) return false;
+    if (message) *message = sp.banks[0].message;
+    return true;
+}
+
+bool Service::loadBank(const std::string& path, int bank) {
+    if (bank < 0 || bank > 1) return false;
+    std::vector<uint8_t> bytes;
+    const std::string title = fs::u8path(path).stem().u8string();
+    if (!readFile(path, bytes) || !oneBank(bytes)) { notice(title + " has no bank"); return false; }
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        if (bankJob_.active || quit_) return false;
+        bankJob_ = BankJob();
+        bankJob_.active = true;
+        bankJob_.bank = bank;
+        bankJob_.file = title;
+    }
+    Job j; j.type = Job::Type::LoadBank;
+    j.path = path; j.bank = bank;
+    enqueue(std::move(j), true);
+    return true;
+}
+
+Service::BankJob Service::bankJob() const { std::lock_guard<std::mutex> lk(mtx_); return bankJob_; }
+
+void Service::setPhase(BankJob::Phase p) {
+    { std::lock_guard<std::mutex> lk(mtx_); bankJob_.phase = p; }
+    changed();
+}
+
+void Service::cancelBankBackup() {
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        if (!bankJob_.active || (bankJob_.phase != BankJob::Phase::Queued && bankJob_.phase != BankJob::Phase::Backup)) return;
+        const auto queued = std::find_if(queue_.begin(), queue_.end(), [](const Job& j) { return j.type == Job::Type::LoadBank; });
+        if (queued != queue_.end()) { queue_.erase(queued); bankJob_ = BankJob(); }
+        else cancel_ = true;                         // the running job stops at its next step; nothing is sent
+    }
+    changed();
+}
+
+bool Service::takeLoaded(int& bank, std::string& file) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    if (loaded_.empty()) return false;
+    bank = loaded_.front().first;
+    file = std::move(loaded_.front().second);
+    loaded_.pop_front();
+    return true;
+}
+
+// ------------------------------------------------------------------ Rename and Delete (UI thread)
+
+bool Service::isFactoryFile(const std::string& path) const {
+    const fs::path p = fs::u8path(path).lexically_normal();
+    for (int k = 0; k < 2; ++k)
+        if (p == fs::u8path(factoryFile(libraryDir(), k)).lexically_normal()) return true;
+    return false;
+}
+
+namespace {
+// A file inside the Library folder (never the folder itself or anything outside it).
+bool insideLibrary(const std::string& libraryDir, const fs::path& p) {
+    const std::string rel = p.lexically_normal().lexically_relative(fs::u8path(libraryDir).lexically_normal()).generic_u8string();
+    return !rel.empty() && rel != "." && rel.rfind("..", 0) != 0;
+}
+std::string trimmedName(const std::string& s) {
+    const size_t b = s.find_first_not_of(" \t"), e = s.find_last_not_of(" \t");
+    return b == std::string::npos ? std::string() : s.substr(b, e - b + 1);
+}
+}  // namespace
+
+std::string Service::rename(const std::string& path, const std::string& newName) {
+    const fs::path from = fs::u8path(path);
+    std::error_code ec;
+    if (isFactoryFile(path) || !insideLibrary(libraryDir(), from) || !fs::is_regular_file(from, ec)) return "Not renamed: not a library file";
+    const std::string typed = trimmedName(newName);
+    if (typed.empty() || typed == from.stem().u8string()) return {};     // nothing to change
+    const std::string stem = safeFileName(typed);
+    const fs::path to = from.parent_path() / fs::u8path(stem + from.extension().u8string());
+    // The same file under another case (a case-insensitive disk): allowed; any other existing file: refused.
+    if (fs::exists(to, ec) && !fs::equivalent(from, to, ec)) return "Not renamed: " + to.filename().u8string() + " already exists";
+    fs::rename(from, to, ec);
+    if (ec) return "Not renamed: " + ec.message();
+    open();                                          // the list follows; the index is the file's MD5: nothing is read again
+    return "Renamed to " + to.filename().u8string();
+}
+
+std::string Service::remove(const std::string& path) {
+    const fs::path p = fs::u8path(path);
+    std::error_code ec;
+    if (isFactoryFile(path) || !insideLibrary(libraryDir(), p) || !fs::is_regular_file(p, ec)) return "Not deleted: not a library file";
+    if (!cfg_.moveToTrash || !cfg_.moveToTrash(path)) return "Not deleted: " + p.filename().u8string() + " could not be moved to the Trash";
+    open();
+    return "Deleted " + p.stem().u8string() + " (in the Trash)";
 }
 
 bool Service::busy() const { std::lock_guard<std::mutex> lk(mtx_); return running_ || !queue_.empty(); }
@@ -84,10 +199,13 @@ void Service::run() {
         if (one.owns_lock()) switch (job.type) {
         case Job::Type::Refresh: refresh(); break;
         case Job::Type::Index: index(job.path, job.md5); break;
-        case Job::Type::Save: doSave(); break;
+        case Job::Type::PrepareSave: doPrepareSave(); break;
+        case Job::Type::SaveAs: doSaveAs(job.draft, job.name); break;
         case Job::Type::Export: doExport(job.bank); break;
         case Job::Type::Import: doImport(job.paths); break;
+        case Job::Type::LoadBank: doLoadBank(job.path, job.bank); break;
         }
+        if (job.type == Job::Type::LoadBank) { std::lock_guard<std::mutex> lk(mtx_); bankJob_ = BankJob(); }
         {
             std::lock_guard<std::mutex> lk(mtx_);
             running_ = false;
@@ -158,7 +276,10 @@ void Service::refresh() {
         }
     }
     for (const std::string& rel : bad) notice(fs::path(rel).filename().string() + "  NO PRESET OR BANK IN THIS FILE");
-    for (const auto& [path, md5] : todo) enqueue({Job::Type::Index, path, md5, 0, {}}, false);
+    for (const auto& [path, md5] : todo) {
+        Job j; j.type = Job::Type::Index; j.path = path; j.md5 = md5;
+        enqueue(std::move(j), false);
+    }
     changed();
 }
 
@@ -251,34 +372,121 @@ void Service::index(const std::string& path, const std::string& md5) {
     changed();
 }
 
-void Service::doSave() {
+// Save with a name, step 1: the clone's view of the current preset (as the panel shows it), or why not.
+void Service::doPrepareSave() {
+    SaveDraft d;
+    auto done = [&] { { std::lock_guard<std::mutex> lk(mtx_); drafts_.push_back(std::move(d)); } changed(); };
     const std::vector<uint8_t> state = cfg_.machineState ? cfg_.machineState() : std::vector<uint8_t>();
     std::string err;
     std::unique_ptr<Ops> ops = state.empty() ? nullptr : machines_->clone(state, cancel_, err);
-    if (!ops) { if (!cancel_) notice("NOT SAVED  THE SYNTH IS NOT RUNNING"); return; }
-    // The clone shows what the panel showed (e.g. `donE` right after a panel Dump): first the preset display.
-    if (!ops->waitForPreset()) { if (!cancel_) notice("NOT SAVED  " + upper(ops->error())); return; }
-    if (ops->compareLit()) { notice("UNSAVED EDITS  SAVE ON THE PANEL FIRST"); return; }
-    std::string name;
-    std::vector<uint8_t> message;
-    if (!ops->readName(0, name) || !ops->dumpPreset(message)) {
-        if (!cancel_) notice("NOT SAVED  " + upper(ops->error()));
-        return;
+    if (!ops) { d.error = "NOT SAVED  THE SYNTH IS NOT RUNNING"; done(); return; }
+    // Unsaved edits first (the LED does not depend on what the display shows); then the preset display: the clone shows
+    // what the panel showed (`donE` right after a panel Dump, or an effect page: waitForPresetDisplay).
+    if (ops->compareLit()) { d.compare = true; done(); return; }
+    if (!ops->waitForPreset()) { d.error = "NOT SAVED  " + upper(ops->error()); done(); return; }
+    d.preset = ops->displayedPreset();
+    if (!ops->readName(0, d.osName) || !ops->dumpPreset(d.message)) {
+        d.message.clear();
+        d.error = "NOT SAVED  " + upper(ops->error());
     }
+    done();
+}
+
+// Step 2: the draft's bytes as they are, in a new file (never overwriting); its index is known at once.
+void Service::doSaveAs(const SaveDraft& draft, const std::string& name) {
+    if (draft.message.empty()) { notice("NOT SAVED  NOTHING TO SAVE"); return; }
+    const std::string typed = trimmedName(name);
+    const std::string stem = safeFileName(typed.empty() ? draft.osName : typed);
     const std::string dir = singlesDir(libraryDir());
     std::string path;
     for (int tries = 0; tries < 10 && path.empty(); ++tries) {   // another writer may take the name first: never overwrite
-        const std::string p = uniquePath(dir, safeFileName(name));
-        if (writeNew(p, message)) path = p;
+        const std::string p = uniquePath(dir, stem);
+        if (writeNew(p, draft.message)) path = p;
     }
     if (path.empty()) { notice("NOT SAVED  CANNOT WRITE THE FILE"); return; }
-    const std::string md5 = md5Hex(message.data(), message.size());
+    const std::string md5 = md5Hex(draft.message.data(), draft.message.size());
     Index idx;
-    idx.entries.push_back({name, message, true});
+    idx.entries.push_back({draft.osName, draft.message, true});
     writeIndex(indexPath(indexDir(), md5), cfg_.osMd5, idx);
     { std::lock_guard<std::mutex> lk(mtx_); indexes_[md5] = std::move(idx); }
     notice("SAVED  Singles/" + fs::path(path).filename().string());
     refresh();
+}
+
+// The bank load: backup (cancellable), then the file's message into the running machine, then the names confirmed.
+void Service::doLoadBank(const std::string& path, int bank) {
+    const std::string title = fs::u8path(path).stem().u8string();
+    const std::string bankText = "Bank " + std::to_string(bank + 1);
+    std::vector<uint8_t> bytes, message;
+    if (!readFile(path, bytes) || !oneBank(bytes, &message)) { notice(title + " has no bank"); return; }
+    // The file's names: from its index (read now if it is not yet).
+    const std::string md5 = md5Hex(bytes.data(), bytes.size());
+    std::vector<std::string> names;
+    auto known = [&] {
+        std::lock_guard<std::mutex> lk(mtx_);
+        const Index* idx = indexOf(md5);
+        if (!idx || idx->entries.size() != size_t(kBankPresets)) return false;
+        names.clear();
+        for (const Entry& e : idx->entries) names.push_back(e.name);
+        return true;
+    };
+    setPhase(BankJob::Phase::Backup);
+    if (!known()) index(path, md5);
+    if (cancel_) { notice("NOT LOADED  CANCELLED"); return; }
+    if (!known()) { notice("NOT LOADED  " + title + " COULD NOT BE READ"); return; }
+    // The backup: a clone dumps the bank as it is now. No backup, no load.
+    {
+        const std::vector<uint8_t> state = cfg_.machineState ? cfg_.machineState() : std::vector<uint8_t>();
+        std::string err;
+        std::unique_ptr<Ops> ops = state.empty() ? nullptr : machines_->clone(state, cancel_, err);
+        std::vector<uint8_t> backup;
+        const bool dumped = ops && ops->waitForPreset() && ops->programChange(63) && ops->dumpBank(bank, backup, nullptr);
+        if (cancel_) { notice("NOT LOADED  CANCELLED"); return; }
+        if (!dumped) {
+            notice("NOT LOADED  " + upper(bankText) + " COULD NOT BE BACKED UP  " + upper(ops ? ops->error() : std::string("the synth is not running")));
+            return;
+        }
+        const std::string dir = backupsDir(libraryDir());
+        const std::string base = backupName(bank, std::time(nullptr));
+        bool written = false;
+        for (int tries = 0; tries < 10 && !written; ++tries) written = writeNew(uniquePath(dir, base), backup);
+        if (!written) { notice("NOT LOADED  " + upper(bankText) + " COULD NOT BE BACKED UP  CANNOT WRITE THE FILE"); return; }
+    }
+    if (cancel_) { notice("NOT LOADED  CANCELLED"); return; }
+    // The load: byte 6 is the target bank, nothing else changes. From here on it is not cancelled.
+    setPhase(BankJob::Phase::Load);
+    message[6] = uint8_t(bank);
+    if (!cfg_.sendToMachine || !cfg_.sendToMachine(message)) { notice("NOT LOADED  THE SYNTH IS NOT RUNNING"); refresh(); return; }
+    using Clock = std::chrono::steady_clock;
+    auto ms = [](Clock::time_point t) { return std::chrono::duration<double, std::milli>(Clock::now() - t).count(); };
+    const auto sent = Clock::now();
+    while (cfg_.machineInputBusy && cfg_.machineInputBusy() && ms(sent) < cfg_.bankDeliveryMs && !quit_)
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    // Confirmed when the bank's 32 stored names (read in a clone of the running machine) are the file's.
+    setPhase(BankJob::Phase::Confirm);
+    const auto start = Clock::now();
+    bool ok = false;
+    std::atomic<bool> never{false};                  // the confirmation is not cancelled (the load was sent)
+    while (!ok && !quit_) {
+        const std::vector<uint8_t> state = cfg_.machineState ? cfg_.machineState() : std::vector<uint8_t>();
+        std::string err;
+        std::unique_ptr<Ops> ops = state.empty() ? nullptr : machines_->clone(state, never, err);
+        ok = ops != nullptr;
+        for (int i = 0; ok && i < kBankPresets; ++i) {
+            std::string name;
+            ok = ops->readName(uint16_t(0x40 + bank * kBankPresets + i), name) && name == names[size_t(i)];
+        }
+        if (ok || ms(start) >= cfg_.bankConfirmMs) break;
+        for (int i = 0; i < 25 && !quit_; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    if (!ok) {
+        if (!quit_) notice(bankText + " didn't confirm the load");
+        refresh();
+        return;
+    }
+    { std::lock_guard<std::mutex> lk(mtx_); loaded_.emplace_back(bank, title); }
+    notice("LOADED " + title + " INTO " + upper(bankText));
+    refresh();                                       // the new backup in the list
 }
 
 void Service::doExport(int bank) {
@@ -332,6 +540,12 @@ std::vector<Service::SourceView> Service::sources() const {
     for (const Source& src : scan_.sources) {
         SourceView v;
         v.title = src.title;
+        v.group = src.group;
+        v.label = src.label;
+        if (src.type == Source::Type::Singles) v.path = singlesDir(cfg_.dataDir + "/Library");
+        else if (!src.files.empty()) v.path = scan_.files[size_t(src.files[0])].path;
+        else if (src.type == Source::Type::Factory) v.path = factoryFile(cfg_.dataDir + "/Library", src.factoryBank);
+        v.bank = src.type != Source::Type::Singles && src.files.size() == 1 && scan_.files[size_t(src.files[0])].oneBank;
         if (src.type == Source::Type::Factory) {
             const auto mk = progress_.find(factoryKey(src.factoryBank));
             if (mk != progress_.end()) { v.busy = true; v.done = mk->second.done; v.total = mk->second.total; out.push_back(v); continue; }
@@ -367,11 +581,11 @@ std::vector<Service::EntryView> Service::entries(int source) const {
     for (const int i : src.files) {
         const File& f = scan_.files[size_t(i)];
         const Index* idx = indexOf(f.md5);
-        if (src.type == Source::Type::Singles) {
-            if (idx && !idx->entries.empty()) out.push_back({idx->entries[0].name, true, idx->entries[0].accepted});
-            else out.push_back({f.title, false, true});
+        if (src.type == Source::Type::Singles) {         // by file name (the name it was saved under)
+            if (idx && !idx->entries.empty()) out.push_back({f.title, true, idx->entries[0].accepted, f.path});
+            else out.push_back({f.title, false, true, f.path});
         } else if (idx) {
-            for (const Entry& e : idx->entries) out.push_back({e.name, true, e.accepted});
+            for (const Entry& e : idx->entries) out.push_back({e.name, true, e.accepted, f.path});
         }
     }
     return out;

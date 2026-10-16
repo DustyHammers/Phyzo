@@ -58,6 +58,7 @@ public:
     const romid::ScanResult& romScan() const { return scan_; }
     juce::File romFolder() const { return dataFolder_.getChildFile("roms"); }
     juce::File skinsFolder() const { return dataFolder_.getChildFile("skins"); }
+    juce::File dataFolder() const { return dataFolder_; }
     // The synth as the skins see it (thread-safe: used by the skin render thread).
     skin::PanelPort& panelPort() { return port_; }
     double hostRate() const { return hostRate_.load(); }
@@ -105,6 +106,28 @@ public:
     // the tests right after processBlock).
     const std::vector<Engine::MidiEvent>& blockEventsForTest() const { return events_; }
     static std::vector<midilearn::Binding> learnDefaults();
+
+    // ---- the plugin window's LIBRARY (v0.9.0, docs/editor/LIBRARY.md), message thread
+    // The preset library (made when first asked, with the ROMs known; null without them).
+    library::Service* libraryService();
+    // A preset's stored message into the running machine's MIDI input (the OS puts it in Compare); false with why.
+    bool sendLibraryPreset(int source, int entry, juce::String& why);
+    void chooseImport();                             // Import...: the open dialog
+    void revealLibrary();                            // Folder: Library/ in Finder
+    void exportBank(int bank);                       // Save as file...: a clone dumps the bank, then the save dialog
+    bool compareLit() { return engine_.led(kLedCompare).mode != Engine::LedOff; }
+    // The preset the display last showed as P nn (0-63; -1: none yet).
+    int playingPreset() const { return playing_; }
+    // The file last loaded into Bank 1 / 2 in this project (the Memory column's title; project state version 8).
+    juce::String lastLoaded(int bank) const;
+    void setLastLoaded(int bank, const juce::String& file);
+    // The window footer's messages (the library's, the exports'), in order; they wait while no window shows them.
+    bool takeWindowMessage(juce::String& text);
+    void windowMessage(const juce::String& text);
+    static constexpr int kLedCompare = 0x16;
+    // Tests: a library service of their own (fake hidden machines; no ROMs needed).
+    void setLibraryServiceForTest(std::unique_ptr<library::Service> s) { library_ = std::move(s); }
+
     struct Meter {                                   // CPU per block, written by the audio thread
         std::atomic<float> avg{0}, peak{0}, last{0}, lastMs{0}, blockMs{0};
         std::atomic<int> blockSize{0};
@@ -141,6 +164,9 @@ private:
         bool audioClip() override { return engine.inputClip(); }
         skin::EditorPort* editor() override { return ed; }
         skin::EditorPort* ed = nullptr;
+        // Rack legends (any thread): to the message thread, where the editor shows or opens what they ask.
+        void rackCommand(const std::string& value) override { if (proc) proc->postRack(value); }
+        PhyzoProcessor* proc = nullptr;
         bool knobPosition(const std::string& id, int& raw) override {
             std::lock_guard<std::mutex> lk(mtx);
             auto it = knobs.find(id);
@@ -189,11 +215,6 @@ private:
         uint32_t editorSerial() override { return proc.editor_.serial(); }
         void editorState(skin::EditorState& out) override;
         void editorCommand(const std::string& action, const std::string& text) override {
-            if (action == "library" && text == "LIBRARY") {   // from any page, and from the main document: the editor
-                PhyzoProcessor* p = &proc;                   // unit opens on the library list if it was closed
-                proc.postToEditor([p](editor::Controller& c) { p->openEditorUnit(); c.command("library", "LIBRARY"); });
-                return;
-            }
             proc.postToEditor([action, text](editor::Controller& c) { c.command(action, text); });
         }
         void editorFollowExtraLeds(int noise, int lfo, int filterKbd) override {
@@ -213,36 +234,11 @@ private:
         void timerCallback() override { proc.editorTick(); }
         PhyzoProcessor& proc;
     };
-    // The preset library (v0.8.3 step 2) for the editor's LIBRARY area: library::Service (made when the area first
-    // opens, with the ROMs known) and the plugin's file dialogs. Message thread.
-    class LibraryBridge : public editor::LibraryLink {
-    public:
-        explicit LibraryBridge(PhyzoProcessor& p) : proc(p) {}
-        void open() override { if (library::Service* s = proc.libraryService()) s->open(); }
-        uint64_t serial() const override { return proc.library_ ? proc.library_->serial() : 0; }
-        std::vector<Source> sources() const override;
-        std::vector<Entry> entries(int source) const override;
-        bool message(int source, int entry, std::vector<uint8_t>& out) const override {
-            return proc.library_ && proc.library_->message(source, entry, out);
-        }
-        bool takeNotice(std::string& text) override;
-        void save() override { if (library::Service* s = proc.libraryService()) s->save(); }
-        void exportBank(int bank) override { if (library::Service* s = proc.libraryService()) s->exportBank(bank); }
-        void exportMenu() override { proc.showExportMenu(); }
-        void importFiles() override { proc.chooseImport(); }
-        void reveal() override { proc.revealLibrary(); }
-        PhyzoProcessor& proc;
-    };
-    library::Service* libraryService();
-    void chooseImport();
-    void revealLibrary();
-    void showExportMenu();                           // the window's menu of the two banks
-    void openEditorUnit();                           // LIBRARY with the editor unit closed
+    void postRack(const std::string& value);         // a rack legend (skin thread) for the message thread
     void runEditorQueue();                           // the skin's editor calls (message thread)
-    void serviceLibrary();                           // timer: an exported bank waiting for its save dialog
-    void libraryNotice(const std::string& text) { libraryNotices_.push_back(text); }
-    // MIDI learn: what the audio thread heard (timer); a message on the editor's row 4 (unit open) or the window's
-    // banner (unit closed), 3 s.
+    // Timer: the library's messages and confirmed loads, an exported bank waiting for its save dialog.
+    void serviceLibrary();
+    // MIDI learn: what the audio thread heard (timer); a message in the window's footer (open) or the banner, 3 s.
     void serviceLearn();
     void learnMessage(const std::string& text);
     // The engine as the learned messages drive it: the mouse's calls (lock-free, the audio thread included).
@@ -273,11 +269,15 @@ private:
     VirtualMidiPort vport_{engine_.virtualMidiOut(), &PhyzoProcessor::virtualBytes, this};   // after engine_: closed first
     EditorLink editorLink_{engine_};
     editor::Controller editor_{editorLink_};
-    LibraryBridge libraryBridge_{*this};
     std::unique_ptr<library::Service> library_;       // after engine_: stopped before it (its clones ask the engine)
     std::unique_ptr<juce::FileChooser> chooser_;      // the import / export dialog (released by the timer once done)
     bool chooserBusy_ = false;                        // a dialog is open
-    std::deque<std::string> libraryNotices_;          // the plugin's own library messages (exports)
+    std::deque<juce::String> windowMessages_;         // for the window's footer (the latest kept while none shows them)
+    mutable std::mutex lastLoadedMtx_;
+    juce::String lastLoaded_[2];                      // project state (version 8)
+    int playing_ = -1;
+    std::mutex rackMtx_;
+    std::vector<std::string> rackQueue_;
     EditorPort editorPort_{*this};
     EditorTicker editorTicker_{*this};
     std::atomic<bool> editorWanted_{false}, editorActive_{false};

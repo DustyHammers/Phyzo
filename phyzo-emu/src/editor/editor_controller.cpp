@@ -190,13 +190,6 @@ void Controller::setOpen(bool open) {
         lastDisplay_ = link_.display();
         followLeds();
         readDue_ = now_;                             // read the visible page on the next tick
-        if (lib_) {
-            std::string t;
-            while (lib_->takeNotice(t)) {}           // messages from while the editor was closed are old news
-            libNotices_.clear();
-            libNoticeUntil_ = -1;
-            if (libraryArea()) lib_->open();
-        }
     } else {
         outstanding_ = 0;
         arpNameOut_ = arpProbe_ = -1;               // asked again when the editor opens
@@ -380,8 +373,6 @@ void Controller::build() {
         rev.sections.push_back({"SENDS", pages(rsends)});
         areas_.push_back(rev);
     }
-    // LIBRARY: its pages come from the library (renderLibrary), not from tables.
-    if (lib_) areas_.push_back({"LIBRARY", {{"SOURCES", {Page()}}, {"PRESETS", {Page()}}}});
     // Keep the position if the same area, section and page still exist.
     area_ = section_ = page_ = 0;
     for (size_t i = 0; i < areas_.size(); ++i)
@@ -1206,9 +1197,7 @@ void Controller::render() {
     v.edited = edited_;
     v.typing = typing_;
     for (const Area& a : areas_) v.areas.insert(a.name);
-    if (libraryArea()) {
-        renderLibrary(v);
-    } else if (const Area* a = currentArea()) {
+    if (const Area* a = currentArea()) {
         v.area = a->name;
         v.soundTargets = a->name == "SOUND" || a->name == "OSC";
         v.oscTargets = a->name == "OSC";
@@ -1278,17 +1267,6 @@ void Controller::render() {
                     if (sp.ref == focus && (!sp.pick || a->name == "PRESETS")) { v.focusRow = sp.row; v.focusCol = sp.col; v.focusLen = sp.len; break; }
             }
         }
-    }
-    // A library message replaces row 4 for 3 seconds, on whatever page shows (the library controls work from any).
-    if (libNoticeUntil_ >= 0 && now_ < libNoticeUntil_) {
-        const size_t last = size_t(edpages::kRows - 1);
-        for (size_t c = 0; c < size_t(edpages::kCols); ++c) {
-            v.screen.chars[last][c] = c < libNoticeText_.size() ? libNoticeText_[c] : ' ';
-            v.screen.underline[last][c] = v.screen.dot[last][c] = false;
-        }
-        v.screen.values.erase(std::remove_if(v.screen.values.begin(), v.screen.values.end(),
-                                             [](const auto& sp) { return sp.row == edpages::kRows - 1; }), v.screen.values.end());
-        if (v.focusRow == edpages::kRows - 1) v.focusRow = -1;
     }
     std::lock_guard<std::mutex> lk(viewMtx_);
     auto sameSpans = [](const std::vector<edpages::Screen::Span>& a, const std::vector<edpages::Screen::Span>& b) {
@@ -1378,7 +1356,6 @@ void Controller::moveFocus(int dr, int dc) {
 }
 
 void Controller::command(const std::string& action, const std::string& text) {
-    if (libraryCommand(action, text)) return;
     Area* a = currentArea();
     const int ref = std::atoi(text.c_str());
     const bool validRef = !text.empty() && ref >= 0 && size_t(ref) < refs_.size();
@@ -2069,186 +2046,11 @@ void Controller::pumpMod() {
 
 // ------------------------------------------------------------------ tick
 
-// ------------------------------------------------------------------ LIBRARY (v0.8.3 step 2)
-
-void Controller::setLibrary(LibraryLink* library) {
-    lib_ = library;
-    build();
-    render();
-}
-
-bool Controller::libraryArea() const {
-    const Area* a = currentArea();
-    return lib_ && a && a->name == "LIBRARY";
-}
-
-int Controller::librarySource() const {
-    const std::vector<LibraryLink::Source> list = lib_->sources();
-    if (list.empty()) return -1;
-    for (size_t i = 0; i < list.size(); ++i) if (list[i].title == libSource_) return int(i);
-    return std::clamp(libSourceIndex_, 0, int(list.size()) - 1);   // gone (renamed, deleted): the one in its place
-}
-
-int Controller::libraryPages(int section) const {
-    const size_t n = section == 0 ? lib_->sources().size() : lib_->entries(librarySource()).size();
-    return std::max(1, int((n + kLibraryPerPage - 1) / kLibraryPerPage));
-}
-
-namespace {
-std::string twoDigits(int n) { char b[16]; std::snprintf(b, sizeof b, "%02d", n); return b; }
-// "nn name rest" in 50 characters: without the number if it is too long, then with single spaces, then cut.
-std::string fitNotice(const std::string& num, const std::string& name, const std::string& rest) {
-    std::string t = num + " " + name + " " + rest;
-    if (t.size() > size_t(edpages::kCols)) t = name + " " + rest;
-    if (t.size() > size_t(edpages::kCols)) {
-        std::string single;
-        for (size_t i = 0; i < t.size(); ++i) if (!(t[i] == ' ' && i + 1 < t.size() && t[i + 1] == ' ')) single += t[i];
-        t = single;
-    }
-    return t.substr(0, size_t(edpages::kCols));
-}
-}  // namespace
-
-void Controller::libraryNotice(const std::string& text) {
-    libNoticeText_ = text.substr(0, size_t(edpages::kCols));
-    libNoticeUntil_ = now_ + kLibraryNoticeMs;
-}
-
-void Controller::renderLibrary(View& v) {
-    v.area = "LIBRARY";                              // no section legends: LIBRARY itself goes back to the list
-    const int sec = section_ == 1 ? 1 : 0;
-    v.section = sec == 0 ? "SOURCES" : "PRESETS";
-    const int pages = libraryPages(sec);
-    int& page = libPage_[sec];
-    page = std::clamp(page, 0, pages - 1);
-    v.page = page + 1;
-    v.pages = pages;
-    v.prev = page > 0;
-    v.next = page + 1 < pages;
-    edpages::Screen sc;
-    auto put = [&](int row, int col, const std::string& t, int width) {
-        for (int i = 0; i < width && col + i < edpages::kCols; ++i) sc.chars[size_t(row)][size_t(col + i)] = i < int(t.size()) ? t[size_t(i)] : ' ';
-    };
-    const int first = page * kLibraryPerPage;
-    if (sec == 0) {                                  // sources: title at the left of its half, the count at its right
-        const std::vector<LibraryLink::Source> list = lib_->sources();
-        for (int k = 0; k < kLibraryPerPage && first + k < int(list.size()); ++k) {
-            const LibraryLink::Source& src = list[size_t(first + k)];
-            const int row = k / 2, col = (k % 2) * edpages::kHalf;
-            const std::string count = src.busy ? std::to_string(src.done) + "/" + std::to_string(src.total) : std::to_string(src.count);
-            const int room = edpages::kHalf - 2;     // 2 cells before the next half
-            const std::string title = src.title.substr(0, size_t(std::max(0, room - int(count.size()) - 1)));
-            put(row, col, title, room - int(count.size()));
-            put(row, col + room - int(count.size()), count, int(count.size()));
-            sc.values.push_back({row, col, room, kLibrarySourceRef + first + k, true});
-        }
-    } else {                                         // presets: "nn  name", as the PRESETS area
-        const int src = librarySource();
-        const std::vector<LibraryLink::Entry> list = lib_->entries(src);
-        for (int k = 0; k < kLibraryPerPage && first + k < int(list.size()); ++k) {
-            const int row = k / 2, col = (k % 2) * edpages::kHalf;
-            put(row, col, twoDigits(first + k + 1), 3);
-            put(row, col + 4, list[size_t(first + k)].name, 16);
-            sc.values.push_back({row, col, 4 + 16, kLibraryEntryRef + first + k, true});
-        }
-        const std::vector<LibraryLink::Source> sources = lib_->sources();
-        if (list.empty() && src >= 0 && size_t(src) < sources.size() && sources[size_t(src)].busy)   // being read
-            put(0, 0, sources[size_t(src)].title + "  READING  " + std::to_string(sources[size_t(src)].done) + "/" +
-                      std::to_string(sources[size_t(src)].total), edpages::kCols);
-        // The preset last sent from here is marked (blinks), as the PRESETS area marks the current preset.
-        if (libMarked_ >= first && libMarked_ < first + kLibraryPerPage && src >= 0 && size_t(src) < sources.size() &&
-            sources[size_t(src)].title == libMarkedSource_) {
-            for (const auto& sp : sc.values)
-                if (sp.ref == kLibraryEntryRef + libMarked_) { v.focusRow = sp.row; v.focusCol = sp.col; v.focusLen = sp.len; }
-        }
-    }
-    v.screen = sc;
-}
-
-bool Controller::libraryCommand(const std::string& action, const std::string& text) {
-    if (!lib_) return false;
-    // The five library controls (legend action "library"), from any page: LIBRARY, SAVE, IMPORT, EXPORT, FOLDER.
-    if (action == "library" || (action == "area" && text == "LIBRARY")) {
-        const std::string what = action == "area" ? std::string("LIBRARY") : text;
-        if (what == "LIBRARY") {                     // the source list; from a source's presets, back to it
-            if (!libraryArea()) {
-                for (size_t i = 0; i < areas_.size(); ++i) if (areas_[i].name == "LIBRARY") go(int(i), 0, 0);
-                lib_->open();                        // rescans whenever it is opened
-            }
-            section_ = 0;
-            render();
-        } else if (what == "SAVE") {
-            if (link_.ledMode(kCompareLed) != 0) { libraryNotice("UNSAVED EDITS  SAVE ON THE PANEL FIRST"); render(); }
-            else lib_->save();
-        } else if (what == "EXPORT") lib_->exportMenu();   // Bank 1 or Bank 2: then EXPORT B1 / EXPORT B2
-        else if (what == "EXPORT B1" || what == "EXPORT B2") lib_->exportBank(what == "EXPORT B1" ? 0 : 1);
-        else if (what == "IMPORT") lib_->importFiles();
-        else if (what == "FOLDER") lib_->reveal();
-        return true;
-    }
-    if (!libraryArea()) return false;
-    if (action == "section") {
-        if (text == "SOURCES" || text == "PRESETS") { section_ = text == "SOURCES" ? 0 : 1; render(); }
-        return true;
-    }
-    const int sec = section_ == 1 ? 1 : 0;
-    if (action == "page" || action == "page_prev" || action == "page_next") {
-        const int pages = libraryPages(sec);
-        int& page = libPage_[sec];
-        if (action == "page") { const int n = std::atoi(text.c_str()) - 1; if (n >= 0 && n < pages) page = n; }
-        else if (action == "page_prev") page = std::max(0, page - 1);
-        else page = std::min(pages - 1, page + 1);
-        render();
-        return true;
-    }
-    if (action == "pick") {
-        const int ref = std::atoi(text.c_str());
-        if (ref >= kLibraryEntryRef) {
-            const int e = ref - kLibraryEntryRef, src = librarySource();
-            const std::vector<LibraryLink::Entry> list = lib_->entries(src);
-            if (e < 0 || e >= int(list.size()) || !list[size_t(e)].ready) return true;   // not read yet
-            const std::string num = twoDigits(e + 1), name = list[size_t(e)].name;
-            if (!list[size_t(e)].accepted) { libraryNotice(fitNotice(num, name, " NOT ACCEPTED BY THE OS")); render(); return true; }
-            std::vector<uint8_t> m;
-            // Into the OS's MIDI input, nothing else: no program change, no write to stored memory. The OS puts it in
-            // Compare, as for a single-preset dump over MIDI.
-            if (!open_ || !link_.running() || !lib_->message(src, e, m) || !link_.send(m)) return true;
-            libMarkedSource_ = lib_->sources()[size_t(src)].title;
-            libMarked_ = e;
-            libraryNotice(fitNotice(num, name, "IN COMPARE  SAVE ON PANEL TO KEEP"));
-            render();
-        } else if (ref >= kLibrarySourceRef) {       // a source: open it in PRESETS
-            const std::vector<LibraryLink::Source> list = lib_->sources();
-            const int i = ref - kLibrarySourceRef;
-            if (i < 0 || i >= int(list.size())) return true;
-            if (list[size_t(i)].title != libSource_) libPage_[1] = 0;
-            libSource_ = list[size_t(i)].title;
-            libSourceIndex_ = i;
-            section_ = 1;
-            render();
-        }
-        return true;
-    }
-    // Values to focus, drag or type do not exist here; Follow and the rest work as elsewhere.
-    return action == "focus" || action == "drag_begin" || action == "drag" || action == "drag_end" || action == "type";
-}
-
 void Controller::tick(double nowMs) {
     now_ = nowMs;
     std::vector<uint8_t> m;
     bool got = false;
     while (link_.popReply(m)) { handleReply(m); got = true; }
-    if (open_ && lib_) {                             // the library's messages (row 4, 3 s each, in order) and lists
-        std::string t;
-        while (lib_->takeNotice(t)) libNotices_.push_back(t);
-        if (libNoticeUntil_ >= 0 && now_ >= libNoticeUntil_) { libNoticeUntil_ = -1; got = true; }
-        if (libNoticeUntil_ < 0 && !libNotices_.empty()) {
-            libraryNotice(libNotices_.front());
-            libNotices_.erase(libNotices_.begin());
-            got = true;
-        }
-        if (lib_->serial() != libSerial_) { libSerial_ = lib_->serial(); got = true; }
-    }
     if (!open_ || !link_.running()) { if (got) render(); return; }
 
     if (!wavesRequested_ && currentArea() && currentArea()->name == "OSC") readDue_ = readDue_ < 0 ? now_ : readDue_;

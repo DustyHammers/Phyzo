@@ -84,7 +84,7 @@ int editorState(lua_State* L) {
 int editorClick(lua_State* L) {
     const char* action = luaL_checkstring(L, 1);
     const char* value = luaL_optstring(L, 2, "");
-    if (EditorPort* e = editorOf(L)) e->editorCommand(action, value);
+    viewOf(L).legendClick(action, value);        // as a click on such a legend (rack legends included)
     return 0;
 }
 int editorOnChange(lua_State* L) {

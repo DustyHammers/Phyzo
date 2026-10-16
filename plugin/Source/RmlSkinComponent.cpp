@@ -174,9 +174,12 @@ void RmlSkinComponent::startLoad() {
     if (ok && debugger_) view_->setDebuggerVisible(true);
     hasEditor_ = ok && view_->hasEditor();
     if (ok) view_->setEditorVisible(editorVisible_.load());
+    const juce::String font = ok ? juce::String::fromUTF8(view_->uiFontFile().c_str()) : juce::String();
     juce::Component::SafePointer<RmlSkinComponent> self(this);
-    juce::MessageManager::callAsync([self, ok, err] {
-        if (self && self->onLoaded) self->onLoaded(ok, juce::String::fromUTF8(err.c_str()));
+    juce::MessageManager::callAsync([self, ok, err, font] {
+        if (!self) return;
+        self->uiFont_ = font;
+        if (self->onLoaded) self->onLoaded(ok, juce::String::fromUTF8(err.c_str()));
     });
 }
 
@@ -346,7 +349,7 @@ bool RmlSkinComponent::keyPressed(const juce::KeyPress& k) {
     if (k == juce::KeyPress::escapeKey) {
         if (onEscape && onEscape()) return true;      // a MIDI learn cancelled
         post([this] { view_->releaseHeldButtons(); });
-        return true;
+        return false;                                 // nothing of ours was open: the host's
     }
     return false;
 }

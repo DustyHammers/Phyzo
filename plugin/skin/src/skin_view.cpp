@@ -7,7 +7,10 @@
 #include <cstring>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <limits>
+#include <regex>
+#include <sstream>
 #include "skin_elements.h"
 #include "skin_lua.h"
 #include "skin_system.h"
@@ -123,6 +126,7 @@ bool SkinView::load(const std::string& folder, const std::string& name, std::str
         beatSeen_.fill(-1e9);
         segsKnown_ = false;
         segs_ = port_.segments();
+        findUiFont(file.u8string());
         size_t logBefore = log_.size();
         document_ = context_->LoadDocument(file.u8string());
         if (document_) {
@@ -167,6 +171,13 @@ bool SkinView::load(const std::string& folder, const std::string& name, std::str
                 if (editorVisible_) { editorDoc_->Show(); dispatchShow(editorDoc_); }
             }
         }
+        // v0.9.0: the library controls moved to the plugin window (rack legends EDITOR and SAVE open it).
+        for (LegendElement* l : legends_)
+            if (l->action() == "library") {
+                addLog("warning: legend action 'library' is obsolete, use action='rack' value='EDITOR' / 'SAVE'");
+                break;
+            }
+        applyRackLegends();
         nextWake_ = 0;                                   // draw the new document at once
         ok = true;
     });
@@ -183,6 +194,7 @@ void SkinView::dispatchShow(Rml::Element* e) {
 }
 
 void SkinView::unload() {
+    uiFont_.clear();
     drag_ = nullptr;
     if (mousePressed_) { mousePressed_->mouseRelease(); mousePressed_ = nullptr; }
     for (int raw : std::set<int>(held_)) setHeld(raw, false);
@@ -226,6 +238,7 @@ void SkinView::update(double now) {
                 if (port_.takeLearnedKnob(cc, raw)) controlMoved(cc, raw);
             }
             if (applyLedClasses()) changed_ = true;
+            if (applyRackLegends()) changed_ = true;
             if (applyEditor()) changed_ = true;
             // Frame events only for a handler with code in it: an absent, empty or blank onframe asks for no frames.
             const std::string onframe = document_->GetAttribute<Rml::String>("onframe", "");
@@ -433,7 +446,7 @@ void SkinView::mouseDown(int button, int mods, int clicks) {
             } else if (PButtonElement* b = findUp<PButtonElement>(hover)) {
                 b->mouseDown((mods & ModAlt) != 0);
             } else if (LegendElement* l = findUp<LegendElement>(hover)) {
-                if (l->clickable() && port_.editor()) port_.editor()->editorCommand(l->action(), l->value());
+                if (l->clickable()) legendClick(l->action(), l->value());
             } else if (const EditorSpan* sp = spanAt(hover); sp && port_.editor()) {
                 const std::string ref = std::to_string(sp->ref);
                 if (sp->pick) port_.editor()->editorCommand("pick", ref);
@@ -597,10 +610,83 @@ void legendState(const EditorState& s, const std::string& action, const std::str
     else if (action == "toggle_follow") { avail = true; lit = s.follow; }
     else if (action == "indicator") { lit = (value == "DATA" && s.data) || (value == "EDITED" && s.edited); }
     else if (action == "label") { lit = s.pages > 0; }
-    else if (action == "library") {                  // LIBRARY, SAVE, IMPORT, EXPORT, FOLDER: from any page
-        avail = s.areas.count("LIBRARY") != 0;
-        lit = avail && value == "LIBRARY" && s.open && s.area == "LIBRARY";   // the actions are never lit
+    // "library" (v0.8.3-v0.8.7): obsolete, never lit or available; "rack": rackLegendState.
+}
+
+void rackLegendState(const std::string& value, bool hasEditor, bool editorShown, bool& lit, bool& avail) {
+    lit = avail = false;
+    if (value == "EDITOR") { avail = hasEditor; lit = avail && editorShown; }
+    else if (value == "SAVE") avail = true;
+}
+
+std::string uiFontName(const std::string& rmlText) {
+    static const std::regex meta(R"re(<meta\s([^>]*)>)re", std::regex::icase);
+    static const std::regex attr(R"re(([A-Za-z_:-]+)\s*=\s*("([^"]*)"|'([^']*)'))re");
+    std::string lower = rmlText;                     // the head only (a regex over a whole document could recurse deep)
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](char c) { return char(std::tolower(uint8_t(c))); });
+    const size_t h0 = lower.find("<head"), h1 = h0 == std::string::npos ? h0 : lower.find("</head", h0);
+    if (h1 == std::string::npos) return {};
+    const std::string inHead = rmlText.substr(h0, h1 - h0);
+    for (std::sregex_iterator m(inHead.begin(), inHead.end(), meta), end; m != end; ++m) {
+        const std::string attrs = (*m)[1].str();
+        std::string name, content;
+        for (std::sregex_iterator a(attrs.begin(), attrs.end(), attr); a != end; ++a) {
+            std::string key = (*a)[1].str();
+            std::transform(key.begin(), key.end(), key.begin(), [](char c) { return char(std::tolower(uint8_t(c))); });
+            const std::string val = (*a)[3].matched ? (*a)[3].str() : (*a)[4].str();
+            if (key == "name") name = val;
+            else if (key == "content") content = val;
+        }
+        std::transform(name.begin(), name.end(), name.begin(), [](char c) { return char(std::tolower(uint8_t(c))); });
+        if (name != "ui-font") continue;
+        const size_t b = content.find_first_not_of(" \t"), e = content.find_last_not_of(" \t");
+        return b == std::string::npos ? std::string() : content.substr(b, e - b + 1);
     }
+    return {};
+}
+
+// The skin's UI font: a file in the skin folder (never outside it). Missing: one log line; the plugin uses its default.
+void SkinView::findUiFont(const std::string& rmlFile) {
+    uiFont_.clear();
+    std::ifstream in(fs::u8path(rmlFile), std::ios::binary);
+    std::stringstream ss;
+    ss << in.rdbuf();
+    const std::string name = uiFontName(ss.str());
+    if (name.empty()) return;
+    const fs::path dir = fs::u8path(folder_);
+    const fs::path file = (dir / fs::u8path(name)).lexically_normal();
+    const std::string rel = file.lexically_relative(dir).generic_u8string();
+    std::error_code ec;
+    if (!fs::u8path(name).is_absolute() && !rel.empty() && rel.rfind("..", 0) != 0 && fs::is_regular_file(file, ec)) {
+        uiFont_ = file.u8string();
+        return;
+    }
+    addLog("warning: ui-font \"" + name + "\" is not in the skin folder; the plugin window and menus use the default font");
+}
+
+void SkinView::legendClick(const std::string& action, const std::string& value) {
+    if (action == "rack") {
+        bool lit, avail;
+        rackLegendState(value, hasEditor(), editorVisible_, lit, avail);
+        if (avail) port_.rackCommand(value);
+    } else if (action != "library" && port_.editor()) {
+        port_.editor()->editorCommand(action, value);
+    }
+}
+
+// Rack legends follow the skin (its editor unit and whether it shows), not the editor's state: always applied, editor
+// port or not. The obsolete library legends are made unavailable.
+bool SkinView::applyRackLegends() {
+    bool changed = false;
+    for (LegendElement* l : legends_) {
+        if (l->action() != "rack" && l->action() != "library") continue;
+        if (l->action() == "rack" && !editorVisible_ && editorDoc_ && l->GetOwnerDocument() == editorDoc_) continue;
+        bool lit = false, avail = false;
+        if (l->action() == "rack") rackLegendState(l->value(), hasEditor(), editorDoc_ && editorVisible_, lit, avail);
+        if (l->IsClassSet("lit") != lit) { l->SetClass("lit", lit); changed = true; }
+        if (l->IsClassSet("avail") != avail) { l->SetClass("avail", avail); changed = true; }
+    }
+    return changed;
 }
 
 void SkinView::setEditorVisible(bool on) {
@@ -615,12 +701,13 @@ void SkinView::setEditorVisible(bool on) {
     });
 }
 
-// The editor unit's glass and legends while it is shown; legends in the main document (the library controls) always.
+// The editor unit's glass and legends while it is shown; editor legends in the main document always.
 bool SkinView::applyEditor() {
     EditorPort* ep = port_.editor();
     const bool unit = editorDoc_ && editorVisible_;
+    auto editorLegend = [](const LegendElement* l) { return l->action() != "rack" && l->action() != "library"; };
     bool mainLegends = false;
-    for (LegendElement* l : legends_) mainLegends = mainLegends || l->GetOwnerDocument() != editorDoc_;
+    for (LegendElement* l : legends_) mainLegends = mainLegends || (editorLegend(l) && l->GetOwnerDocument() != editorDoc_);
     if (!ep || (!unit && !mainLegends)) { editorFocus_ = false; return false; }
     const uint32_t serial = ep->editorSerial();
     auto blinkPhase = [&] { return (int(std::floor(now_ * 2 * kFlashHz)) & 1) != 0; };
@@ -641,10 +728,9 @@ bool SkinView::applyEditor() {
                   st.focusRow == row ? st.focusLen : 0, blinkOff);
     }
     for (LegendElement* l : legends_) {
-        if (!unit && l->GetOwnerDocument() == editorDoc_) continue;   // hidden with the unit
+        if (!editorLegend(l) || (!unit && l->GetOwnerDocument() == editorDoc_)) continue;   // rack; hidden with the unit
         bool lit, avail;
         legendState(st, l->action(), l->value(), lit, avail);
-        if (l->action() == "library" && l->value() == "LIBRARY" && !editorDoc_) avail = lit = false;   // no unit to open
         if (l->IsClassSet("lit") != lit) l->SetClass("lit", lit);
         if (l->IsClassSet("avail") != avail) l->SetClass("avail", avail);
     }

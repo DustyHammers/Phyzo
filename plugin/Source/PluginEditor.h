@@ -1,9 +1,13 @@
-// The plugin window: shows the chosen skin (a file skin from ~/Documents/Phyzo/skins/, drawn by RmlUi, or the
-// compiled-in "Built-in" skin) at the chosen zoom, and the right-click menu (skin, reload, zoom, developer).
+// The plugin's editor: shows the chosen skin (a file skin from ~/Documents/Phyzo/skins/, drawn by RmlUi, or the
+// compiled-in "Built-in" skin) at the chosen zoom, and over it, when opened, the plugin window (PhyzoWindow: SYSTEM,
+// LIBRARY, SKIN, MIDI). Right-click: on a learnable control MIDI learn's menu, on an edited editor value its Revert,
+// each with "Open window..."; anywhere else the window opens.
 #pragma once
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <memory>
 #include "PluginProcessor.h"
+#include "PhyzoWindow.h"
+#include "ui/Widgets.h"
 
 class RmlSkinComponent;
 
@@ -68,17 +72,44 @@ public:
     // Tests: the usable screen area the window must fit (F-32); empty: the display the window is on.
     static juce::Rectangle<int> screenAreaForTest;
     float maxScale() const;                          // the largest scale that fits the screen (50-200 %)
-    // The preset library's controls (message thread): LIBRARY with the editor unit closed opens it; EXPORT's menu.
-    void openEditorUnit();
-    void showExportMenu();
-    // MIDI learn's messages while the editor unit is closed: the window's banner, 3 s.
+    // MIDI learn's and the library's messages: the window's footer while it is open, else the banner (3 s).
     void showLearnMessage(const juce::String& text);
-    // MIDI > Sync to host tempo (F-68): Off, While playing, Always; the current one ticked.
-    static juce::PopupMenu syncMenu(PhyzoProcessor& proc);
+
+    // ---- the plugin window (v0.9.0)
+    void openWindow(int tab);                        // PhyzoWindow::Tab; opened if closed
+    void closeWindow();
+    bool windowOpen() const { return window_ != nullptr && window_->isVisible(); }
+    PhyzoWindow* window() { return windowOpen() ? window_.get() : nullptr; }
+    // A rack legend (skin): EDITOR shows or hides the editor unit, SAVE opens the window's Save with a name.
+    void rackCommand(const juce::String& value);
+    // A right-click outside the editor unit's values: MIDI learn's menu for a learnable panel control (0x100 | a button
+    // id, or a knob's cc), else the window on SYSTEM.
+    void rightClick(int control);
+    // The right-click menu for a learnable panel control or an editor value: MIDI learn's items or the value's Revert,
+    // then "Open window...". Empty: no menu (the window opens instead).
+    juce::PopupMenu menuFor(int control, int valueRef);
+    void showThemedMenu(juce::PopupMenu& menu);
+    // What the window's tabs drive (the old right-click menu's Skin, Reload, Zoom, Editor, Developer).
+    juce::StringArray skinNames() const;             // discovered file skins
+    const juce::String& currentSkin() const { return current_; }
+    void chooseSkin(const juce::String& name);
+    void reloadSkin();
+    bool fileSkin() const { return rml_ != nullptr; }
+    bool hasEditorUnit() const;
+    bool editorUnitShown() const { return editorShown_; }
+    void setEditorUnit(bool on);
+    float scale() const { return scale_; }
+    void setZoomStep(int percent);
+    bool debuggerOn() const { return debugger_; }
+    void setDebugger(bool on);
+    // The window's and the menus' theme: the skin's UI font (<meta name="ui-font">), else JUCE's default sans.
+    const ui::Theme& theme() const { return theme_; }
+    ui::MenuLookAndFeel& menuLookAndFeel() { return menus_; }
 
 private:
-    juce::StringArray skinNames() const;             // discovered file skins
     juce::File skinFolder(const juce::String& name) const;
+    void placeWindow();                              // the window over the whole plugin area, on top
+    void loadUiFont(const juce::String& fontFile);   // the skin's ui-font (empty: none); a font JUCE cannot read is logged
     void showSkin(const juce::String& name, const juce::String& notice = {});
     void showBuiltIn(const juce::String& notice);
     void skinFailed(const juce::String& name, const juce::String& reason);
@@ -86,18 +117,18 @@ private:
     void cornerResize(int phase, juce::Point<int> offset);    // window = 100 % size (winscale) x scale (0.5-2.0)
     juce::Point<int> baseSize() const;               // 1795 x 848 for file skins (+ 394 with the editor unit), Built-in's own size
     void updateEditorUnit();                         // shows the editor unit if the project wants it and the skin has one
-    void showMenu(const juce::MouseEvent&, int control = -1);   // control: MIDI learn's items on top (-1: none)
-    // The plugin menu; on top: MIDI learn's items for a panel control, or Revert for an edited editor value (-1: none).
-    void openMenu(int control, int valueRef);
+    void showMenu(const juce::MouseEvent&, int control = -1);   // control: a learnable panel control (-1: none)
     void addLearnItems(juce::PopupMenu& menu, int control);
-    juce::PopupMenu learnListMenu();                 // MIDI > MIDI learn
-    bool showValueMenu(int ref);                     // an editor value: the plugin menu, Revert on top if it was edited
+    bool showValueMenu(int ref);                     // an editor value: its Revert if it was edited, else the window
     bool editorKey(const juce::KeyPress& k);         // the editor unit's focused value and typed entry
     void timerCallback() override;                   // missing-ROM message on file skins; saves the size
 
     PhyzoProcessor& proc;
+    ui::Theme theme_;
+    ui::MenuLookAndFeel menus_{theme_};
     std::unique_ptr<BuiltinView> builtin_;
     std::unique_ptr<RmlSkinComponent> rml_;
+    std::unique_ptr<PhyzoWindow> window_;            // made when first opened; hidden when closed
     juce::String current_;                           // the skin being shown
     float scale_ = 1.0f;
     bool editorShown_ = false;                       // the editor unit is attached below the panel

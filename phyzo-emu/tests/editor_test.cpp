@@ -458,6 +458,11 @@ void testController() {
     editor::View v = c.view();
     CHECK(v.area == "SYSTEM" && v.pages == 2 && v.page == 1 && !v.prev && v.next);
     CHECK((v.areas == std::set<std::string>{"SYSTEM", "PRESETS", "COMMON", "SOUND", "OSC"}));   // no ARP: these tables have no arp texts
+    // The library moved to the plugin window (v0.9.0): no LIBRARY area, and its old commands do nothing.
+    for (const char* t : {"LIBRARY", "SAVE", "IMPORT", "EXPORT", "EXPORT B1", "FOLDER"}) c.command("library", t);
+    c.command("area", "LIBRARY");
+    c.tick(1);
+    CHECK(link.sent.empty() && c.view().area == "SYSTEM");
 
     // Open: the visible page is read once, and set as the standing read.
     c.setOpen(true);

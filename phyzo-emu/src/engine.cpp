@@ -462,6 +462,7 @@ void Engine::install(std::unique_ptr<Machine> m, uint64_t generation, uint8_t ra
         std::lock_guard<std::mutex> lk(mtx_);
         if (generation != generation_.load()) return;           // a newer job replaced this one
         live_.swap(m);
+        libInFlight_ = false;                            // a library message in the old machine's port went with it
         rawPlus_ = rawPlus; rawMinus_ = rawMinus;
         rawPlusPub_ = rawPlus; rawMinusPub_ = rawMinus;
         publishPositions(*live_);
@@ -568,6 +569,7 @@ void Engine::process(float* left, float* right, int n, const MidiEvent* events, 
         return at < m.cycles() ? m.cycles() : at;
     };
     if (vin_.peekSize()) takeVirtualIn(m, blockStart(), editor);
+    if (libIn_.peekSize() || libInFlight_.load(std::memory_order_relaxed)) takeLibraryIn(m, blockStart(), editor);
     // Editor: whole messages after the virtual port's, paced like them (nothing while it is closed).
     if (edOut_.peekSize()) {
         if (!editor) {
@@ -667,6 +669,35 @@ void Engine::takeVirtualIn(Machine& m, uint64_t at, bool editor) {
     }
 }
 
+// Under mtx_: the window's messages, each whole, once the MIDI port's input queue has room for all of it (made
+// beforehand: no allocation); then watches the OS read the last one's last byte.
+void Engine::takeLibraryIn(Machine& m, uint64_t at, bool editor) {
+    const SerialChannel& port = m.serial.ch_[1];
+    while (const size_t sz = libIn_.peekSize()) {
+        const size_t backlog = m.serial.rxBacklog(1);
+        if (backlog + sz > Serial::kMidiRxRoom) break;
+        size_t k = 0;
+        libIn_.pop([&](uint8_t b) { if (k < scratch_.size()) scratch_[k++] = b; });
+        m.serial.queueRx(1, scratch_.data(), k, at);
+        libDoneAt_ = port.rxBytes + backlog + k;
+        libInFlight_.store(true, std::memory_order_release);
+        libTaken_.fetch_add(1, std::memory_order_release);
+        if (edproto::isPresetTrigger(scratch_.data(), k)) {
+            ++presetTriggers_;
+            if (editor) queueStandingRead(m, at);    // directly behind it: the editor's read sees the new preset
+        }
+    }
+    if (libInFlight_.load(std::memory_order_relaxed) && port.rxBytes >= libDoneAt_) libInFlight_.store(false, std::memory_order_release);
+}
+
+bool Engine::libraryInput(const uint8_t* m, size_t n) {
+    if (n == 0 || n > kLibraryMessageMax) return false;
+    std::lock_guard<std::mutex> lk(libInMtx_);
+    if (!libIn_.push(m, n)) return false;
+    libPushed_.fetch_add(1, std::memory_order_release);
+    return true;
+}
+
 // Under mtx_, editor open: its waiting messages after the virtual port's, paced like them.
 void Engine::takeEditorOut(Machine& m, uint64_t at) {
     while (const size_t sz = edOut_.peekSize()) {
@@ -751,6 +782,7 @@ bool Engine::idleSlice(int64_t ms) {
     sendControls(m);
     const bool editor = editorOpen_.load(std::memory_order_relaxed);
     if (vin_.peekSize()) takeVirtualIn(m, m.cycles(), editor);
+    if (libIn_.peekSize() || libInFlight_.load(std::memory_order_relaxed)) takeLibraryIn(m, m.cycles(), editor);
     if (edOut_.peekSize()) {
         if (!editor) { while (edOut_.peekSize()) edOut_.pop([](uint8_t) {}); }
         else takeEditorOut(m, m.cycles());

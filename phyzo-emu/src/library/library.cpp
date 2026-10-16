@@ -159,6 +159,19 @@ std::string factoryFile(const std::string& libraryDir, int bank) {
     return libraryDir + "/Factory/Factory Bank " + std::to_string(bank + 1) + ".syx";
 }
 std::string singlesDir(const std::string& libraryDir) { return libraryDir + "/Singles"; }
+std::string backupsDir(const std::string& libraryDir) { return libraryDir + "/Backups"; }
+
+std::string backupName(int bank, std::time_t when) {
+    std::tm t{};
+#ifdef _WIN32
+    localtime_s(&t, &when);
+#else
+    localtime_r(&when, &t);
+#endif
+    char b[64];
+    std::snprintf(b, sizeof b, "Bank %d %04d-%02d-%02d %02d%02d", bank + 1, t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min);
+    return b;
+}
 
 Scan scan(const std::string& libraryDir) {
     Scan s;
@@ -175,9 +188,13 @@ Scan scan(const std::string& libraryDir) {
     });
     const fs::path f1 = fs::path(factoryFile(libraryDir, 0)).lexically_normal(), f2 = fs::path(factoryFile(libraryDir, 1)).lexically_normal();
     Source factory[2];
-    for (int k = 0; k < 2; ++k) { factory[k].type = Source::Type::Factory; factory[k].title = kFactoryTitles[k]; factory[k].factoryBank = k; }
-    std::vector<Source> files;
-    Source singles; singles.type = Source::Type::Singles; singles.title = kSinglesTitle;
+    for (int k = 0; k < 2; ++k) {
+        factory[k].type = Source::Type::Factory; factory[k].group = Source::Group::Factory; factory[k].title = kFactoryTitles[k];
+        factory[k].label = fs::path(factoryFile(libraryDir, k)).stem().string(); factory[k].factoryBank = k;
+    }
+    std::vector<Source> files, backups;
+    Source singles; singles.type = Source::Type::Singles; singles.group = Source::Group::Singles; singles.title = kSinglesTitle;
+    singles.label = "Singles";
     for (const fs::path& p : paths) {
         std::vector<uint8_t> bytes;
         if (!readFile(p.string(), bytes)) continue;
@@ -189,20 +206,29 @@ Scan scan(const std::string& libraryDir) {
         f.md5 = md5Hex(bytes.data(), bytes.size());
         f.presets = sp.presetCount();
         f.single = sp.single();
+        f.oneBank = sp.banks.size() == 1 && sp.presets.empty();
         f.other = sp.other; f.truncated = sp.truncated;
         const int i = int(s.files.size());
         s.files.push_back(f);
         const fs::path norm = p.lexically_normal();
+        const std::string relStem = (fs::path(f.rel).parent_path() / fs::path(f.rel).stem()).generic_string();
+        const bool backup = lower(f.rel).rfind("backups/", 0) == 0;
         if (sp.empty()) s.bad.push_back(i);
         else if (norm == f1 || norm == f2) factory[norm == f1 ? 0 : 1].files.push_back(i);
-        else if (f.single) singles.files.push_back(i);
-        else { Source src; src.title = f.title; src.files.push_back(i); files.push_back(src); }
+        else if (backup) {
+            Source src; src.group = Source::Group::Backups; src.title = f.title; src.label = relStem.substr(8); src.files.push_back(i);
+            backups.push_back(src);
+        } else if (f.single) singles.files.push_back(i);
+        else { Source src; src.title = f.title; src.label = relStem; src.files.push_back(i); files.push_back(src); }
     }
-    std::stable_sort(files.begin(), files.end(), [](const Source& a, const Source& b) { return lower(a.title) < lower(b.title); });
+    auto byLabel = [](const Source& a, const Source& b) { return lower(a.label) < lower(b.label); };
+    std::stable_sort(files.begin(), files.end(), byLabel);
+    std::stable_sort(backups.begin(), backups.end(), byLabel);
     s.sources.push_back(factory[0]);
     s.sources.push_back(factory[1]);
     s.sources.insert(s.sources.end(), files.begin(), files.end());
     if (!singles.files.empty()) s.sources.push_back(singles);
+    s.sources.insert(s.sources.end(), backups.begin(), backups.end());
     return s;
 }
 

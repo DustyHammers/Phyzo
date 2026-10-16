@@ -89,20 +89,27 @@ The plugin window shows a **skin**. Your skins live in **Documents > Phyzo > ski
 folder `rack` with `rack.rml` in it is the skin "rack" (with its .rcss, .lua, images and fonts). The compiled-in skin
 **Built-in** is always available. Phyzo starts with "rack" if it is there, otherwise with Built-in.
 
-Right-click anywhere in the window for the menu (the same in every skin):
+**The Phyzo window.** Right-click the background of the panel (anywhere that is not a knob or a panel button) to open
+the Phyzo window over the panel. It has four tabs, **SYSTEM · LIBRARY · SKIN · MIDI**; **Esc** or the round **✕**
+at the top right closes it. Its line at the bottom (the footer) shows messages, questions and progress. Its text uses
+the skin's own UI font when the skin names one, otherwise the system's.
 
-- **Skin**: Built-in, then every skin in your skins folder (the current one is ticked).
-- **Reload skin** (or press **F5** with the window focused): reads the skin again from disk after you edit it.
-- **Zoom**: 50, 75, 100, 125, 133 (full size), 150, 175 or 200 % (the current size is ticked). You can also drag the
-  window's bottom-right corner (the small grip) to any size from 50 to 200 %; the skin keeps its proportions. At
-  133 % a file skin's art is shown at its native resolution; above that it is enlarged beyond it. 100 % is the size
-  that used to be called 75 %; projects saved with the old sizes reopen at the same size on screen. The Built-in
-  skin's sizes are unchanged. The window never gets larger than your screen: sizes that don't fit are greyed out,
-  the corner drag stops at the screen's edge, and a project saved at a size that doesn't fit (for example with the
-  editor unit open) opens at the largest size that does. On a 1080-point display the window with the editor unit fits
-  up to about 110 %.
-- **Editor**: attaches the editor unit below the panel (the window grows; the same item closes it; remembered per
-  project). Available when the skin has an editor unit (`<name>-editor.rml`); greyed out otherwise.
+- **SYSTEM**: this Phyzo (version, plugin format), whether the OS and wave ROMs were found, the data folder
+  (**Show** opens it) and the startup log `Phyzo-log.txt` (**Show**). Developer: **RmlUi debugger** (file skins) and
+  **Write skin log**.
+- **SKIN**: the skins (Built-in, then every skin in your skins folder; click one to switch), **Reload skin (F5)** (or
+  press **F5**: reads the skin again from disk after you edit it), **Show skins folder**, **Editor unit** (attaches the
+  editor unit below the panel; the window grows; remembered per project; only for skins that have one) and **Zoom**:
+  50, 75, 100, 125, 133 (full size), 150, 175 or 200 %. You can also drag the window's bottom-right corner (the small
+  grip) to any size from 50 to 200 %; the skin keeps its proportions. At 133 % a file skin's art is shown at its native
+  resolution; above that it is enlarged beyond it. 100 % is the size that used to be called 75 %; projects saved with
+  the old sizes reopen at the same size on screen. The Built-in skin's sizes are unchanged. The window never gets
+  larger than your screen: sizes that don't fit are greyed out, the corner drag stops at the screen's edge, and a
+  project saved at a size that doesn't fit (for example with the editor unit open) opens at the largest size that does.
+  On a 1080-point display the window with the editor unit fits up to about 110 %.
+- **LIBRARY**: see **Preset library** below; **MIDI**: see section 8.
+
+The Phyzo window never changes the plugin's size. With the small Built-in skin it is drawn smaller to fit.
 
 In the editor unit:
 
@@ -112,8 +119,8 @@ In the editor unit:
 - **Edit a value**: click and hold it, then drag up or down (one step per small movement; hold Shift for fine steps).
   **Double-click** it to type a value (Enter sends, Esc cancels): a number, or a named value or the start of it (`AP06`,
   `Snd`, `PSEt`, an effect's name; a wave by its number, optionally followed by the start of its name, e.g. `13 bel`).
-  **Right-click** it for the usual menu; if you edited that value since the preset loaded, **Revert** (back to the
-  value before your edits) sits on top. With a
+  **Right-click** it: if you edited that value since the preset loaded, **Revert** (back to the value before your
+  edits), then **Open window…**; otherwise the Phyzo window opens. With a
   value selected (it blinks), the arrow keys move to the next value and **+** / **-** step it. The mouse wheel never
   changes values.
 - Values that can't be edited yet ignore the mouse. **EDITED** lights after an edit until another preset is loaded.
@@ -127,12 +134,12 @@ In the editor unit:
   message shifts the arp's timing very slightly, as on the hardware.
 - **PRESETS**: the current preset is marked (it blinks); click a preset's name to load it.
 - The synth's main panel is never changed by the editor; save the preset on the panel as usual to keep your edits.
-- **Developer > RmlUi debugger**: RmlUi's inspector, for working on a skin.
+- Skins can also have an **EDITOR** spot on the rack that shows or hides the editor unit.
 
 The skin is a global setting (every Phyzo window and project). The window size is remembered twice: globally, for
 new instances, and in each project, so a project reopens at the size it was saved with.
 If the chosen skin is missing or cannot be loaded, Phyzo shows "rack" instead (then Built-in) with a message saying
-why. With **Developer > Write skin log** on (off by default), skin messages and script errors are written to
+why. With **Write skin log** on (SYSTEM tab, off by default), skin messages and script errors are written to
 `~/Documents/Phyzo/skin-log.txt`. How to write a skin:
 `docs/SKINS.md` in the repository.
 
@@ -171,27 +178,38 @@ only when it starts), so add a new Phyzo to save presets.
 A new Phyzo takes about 0.2 s longer to start than in 0.8.2, because the synth indexes its user memory, as a new unit
 does. So LFO, arpeggiator and random timings differ from 0.8.2 renders; every preset and sound is identical.
 
-**Preset library** (five controls on the rack: LIBRARY, SAVE, IMPORT, EXPORT, FOLDER; see `docs/editor/LIBRARY.md`).
-The library is the `.syx` files in **Documents > Phyzo > Library** (any subfolders).
-- **LIBRARY:** shows the list of sources in the editor unit (opening the unit if it is closed): the factory banks, your
-  bank files and SINGLES (every file with one preset). Click a source to see its presets; press LIBRARY again to go
-  back to the list.
-- **A preset:** click it to hear it. It plays in **Compare**, as a preset sent to the synth over MIDI does, and nothing
-  in the synth's memory changes. Press **Save** on the panel to keep it in a slot.
-- **SAVE, IMPORT, EXPORT and FOLDER** work from any editor page; their messages show on the glass's last row for
-  3 seconds.
-  - **SAVE:** writes the current stored preset to `Library/Singles/<name>.syx`. It refuses while the Compare LED is lit
-    (save on the panel first).
-  - **EXPORT:** a menu, Bank 1 (presets 1-32) or Bank 2 (presets 33-64); writes that bank, including your panel saves,
-    to a file you choose.
-  - **IMPORT:** copies `.syx` files into the library.
-  - **FOLDER:** opens the Library folder.
-- **The factory bank files:** the first time the area opens, Phyzo makes them once from your own OS (about 2 minutes,
-  reading both banks included; the factory rows show the progress) in `Library/Factory/`. They're made from your OS, so don't share them.
+**Preset library** (the Phyzo window's **LIBRARY** tab; details in `docs/editor/LIBRARY.md`). The library is the
+`.syx` files in **Documents > Phyzo > Library** (any subfolders). Opening the tab reads the folder again.
+- **FILES** (left): FACTORY (the two factory banks), BANKS (your bank files; a file in a subfolder as `folder/name`),
+  SINGLES (every file with one preset) and BACKUPS (shown once there are any), each with its number of presets.
+  **Import…** copies `.syx` files into the library; **Folder** opens it in Finder. Right-click a bank or backup:
+  **Rename…** (type the new name, Enter; Esc cancels), **Delete** (to the Trash, after the footer asks), **Show in
+  Finder**.
+- **PRESETS** (middle): the chosen file's presets. Click one to hear it: it plays in **Compare**, as a preset sent to
+  the synth over MIDI does, and nothing in the synth's memory changes (a small blue dot marks it while the Compare LED
+  is lit). Press **Save** on the panel to keep it in a slot. Right-click a single for Rename…, Delete, Show in Finder.
+- **MEMORY** (right): the synth's Bank 1 (presets 1–32) and Bank 2 (33–64). The red dot is lit for the bank holding the
+  preset that is playing; next to **Bank N** is the file you last loaded into that bank in this project.
+  - **Load…**: choose a bank file (or **Other file…**). The footer asks first; if the playing preset is in that bank,
+    it says that preset will change and unsaved edits on it are lost, and that MIDI input waits until the load is
+    finished (about 35 s). Phyzo first saves the bank as it is to
+    `Library/Backups/Bank N <date> <time>.syx`, then sends the file to the synth (about 33 seconds, as over a MIDI
+    cable; you can keep playing). **Cancel** works while the backup is made. When the synth has the new names, the
+    footer says `LOADED … INTO BANK N`.
+  - **Save as file…**: writes that bank, including your panel saves, to a file you choose.
+- **Save a preset with a name**: click the skin's **SAVE** spot on the rack. The window opens on LIBRARY and the footer
+  asks `Save Pnn to Singles as [name] .syx` with the preset's own name filled in; type a name and press Enter (or
+  **Save**); Esc cancels. It refuses while the Compare LED is lit (save on the panel first). A file is never
+  overwritten (` 2` is added).
+- Save, Save as file and Load also work while the panel shows an effect, reverb or tempo page: the hidden copy of the
+  synth that does the work presses Bank once to get back to the preset display. Your own panel is never touched.
+- **The factory bank files:** the first time the tab opens, Phyzo makes them once from your own OS (about 2 minutes;
+  the factory rows and the footer show the progress) in `Library/Factory/`. They're made from your OS, so don't share
+  them.
 - **Reading new files:** a new or changed file is read once by a hidden copy of the synth (a bank takes about half a
-  minute); the result is kept in `cache/library/`.
-- **Skin:** your skin's main document needs the five controls as empty legends over the art's lettering
-  (`docs/editor/LIBRARY.md`, "Skin").
+  minute); the result is kept in `cache/library/`. Renaming a file doesn't read it again.
+- **Skin:** a skin reaches the library with its **SAVE** and **EDITOR** spots (`docs/editor/LIBRARY.md`, "Skin");
+  everything else is in the window.
 
 The first time Phyzo starts with your OS, it makes the factory presets once from the OS itself (a few extra seconds
 while it boots) and keeps them in **Documents > Phyzo > cache**. That file is made from your
@@ -207,18 +225,20 @@ dumps). MIDI from REAPER and from the virtual port are merged message by message
 The synth's MIDI output also goes to REAPER's MIDI out of the track when **Send MIDI to host** is on (off by default).
 VST3 does not carry SysEx reliably; use the virtual port or the AU version for dumps.
 
-Both are switched in the right-click menu under **MIDI**: **Virtual port "Phyzo"** (the name shows which port this
+Both are switched in the Phyzo window's **MIDI** tab: **Virtual port "Phyzo"** (the name shows which port this
 window has) and **Send MIDI to host**. They are remembered for all projects and apply to every open Phyzo.
 
 **MIDI learn** (play the panel from a hardware controller): right-click a knob or a panel button, choose **MIDI
 learn**, then move a control on your controller (Esc cancels). Or choose **Set CC** for a CC number in two clicks.
+(Right-click anywhere else opens the Phyzo window.)
 Learned CCs drive that panel control exactly as the mouse does and no longer reach the synth as MIDI; everything else
 from REAPER plays as before. Buttons need a controller button that sends both press and release (momentary); a
-message says so if it sends only one. The bindings are saved with the project; **MIDI > MIDI learn** lists them, and
-**Save as default for new instances** keeps them for new Phyzo instances. They apply only to MIDI from REAPER, not to
+message says so if it sends only one. The bindings are saved with the project; the **MIDI** tab lists them (control,
+MIDI, channel, **Forget**), **Save as default** keeps them for new Phyzo instances, **Clear default** and **Forget
+all** do what they say. They apply only to MIDI from REAPER, not to
 the virtual port. Details: `docs/MIDI_LEARN.md`.
 
-**Sync to host tempo** (right-click menu, **MIDI > Sync to host tempo**): Phyzo sends the synth MIDI clock at REAPER's
+**Sync to host tempo** (the **MIDI** tab): Phyzo sends the synth MIDI clock at REAPER's
 tempo, so the arpeggiator, tempo-synced LFOs and noise, and tempo-based effects follow the project. **While playing**
 (the default) sends clock only while the transport plays: when you stop, the synth keeps the last tempo and its own
 panel Tempo works again. **Always** sends clock whenever REAPER has a tempo, playing or not. **Off** sends none (as

@@ -19,7 +19,8 @@ that also have a panel control appear here too. The editor talks to the OS the w
 parameter messages and SysEx), so the OS itself holds and applies every edit, exactly as on hardware.
 
 ## User interface
-- **Opening:** the right-click menu item "Editor" (not by clicking the panel). It opens as a second rack unit attached
+- **Opening:** the right-click menu item "Editor" (not by clicking the panel; since v0.9.0 the **Editor unit** switch in
+  the plugin window's SKIN tab, or a skin's `rack` legend `EDITOR`). It opens as a second rack unit attached
   below the panel; the window grows by 340 dp (848 → 1188 dp at 100 %), resizing keeps the proportions (F-24). Closing
   (the same menu item) restores the original size. Open/closed state remembered per project. The editor unit is
   1795 × 394 dp; exact positions in the layout table delivered with the skin art.
@@ -102,7 +103,8 @@ jumping). That is the intended panel behaviour and the editor never changes it.
 - The mouse wheel never changes values.
 - Double-click: typed entry (Enter sends, Esc cancels): a number, or a value list entry's text or its start. Right-click:
   the plugin menu, with Revert (to the value before the edits) on top when the value was edited (v0.8.4.1, F-56: the
-  value or name list is no longer shown).
+  value or name list is no longer shown; v0.9.0: Revert, then "Open window…"; a value with nothing to revert opens the
+  plugin window).
   Arrow keys move the focus, +/- step it.
 - Every edit: clamp to the field's range, send, read back, display what the OS holds.
 

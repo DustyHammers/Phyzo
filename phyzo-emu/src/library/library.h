@@ -4,9 +4,11 @@
 // <data folder>/Library/                 the user's .syx files, any subfolders
 // <data folder>/Library/Factory/         Factory Bank 1.syx, Factory Bank 2.syx (made from the user's own OS)
 // <data folder>/Library/Singles/         presets saved from the panel, single-preset imports
+// <data folder>/Library/Backups/         a bank as it was before a bank file was loaded over it (v0.9.0)
 // <data folder>/cache/library/<md5>.idx  the index of the file with that MD5
 #pragma once
 #include <cstdint>
+#include <ctime>
 #include <string>
 #include <vector>
 
@@ -47,23 +49,34 @@ constexpr const char* kFactoryTitles[2] = {"FACTORY BANK 1", "FACTORY BANK 2"};
 constexpr const char* kSinglesTitle = "SINGLES";
 std::string factoryFile(const std::string& libraryDir, int bank);   // Factory/Factory Bank <bank + 1>.syx
 std::string singlesDir(const std::string& libraryDir);
+std::string backupsDir(const std::string& libraryDir);
+// A backup's file name without .syx: "Bank <bank + 1> YYYY-MM-DD HHMM" (local time).
+std::string backupName(int bank, std::time_t when);
 
 struct File {
     std::string path, rel, title;                  // full path, path inside Library/, file name without .syx
     std::string md5;
     size_t presets = 0;                            // single presets + 32 per bank
     bool single = false;                           // exactly one preset: listed under SINGLES
+    bool oneBank = false;                          // exactly one bank and no single preset: a bank load can take it
     int other = 0, truncated = 0;
 };
 struct Source {
     enum class Type { Factory, File, Singles } type = Type::File;
+    // The plugin window's groups (v0.9.0): the two factory files, other files (BANKS), every single-preset file
+    // (one SINGLES entry) and the files in Backups/.
+    enum class Group { Factory, Banks, Singles, Backups } group = Group::Banks;
     std::string title;
+    // What the window lists: the file name without .syx; a file in a subfolder as "folder/name" (in Backups/: from
+    // there); "Singles".
+    std::string label;
     int factoryBank = -1;                          // Factory: 0 or 1
     std::vector<int> files;                        // indexes into Scan::files (Factory: none while the file is missing)
 };
 struct Scan {
     std::vector<File> files;
-    std::vector<Source> sources;                   // FACTORY BANK 1, FACTORY BANK 2, files by title, SINGLES (if any)
+    // FACTORY BANK 1, FACTORY BANK 2, files by label, SINGLES (if any), backups by label (case ignored)
+    std::vector<Source> sources;
     std::vector<int> bad;                          // files with no preset or bank
 };
 // Reads every .syx file under `libraryDir` (subfolders included) and lists the sources. The factory sources are

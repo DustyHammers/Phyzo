@@ -1,6 +1,7 @@
 <rml>
 <head>
 	<title>Phyzo test skin</title>
+	<meta name="ui-font" content="MissingFont.ttf"/>
 	<link type="text/rcss" href="test.rcss"/>
 	<script src="test.lua"></script>
 </head>
@@ -19,6 +20,8 @@
 	<vfdigit id="d2" pos="2"/>
 	<vfdigit id="d3" pos="3"/>
 	<div id="shown" onshow="shownCount = (shownCount or 0) + 1"/>
+	<legend id="lRackEditor" action="rack" value="EDITOR"/>
+	<legend id="lRackSave" action="rack" value="SAVE"/>
 	<legend id="lLibMain" action="library" value="LIBRARY"/>
 </body>
 </rml>
