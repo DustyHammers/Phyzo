@@ -149,6 +149,16 @@ public:
     static constexpr size_t kMaxMidiMessage = size_t(512) << 10;   // longest SysEx passed whole (512 KB)
     static constexpr size_t kVirtualBacklog = 16384;   // virtual messages wait while this many port bytes are unread
 
+    // ---- the plugin window's bank load (v0.9.0, LIBRARY > Bank N > Load...). One whole message for the OS's MIDI
+    // input, as host SysEx goes in (message thread). The audio thread (or the idle runner) queues it whole at a block's
+    // start, once the MIDI port's input queue has room for all of it (Serial::kMidiRxRoom, made beforehand): nothing
+    // goes inside it, MIDI arriving meanwhile waits behind it as on a cable (a bank takes about 33 s), and the audio
+    // thread neither allocates nor waits. False (nothing queued): one is still on its way, it is larger than
+    // kLibraryMessageMax, or it is empty.
+    bool libraryInput(const uint8_t* m, size_t n);
+    bool libraryInputBusy() const { return libState_.load() != 0; }   // queued, or not yet all read by the OS
+    static constexpr size_t kLibraryMessageMax = 102420;
+
     // ---- editor (docs/editor/EDITOR_SPEC.md, "MIDI coexistence"). Nothing here runs while the editor is closed.
     // Message thread. Closing drops what the editor still had queued; replies already requested are still kept out
     // of the MIDI output when they arrive (each request until kEditorReplyTimeoutSamples).
@@ -224,6 +234,7 @@ private:
     void emitMidiOut(const uint8_t* d, size_t size, int offset, bool toHost = true);
     void takeVirtualIn(Machine& m, uint64_t at, bool editor);
     void takeEditorOut(Machine& m, uint64_t at);
+    void takeLibraryIn(Machine& m, uint64_t at, bool editor);
     void expireRequests(const Machine& m);
     void machineStopped(Machine& m, int stop);       // a Machine::Stop of Trap or HardStall: why, then Stopped
     void idleLoop();
@@ -279,6 +290,12 @@ private:
     size_t hostUsed_ = 0;
     std::atomic<bool> virtualOn_{false}, hostOutOn_{false};
     std::atomic<uint64_t> vinDropped_{0}, voutDropped_{0}, hostOutDropped_{0};
+
+    // the window's bank load (message thread -> audio thread)
+    std::mutex libInMtx_;
+    MessageRing libIn_{size_t(1) << 18};
+    std::atomic<int> libState_{0};                   // 0 none, 1 waiting in libIn_, 2 in the MIDI port's input queue
+    uint64_t libDoneAt_ = 0;                         // audio thread: the port's read count once its last byte is read
 
     // editor: requests in (message thread -> audio thread), replies out (audio thread -> message thread)
     std::atomic<bool> editorOpen_{false};

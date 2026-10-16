@@ -34,8 +34,15 @@ constexpr float kBodyWidthDp = 1795, kBodyHeightDp = 848;   // document body siz
 constexpr float kEditorHeightDp = 394;
 constexpr int kEditorDpPerStep = 4, kEditorFineDpPerStep = 16;   // dragging an editor value        // the editor unit (<name>-editor.rml), attached below the body
 
-// Whether a legend on the editor glass is lit (active) and whether clicking it leads somewhere.
+// Whether a legend on the editor glass is lit (active) and whether clicking it leads somewhere. Rack legends are
+// not editor legends (rackLegendState); the old `library` action is never lit or available.
 void legendState(const EditorState& s, const std::string& action, const std::string& value, bool& lit, bool& avail);
+// A rack legend (v0.9.0, action "rack", independent of the editor document): EDITOR is available when the skin has
+// an editor unit and lit while it shows; SAVE is always available and never lit; any other value: neither.
+void rackLegendState(const std::string& value, bool hasEditor, bool editorShown, bool& lit, bool& avail);
+// The UI font a skin names in its main document's head (v0.9.0): <meta name="ui-font" content="File.ttf"/>. Empty
+// when there is none.
+std::string uiFontName(const std::string& rmlText);
 
 // Modifier bits for input (same values as Rml::Input::KeyModifier).
 enum Modifier { ModCtrl = 1, ModShift = 2, ModAlt = 4, ModMeta = 8 };
@@ -58,6 +65,10 @@ public:
     bool editorVisible() const { return editorVisible_; }
     bool loaded() const { return document_ != nullptr; }
     const std::string& folder() const { return folder_; }
+    // The skin's UI font for the plugin window and menus (<meta name="ui-font">): the file's full path, or empty when
+    // the skin names none or the file is not in the skin folder (then one log line says so, and the plugin uses its
+    // default sans).
+    const std::string& uiFontFile() const { return uiFont_; }
 
     // Window size in physical pixels and the dp ratio (zoom x display scale).
     void setViewport(int widthPx, int heightPx, float dpRatio);
@@ -90,6 +101,10 @@ public:
     void releaseHeldButtons();                 // Esc
     void keyDown(int rmlKey, int mods);
     void keyUp(int rmlKey, int mods);
+
+    // A legend clicked (by the mouse or editor.click in Lua): a rack legend goes to the plugin (PanelPort::rackCommand)
+    // when it is available, the obsolete library action does nothing, every other action goes to the editor.
+    void legendClick(const std::string& action, const std::string& value);
 
     // The editor value (its reference) at a point in physical pixels, -1 if none: the plugin's right-click list.
     int editorValueAt(int x, int y);
@@ -162,6 +177,8 @@ private:
     void computeNextWake();
     void dispatchShow(Rml::Element* e);
     bool applyEditor();                        // the editor's state onto the glass; true if anything changed
+    bool applyRackLegends();                   // rack legends (and the obsolete library ones); true if anything changed
+    void findUiFont(const std::string& rmlFile);
 
     bool systemOk_ = false;
     std::string systemError_;
@@ -171,7 +188,7 @@ private:
     std::unique_ptr<Rml::RenderInterface> nullRender_;
     Rml::Context* context_ = nullptr;
     Rml::ElementDocument* document_ = nullptr;
-    std::string contextName_, folder_;
+    std::string contextName_, folder_, uiFont_;
     int widthPx_ = 1, heightPx_ = 1;
     float dpRatio_ = 1;
     double now_ = 0, lastFrameEvent_ = -1;

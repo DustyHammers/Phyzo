@@ -36,6 +36,8 @@ public:
     // Waits until the display shows a preset (P nn): after a Dump the OS shows `donE` for a while, and a clone starts
     // with whatever the panel showed. A Dump pressed before that only clears `donE` and enters no Dump list.
     virtual bool waitForPreset() = 0;
+    // The preset the display shows (0-63, after waitForPreset); -1 if it shows none.
+    virtual int displayedPreset() { return -1; }
     // The panel's Dump of the current preset (Dump, Dump): its single-preset message. Waits for P nn first.
     virtual bool dumpPreset(std::vector<uint8_t>& message) = 0;
     // The panel's Dump of bAn1 (bank 0) or bAn2 (bank 1): its bank message. Waits for P nn first.

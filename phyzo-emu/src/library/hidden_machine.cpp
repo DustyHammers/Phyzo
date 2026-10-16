@@ -73,6 +73,11 @@ public:
                fail("the display did not come back to a preset");
     }
 
+    int displayedPreset() override {
+        const std::string t = m_->panel.text();
+        return isPresetText(t) ? (t[2] - '0') * 10 + (t[3] - '0') - 1 : -1;
+    }
+
     bool dumpPreset(std::vector<uint8_t>& message) override {
         msgs_.clear();
         if (!waitForPreset() || !press(kRawDump) || !press(kRawDump)) return false;

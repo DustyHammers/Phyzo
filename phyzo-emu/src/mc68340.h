@@ -59,7 +59,7 @@ struct SerialChannel {
     bool shiftBusy = false; uint8_t shiftByte = 0; uint64_t shiftDone = kNever;
     // receiver: 3-byte FIFO fed by a paced input queue
     RingDeque<uint8_t> fifo{16};
-    RingDeque<std::pair<uint64_t, uint8_t>> pending{32768};   // room for a large SysEx without allocating
+    RingDeque<std::pair<uint64_t, uint8_t>> pending{32768};   // room for a large SysEx without allocating (MIDI: kMidiRxRoom)
     uint64_t lastArrival = 0;
     uint8_t lastRead = 0;
     uint64_t byteCycles = 5120;   // set by the machine
@@ -68,7 +68,10 @@ struct SerialChannel {
 
 class Serial {
 public:
-    explicit Serial(ModuleHost& h) : host(h) {}
+    // The MIDI port's input queue (channel B) has room for a whole bank message (102,420 bytes) and the MIDI arriving
+    // behind it, so queueing one never allocates (the plugin window's bank load, Engine::libraryInput).
+    static constexpr size_t kMidiRxRoom = 131072;
+    explicit Serial(ModuleHost& h) : host(h) { ch_[1].pending = RingDeque<std::pair<uint64_t, uint8_t>>(kMidiRxRoom); }
     uint8_t read8(uint32_t off, bool& handled);
     void write8(uint32_t off, uint8_t v, bool& handled);
     void advance(uint64_t now);

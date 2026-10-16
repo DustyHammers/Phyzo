@@ -7,6 +7,8 @@
 //     another thread) go in at once; the echo comes back as whole messages on the virtual port and to the host.
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
+#include <new>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -17,6 +19,17 @@
 #include "machine.h"
 #include "os_image.h"
 #include "midi_stream.h"
+
+// Allocation counter for the audio thread's library feed (this test's own operator new).
+static thread_local bool g_countAllocs = false;
+static std::atomic<int> g_allocs{0};
+void* operator new(std::size_t n) {
+    if (g_countAllocs) ++g_allocs;
+    if (void* p = std::malloc(n ? n : 1)) return p;
+    throw std::bad_alloc();
+}
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 
 namespace fs = std::filesystem;
 namespace {
@@ -251,6 +264,75 @@ void testEngine() {
     CHECK(e.virtualMidiOut().peekSize() == 0);
     fs::remove_all(dir);
 }
+// 6. The plugin window's bank load (v0.9.0, Engine::libraryInput): a bank-sized message goes into the MIDI port whole
+// (the echo returns it as one message), the host's MIDI sent meanwhile waits behind it (never inside it), one at a
+// time, busy until the OS has read its last byte, and the audio thread allocates nothing for it.
+void testLibraryInput() {
+    const fs::path dir = fs::temp_directory_path() / "phyzo_midi_lib_test";
+    fs::remove_all(dir); fs::create_directories(dir);
+    {
+        std::vector<uint8_t> os(0x1000, 0);
+        for (size_t i = 0; i < sizeof kEchoOut / 2; ++i) { os[0x80 + 2 * i] = uint8_t(kEchoOut[i] >> 8); os[0x81 + 2 * i] = uint8_t(kEchoOut[i]); }
+        std::ofstream(dir / "os", std::ios::binary).write(reinterpret_cast<const char*>(os.data()), long(os.size()));
+        std::vector<char> wave(0x400000, 0);
+        std::ofstream(dir / "wave", std::ios::binary).write(wave.data(), long(wave.size()));
+    }
+    Engine e;
+    e.setRoms((dir / "os").string(), (dir / "wave").string(), "os-md5", "wave-md5");
+    for (int i = 0; i < 1000 && e.state() != Engine::State::Running; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    CHECK(e.state() == Engine::State::Running);
+    e.setVirtualPort(true); e.setMidiToHost(false);
+    e.prepare(48000, 256);
+    std::vector<float> l(256), rr(256);
+    std::vector<Msg> out;
+    auto block = [&](const Engine::MidiEvent* ev, int n, bool count) {
+        g_countAllocs = count;
+        e.process(l.data(), rr.data(), 256, ev, n);
+        g_countAllocs = false;
+        while (e.virtualMidiOut().peekSize()) { Msg m; e.virtualMidiOut().pop([&](uint8_t x) { m.push_back(x); }); out.push_back(m); }
+    };
+    const uint8_t first[3] = {0x90, 0x10, 0x01};
+    // Warm up at the cable's full rate (a host SysEx), so the machine's own output buffers have their working size.
+    Msg warm = {0xF0, 0x7D};
+    for (int i = 0; i < 3000; ++i) warm.push_back(uint8_t(i & 0x7F));
+    warm.push_back(0xF7);
+    { Engine::MidiEvent ev{0, warm.data(), int(warm.size())}; block(&ev, 1, false); }
+    for (int i = 0; i < 400; ++i) { Engine::MidiEvent ev{0, first, 3}; block(&ev, i % 10 == 0 ? 1 : 0, false); }
+    // A bank message as the OS sends one: F0 0F 11 01 <dev> 0D <bank> ... F7, 102,420 bytes.
+    Msg bank = {0xF0, 0x0F, 0x11, 0x01, 0x00, 0x0D, 0x01};
+    while (bank.size() < Engine::kLibraryMessageMax - 1) bank.push_back(uint8_t(bank.size() & 0x7F));
+    bank.push_back(0xF7);
+    CHECK(!e.libraryInputBusy());
+    CHECK(!e.libraryInput(bank.data(), Engine::kLibraryMessageMax + 1) && !e.libraryInput(bank.data(), 0));
+    CHECK(e.libraryInput(bank.data(), bank.size()));
+    CHECK(e.libraryInputBusy() && !e.libraryInput(bank.data(), bank.size()));   // one at a time
+    out.clear();
+    g_allocs = 0;
+    std::vector<Msg> notes;
+    int blocks = 0;
+    for (; blocks < 20000 && e.libraryInputBusy(); ++blocks) {
+        if (blocks % 50 == 1) notes.push_back({0x90, uint8_t(notes.size() & 0x7F), 0x40});
+        Engine::MidiEvent ev{5, notes.empty() ? first : notes.back().data(), 3};
+        block(&ev, blocks % 50 == 1 ? 1 : 0, true);
+    }
+    for (int i = 0; i < 400; ++i) block(nullptr, 0, true);   // the notes queued behind it come out
+    const double seconds = blocks * 256.0 / 48000.0;
+    std::printf("midi_test: library input: %zu bytes delivered whole in %.1f s of audio, %zu host notes behind it, %d allocations\n",
+                bank.size(), seconds, notes.size(), g_allocs.load());
+    CHECK(!e.libraryInputBusy());
+    CHECK(seconds > 30 && seconds < 40);                     // at cable speed
+    CHECK(g_allocs.load() == 0);
+    CHECK(out.size() == notes.size() + 1);
+    if (!out.empty()) CHECK(out[0] == bank);                  // whole, first
+    bool inOrder = out.size() == notes.size() + 1;
+    for (size_t i = 0; inOrder && i < notes.size(); ++i) inOrder = out[i + 1] == notes[i];
+    CHECK(inOrder);
+    CHECK(e.virtualInDropped() == 0 && e.virtualOutDropped() == 0);
+    // Taken again once the first is through.
+    CHECK(e.libraryInput(bank.data(), bank.size()));
+    fs::remove_all(dir);
+}
+
 // 5. Pacing (B-08): the emulated MIDI port (serial channel B) passes received bytes to the OS no faster than the
 // cable (31,250 baud: one byte per 320 us) and never drops one, however much arrives at once. A 68k program of our
 // own stores every byte it reads; a 20,000-byte SysEx, 2,000 CC messages and 3,000 clock bytes are queued together.
@@ -297,6 +379,7 @@ int main() {
     testMerge();
     testRing();
     testEngine();
+    testLibraryInput();
     testPacing();
     std::printf("midi_test: %s\n", failures ? "FAILED" : "passed");
     return failures ? 1 : 0;

@@ -180,6 +180,12 @@ struct Shared {
     std::atomic<int> gateAt{-1};                    // dumpPreset number `gateAt` waits until `gateOpen`
     std::atomic<bool> gateOpen{true}, atGate{false};
     int dumps = 0;
+    // The bank load: a clone's bank dump waits while holdBank (until cancelled), or fails; what the running machine
+    // was sent (sendToMachine), and whether the OS takes it into its bank (as the real OS does) or ignores it.
+    std::atomic<bool> holdBank{false}, atBank{false}, failBank{false};
+    std::vector<Bytes> sentToMachine;
+    bool applySent = true;
+    int busyPolls = 0;                               // machineInputBusy answers true this many times
 };
 
 class FakeOps : public Ops {
@@ -215,6 +221,7 @@ public:
     }
     bool compareLit() override { note("compareLit"); return m_.compare; }
     bool waitForPreset() override { note("waitForPreset"); m_.done = false; return true; }
+    int displayedPreset() override { return m_.current; }
     // As the real hidden machine: the Dumps wait for the preset display first, and leave `donE` behind.
     bool dumpPreset(std::vector<uint8_t>& msg) override {
         note("dumpPreset");
@@ -229,6 +236,9 @@ public:
     bool dumpBank(int bank, std::vector<uint8_t>& msg, const Progress& progress) override {
         note("dumpBank " + std::to_string(bank));
         if (m_.done) m_.done = false;
+        if (sh_.holdBank) { sh_.atBank = true; while (sh_.holdBank && !cancel_) std::this_thread::sleep_for(std::chrono::milliseconds(1)); }
+        if (cancel_) return fail("cancelled");
+        if (sh_.failBank) return fail("no bank came");
         if (progress) { progress(51210, 102420); progress(102420, 102420); }
         msg = bankMsg(bank, std::vector<std::string>(m_.stored.begin() + bank * 32, m_.stored.begin() + bank * 32 + 32));
         m_.done = true;
@@ -286,6 +296,31 @@ int sourceOf(Service& s, const std::string& title) {
 }
 const std::string kOs = "0123456789abcdef0123456789abcdef";
 Service::Config config(const fs::path& data) { return {data.string(), kOs, [] { return Bytes{1, 2, 3}; }}; }
+// With the bank load's hooks: the running machine's MIDI input (the OS takes a bank message into the bank its byte 6
+// names, as the real OS does) and the Trash (a folder of the test's own).
+Service::Config config(const fs::path& data, Shared& sh, const fs::path& trash) {
+    Service::Config c = config(data);
+    c.sendToMachine = [&sh](const Bytes& m) {
+        std::lock_guard<std::mutex> lk(sh.mtx);
+        sh.calls.push_back("send");
+        sh.sentToMachine.push_back(m);
+        int bank = -1;
+        if (sh.applySent && classify(m, &bank) == Kind::Bank)
+            for (int i = 0; i < kBankPresets; ++i)
+                sh.running.stored[size_t(bank * kBankPresets + i)] = trimmed(std::string(m.begin() + 8 + 16 * i, m.begin() + 24 + 16 * i));
+        return true;
+    };
+    c.machineInputBusy = [&sh] { std::lock_guard<std::mutex> lk(sh.mtx); return sh.busyPolls > 0 && sh.busyPolls-- > 0; };
+    c.moveToTrash = [trash](const std::string& path) {
+        std::error_code ec;
+        fs::create_directories(trash, ec);
+        fs::rename(path, trash / fs::u8path(path).filename(), ec);
+        return !ec;
+    };
+    c.bankDeliveryMs = 2000;
+    c.bankConfirmMs = 300;
+    return c;
+}
 
 void testService(const fs::path& dir) {
     const fs::path data = dir / "data";
@@ -329,7 +364,7 @@ void testService(const fs::path& dir) {
         const auto pads = s.entries(sourceOf(s, "My Pads"));
         CHECK(pads.size() == 32 && pads[4].name == "Mine 5");
         const auto singles = s.entries(sourceOf(s, "SINGLES"));
-        CHECK(singles.size() == 2 && singles[0].name == "Lead" && singles[0].accepted);
+        CHECK(singles.size() == 2 && singles[0].name == "Lead" && singles[0].accepted);   // by file name
         CHECK(singles[1].name == "Refused" && !singles[1].accepted);   // listed as not accepted, under its file's name
         const auto two = s.entries(sourceOf(s, "Two"));
         CHECK(two.size() == 2 && two[1].name == "One B");
@@ -385,35 +420,59 @@ void testService(const fs::path& dir) {
         CHECK(!s.sources()[size_t(sourceOf(s, "Live Set"))].busy && s.sources()[size_t(sourceOf(s, "Live Set"))].count == 32);
         sh.gateAt = -1;
     }
-    // SAVE: refused while the Compare LED is lit; otherwise the clone's dump of the current preset, never overwriting.
+    // Save with a name (v0.9.0): the draft (a clone: Compare LED, preset number, OS name, dump), then the file.
     {
         Service s(config(data), std::make_unique<FakeMachines>(sh));
         s.open();
         CHECK(waitIdle(s));
         notices(s);
+        auto draft = [&] {
+            s.prepareSave();
+            CHECK(waitIdle(s));
+            Service::SaveDraft d;
+            CHECK(s.takeSaveDraft(d));
+            Service::SaveDraft extra;
+            CHECK(!s.takeSaveDraft(extra));                  // one draft per request
+            return d;
+        };
+        auto singlesCount = [&] { size_t n = 0; for (const auto& e : fs::directory_iterator(lib / "Singles")) { (void)e; ++n; } return n; };
         sh.running.compare = true;
         sh.running.edit = "Edited";
-        size_t files = 0; for (const auto& e : fs::directory_iterator(lib / "Singles")) { (void)e; ++files; }
-        s.save();
-        CHECK(waitIdle(s));
-        CHECK(has(notices(s), "UNSAVED EDITS  SAVE ON THE PANEL FIRST"));
-        size_t after = 0; for (const auto& e : fs::directory_iterator(lib / "Singles")) { (void)e; ++after; }
-        CHECK(after == files);
+        const size_t files = singlesCount();
+        Service::SaveDraft d = draft();
+        CHECK(d.compare && d.message.empty() && d.error.empty());       // unsaved edits: "save on the panel first"
+        CHECK((callsSince(sh, "clone") == std::vector<std::string>{"waitForPreset", "compareLit"}));
+        CHECK(singlesCount() == files);
         sh.running.compare = false;
-        sh.running.edit = "Beta/Arp";
+        sh.running.edit = "  Beta/Arp ";
+        sh.running.current = 4;
         sh.running.done = true;                              // right after a panel Dump: the clone shows `donE`
-        s.save();
+        d = draft();
+        CHECK(!d.compare && d.preset == 4 && d.osName == "  Beta/Arp " && d.message == presetMsg("  Beta/Arp "));
+        CHECK((callsSince(sh, "clone") == std::vector<std::string>{"waitForPreset", "compareLit", "readName 0", "dumpPreset"}));
+        s.saveAs(d, "My: Lead?");                            // typed: reserved characters become '_'
+        CHECK(waitIdle(s));
+        CHECK(has(notices(s), "SAVED  Singles/My_ Lead_.syx"));
+        Bytes b;
+        CHECK(readFile((lib / "Singles" / "My_ Lead_.syx").string(), b) && b == d.message);   // the dump's bytes, unchanged
+        s.saveAs(d, "   ");                                  // empty: the OS's name (made safe)
         CHECK(waitIdle(s));
         CHECK(has(notices(s), "SAVED  Singles/Beta_Arp.syx"));
-        CHECK((callsSince(sh, "clone") == std::vector<std::string>{"waitForPreset", "compareLit", "readName 0", "dumpPreset"}));
-        Bytes b;
-        CHECK(readFile((lib / "Singles" / "Beta_Arp.syx").string(), b) && b == presetMsg("Beta/Arp"));
-        s.save();
+        s.saveAs(d, "");
         CHECK(waitIdle(s));
-        CHECK(has(notices(s), "SAVED  Singles/Beta_Arp 2.syx"));
-        CHECK(readFile((lib / "Singles" / "Beta_Arp.syx").string(), b) && b == presetMsg("Beta/Arp"));   // untouched
+        CHECK(has(notices(s), "SAVED  Singles/Beta_Arp 2.syx"));   // never overwriting
+        CHECK(readFile((lib / "Singles" / "Beta_Arp.syx").string(), b) && b == d.message);
+        CHECK(readFile((lib / "Singles" / "Beta_Arp 2.syx").string(), b) && b == d.message);
         const auto singles = s.entries(sourceOf(s, "SINGLES"));
-        CHECK(singles.size() == 4 && singles[0].name == "Beta/Arp" && singles[0].ready);   // known at once, no re-read
+        std::vector<std::string> names;
+        for (const auto& e : singles) names.push_back(e.name + (e.ready ? "" : "*"));
+        CHECK((names == std::vector<std::string>{"Beta_Arp 2", "Beta_Arp", "Lead", "My_ Lead_", "Refused"}));   // by file name, no re-read
+        CHECK(singles.size() == 5 && singles[3].path == (lib / "Singles" / "My_ Lead_.syx").string());
+        Service::SaveDraft none;
+        s.saveAs(none, "x");                                 // nothing dumped: nothing written
+        CHECK(waitIdle(s));
+        CHECK(has(notices(s), "NOT SAVED  NOTHING TO SAVE") && singlesCount() == files + 3);
+        sh.running.current = 0;
         // EXPORT: a clone's bank dump, handed to the UI.
         sh.running.stored[32] = "Saved On Panel";
         s.exportBank(1);
@@ -467,6 +526,135 @@ void testService(const fs::path& dir) {
         CHECK(t.entries(sourceOf(t, "Slow")).size() == 32 && t.entries(sourceOf(t, "Slower")).size() == 32);
     }
 }
+// The plugin window's view (v0.9.0): groups and names, Rename and Delete, the bank load.
+void testWindow(const fs::path& dir) {
+    const fs::path data = dir / "window";
+    const fs::path lib = data / "Library", trash = dir / "Trash";
+    std::vector<std::string> pads(32), strings(32);
+    for (int i = 0; i < 32; ++i) { pads[size_t(i)] = "Pad " + std::to_string(i + 1); strings[size_t(i)] = "Str " + std::to_string(i + 1); }
+    writeFile(lib / "zeta.syx", bankMsg(0, pads));
+    writeFile(lib / "Alpha.syx", bankMsg(1, strings));
+    writeFile(lib / "Live" / "Set A.syx", cat({presetMsg("A1"), presetMsg("A2")}));   // two presets: not a bank
+    writeFile(lib / "Singles" / "Solo.syx", presetMsg("Solo"));
+    writeFile(lib / "Backups" / "Bank 1 2026-01-02 0304.syx", bankMsg(0, pads));
+    Shared sh;
+    Service s(config(data, sh, trash), std::make_unique<FakeMachines>(sh));
+    s.open();
+    CHECK(waitIdle(s));
+    notices(s);
+    // Groups in order: FACTORY, BANKS (by name, case ignored; a subfolder as folder/name), SINGLES, BACKUPS.
+    using G = Source::Group;
+    std::vector<std::string> rows;
+    for (const auto& v : s.sources())
+        rows.push_back(std::to_string(int(v.group)) + " " + v.label + " " + std::to_string(v.count) + (v.bank ? " bank" : ""));
+    CHECK((rows == std::vector<std::string>{"0 Factory Bank 1 32 bank", "0 Factory Bank 2 32 bank", "1 Alpha 32 bank", "1 Live/Set A 2",
+                                            "1 zeta 32 bank", "2 Singles 1", "3 Bank 1 2026-01-02 0304 32 bank"}));
+    CHECK(s.sources()[2].path == (lib / "Alpha.syx").string() && s.sources()[5].path == (lib / "Singles").string());
+    CHECK(s.sources()[0].group == G::Factory && s.isFactoryFile(s.sources()[0].path) && !s.isFactoryFile(s.sources()[2].path));
+    CHECK(backupName(1, 0).rfind("Bank 2 19", 0) == 0 && backupName(1, 0).size() == std::string("Bank 2 1970-01-01 0000").size());
+
+    // Rename: the file name only, made safe; an existing name refused; factory files never; the index follows by MD5.
+    const int freshBefore = sh.fresh;
+    CHECK(s.rename((lib / "zeta.syx").string(), "Alpha") == "Not renamed: Alpha.syx already exists");
+    CHECK(fs::exists(lib / "zeta.syx"));
+    CHECK(s.rename(s.sources()[0].path, "Mine") == "Not renamed: not a library file");
+    CHECK(s.rename((lib / "zeta.syx").string(), "  ") == "" && s.rename((lib / "zeta.syx").string(), "zeta") == "");
+    CHECK(s.rename((lib / "zeta.syx").string(), "Big/Pads") == "Renamed to Big_Pads.syx");
+    CHECK(waitIdle(s));
+    CHECK(!fs::exists(lib / "zeta.syx") && fs::exists(lib / "Big_Pads.syx"));
+    CHECK(s.rename((lib / "Live" / "Set A.syx").string(), "Set B") == "Renamed to Set B.syx" && fs::exists(lib / "Live" / "Set B.syx"));
+    CHECK(waitIdle(s));
+    const int big = sourceOf(s, "Big_Pads");
+    CHECK(big >= 0 && s.entries(big).size() == 32 && s.entries(big)[3].name == "Pad 4");
+    CHECK(sh.fresh == freshBefore);                                      // nothing read again
+    // Delete: to the Trash (the hook), never a factory file.
+    CHECK(s.remove(s.sources()[1].path) == "Not deleted: not a library file" && fs::exists(s.sources()[1].path));
+    CHECK(s.remove((lib / "Live" / "Set B.syx").string()) == "Deleted Set B (in the Trash)");
+    CHECK(waitIdle(s));
+    CHECK(!fs::exists(lib / "Live" / "Set B.syx") && fs::exists(trash / "Set B.syx"));
+    CHECK(sourceOf(s, "Set B") < 0);
+    {
+        Service t(config(data), std::make_unique<FakeMachines>(sh));   // no Trash hook: refused, the file stays
+        CHECK(t.remove((lib / "Alpha.syx").string()).rfind("Not deleted", 0) == 0 && fs::exists(lib / "Alpha.syx"));
+    }
+
+    // The bank load. Alpha is a Bank 2 file; load it into Bank 1: backup first, then the message with byte 6 = 0 and
+    // nothing else changed, then confirmed by the 32 stored names.
+    auto backups = [&] { size_t n = 0; std::error_code ec; for (const auto& e : fs::directory_iterator(lib / "Backups", ec)) { (void)e; ++n; } return n; };
+    Bytes alpha; CHECK(readFile((lib / "Alpha.syx").string(), alpha));
+    CHECK(!s.loadBank((lib / "Singles" / "Solo.syx").string(), 0));       // not one bank
+    CHECK(has(notices(s), "Solo has no bank"));
+    {
+        std::lock_guard<std::mutex> lk(sh.mtx);
+        sh.calls.clear();
+        sh.busyPolls = 5;                                                // on its way for a while
+    }
+    const size_t before = backups();
+    sh.running.stored[0] = "Old 1";
+    CHECK(s.loadBank((lib / "Alpha.syx").string(), 0));
+    CHECK(!s.loadBank((lib / "Big_Pads.syx").string(), 1));             // one bank job at a time
+    CHECK(s.bankJob().active && s.bankJob().bank == 0 && s.bankJob().file == "Alpha");
+    CHECK(waitIdle(s));
+    CHECK(!s.bankJob().active);
+    auto n = notices(s);
+    CHECK(has(n, "LOADED Alpha INTO BANK 1"));
+    int lb = -1; std::string lf;
+    CHECK(s.takeLoaded(lb, lf) && lb == 0 && lf == "Alpha" && !s.takeLoaded(lb, lf));
+    {
+        std::lock_guard<std::mutex> lk(sh.mtx);
+        CHECK(sh.sentToMachine.size() == 1);
+        if (sh.sentToMachine.size() == 1) {
+            const Bytes& m = sh.sentToMachine[0];
+            CHECK(m.size() == alpha.size() && m[6] == 0 && alpha[6] == 1);
+            Bytes same = m; same[6] = alpha[6];
+            CHECK(same == alpha);                                        // byte 6 only
+        }
+        // The backup (a clone's dump of Bank 1) before anything was sent.
+        const auto dump = std::find(sh.calls.begin(), sh.calls.end(), "dumpBank 0");
+        const auto send = std::find(sh.calls.begin(), sh.calls.end(), "send");
+        CHECK(dump != sh.calls.end() && send != sh.calls.end() && dump < send);
+        CHECK(sh.running.stored[0] == "Str 1" && sh.running.stored[31] == "Str 32" && sh.running.stored[32] == "Factory 33");
+    }
+    CHECK(backups() == before + 1);
+    bool found = false;
+    for (const auto& v : s.sources()) found |= v.group == G::Backups && v.label.rfind("Bank 1 ", 0) == 0 && v.label != "Bank 1 2026-01-02 0304";
+    CHECK(found);                                                         // the new backup is listed
+    // The backup holds the bank as it was (its first name "Old 1").
+    for (const auto& e : fs::directory_iterator(lib / "Backups")) {
+        Bytes b; readFile(e.path().string(), b);
+        if (e.path().filename().string() != "Bank 1 2026-01-02 0304.syx") CHECK(trimmed(std::string(b.begin() + 8, b.begin() + 24)) == "Old 1");
+    }
+    // A failed backup: nothing is sent.
+    sh.failBank = true;
+    { std::lock_guard<std::mutex> lk(sh.mtx); sh.sentToMachine.clear(); }
+    CHECK(s.loadBank((lib / "Big_Pads.syx").string(), 1));
+    CHECK(waitIdle(s));
+    n = notices(s);
+    CHECK(has(n, "NOT LOADED  BANK 2 COULD NOT BE BACKED UP  NO BANK CAME"));
+    CHECK(sh.sentToMachine.empty() && backups() == before + 1);
+    sh.failBank = false;
+    // Cancel during the backup: nothing is sent, no backup written.
+    sh.holdBank = true; sh.atBank = false;
+    CHECK(s.loadBank((lib / "Big_Pads.syx").string(), 1));
+    for (int i = 0; i < 5000 && !sh.atBank; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    CHECK(s.bankJob().active && s.bankJob().phase == Service::BankJob::Phase::Backup);
+    s.cancelBankBackup();
+    CHECK(waitIdle(s));
+    sh.holdBank = false;
+    CHECK(has(notices(s), "NOT LOADED  CANCELLED"));
+    CHECK(sh.sentToMachine.empty() && backups() == before + 1 && !s.bankJob().active);
+    // The OS does not take it: after the confirmation time, "didn't confirm" (the backup stays).
+    sh.applySent = false;
+    CHECK(s.loadBank((lib / "Big_Pads.syx").string(), 1));
+    for (int i = 0; i < 5000 && s.bankJob().phase != Service::BankJob::Phase::Confirm; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    s.cancelBankBackup();                                               // too late: the load was sent
+    CHECK(waitIdle(s));
+    n = notices(s);
+    CHECK(has(n, "Bank 2 didn't confirm the load"));
+    CHECK(sh.sentToMachine.size() == 1 && sh.sentToMachine[0][6] == 1 && backups() == before + 2);
+    CHECK(!s.takeLoaded(lb, lf));
+    sh.applySent = true;
+}
 }  // namespace
 
 int main() {
@@ -477,6 +665,7 @@ int main() {
     testIndexCache(dir);
     testScan(dir);
     testService(dir);
+    testWindow(dir);
     fs::remove_all(dir);
     std::printf("library_test: %s\n", failures ? "FAILED" : "passed");
     return failures ? 1 : 0;

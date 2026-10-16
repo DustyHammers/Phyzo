@@ -462,6 +462,7 @@ void Engine::install(std::unique_ptr<Machine> m, uint64_t generation, uint8_t ra
         std::lock_guard<std::mutex> lk(mtx_);
         if (generation != generation_.load()) return;           // a newer job replaced this one
         live_.swap(m);
+        if (libState_.load() == 2) libState_.store(0);   // a bank message in the old machine's port went with it
         rawPlus_ = rawPlus; rawMinus_ = rawMinus;
         rawPlusPub_ = rawPlus; rawMinusPub_ = rawMinus;
         publishPositions(*live_);
@@ -568,6 +569,7 @@ void Engine::process(float* left, float* right, int n, const MidiEvent* events, 
         return at < m.cycles() ? m.cycles() : at;
     };
     if (vin_.peekSize()) takeVirtualIn(m, blockStart(), editor);
+    if (libState_.load(std::memory_order_acquire)) takeLibraryIn(m, blockStart(), editor);
     // Editor: whole messages after the virtual port's, paced like them (nothing while it is closed).
     if (edOut_.peekSize()) {
         if (!editor) {
@@ -667,6 +669,36 @@ void Engine::takeVirtualIn(Machine& m, uint64_t at, bool editor) {
     }
 }
 
+// Under mtx_: the window's bank message, whole, once the MIDI port's input queue has room for all of it (made
+// beforehand: no allocation); then watches the OS read its last byte.
+void Engine::takeLibraryIn(Machine& m, uint64_t at, bool editor) {
+    const SerialChannel& port = m.serial.ch_[1];
+    if (libState_.load(std::memory_order_acquire) == 2) {
+        if (port.rxBytes >= libDoneAt_) libState_.store(0, std::memory_order_release);
+        return;
+    }
+    const size_t sz = libIn_.peekSize();
+    const size_t backlog = m.serial.rxBacklog(1);
+    if (!sz || backlog + sz > Serial::kMidiRxRoom) return;
+    size_t k = 0;
+    libIn_.pop([&](uint8_t b) { if (k < scratch_.size()) scratch_[k++] = b; });
+    m.serial.queueRx(1, scratch_.data(), k, at);
+    libDoneAt_ = port.rxBytes + backlog + k;
+    if (edproto::isPresetTrigger(scratch_.data(), k)) {
+        ++presetTriggers_;
+        if (editor) queueStandingRead(m, at);        // directly behind it: the editor's read sees the new bank
+    }
+    libState_.store(2, std::memory_order_release);
+}
+
+bool Engine::libraryInput(const uint8_t* m, size_t n) {
+    if (n == 0 || n > kLibraryMessageMax) return false;
+    std::lock_guard<std::mutex> lk(libInMtx_);
+    if (libState_.load() != 0 || !libIn_.push(m, n)) return false;
+    libState_.store(1, std::memory_order_release);
+    return true;
+}
+
 // Under mtx_, editor open: its waiting messages after the virtual port's, paced like them.
 void Engine::takeEditorOut(Machine& m, uint64_t at) {
     while (const size_t sz = edOut_.peekSize()) {
@@ -751,6 +783,7 @@ bool Engine::idleSlice(int64_t ms) {
     sendControls(m);
     const bool editor = editorOpen_.load(std::memory_order_relaxed);
     if (vin_.peekSize()) takeVirtualIn(m, m.cycles(), editor);
+    if (libState_.load(std::memory_order_acquire)) takeLibraryIn(m, m.cycles(), editor);
     if (edOut_.peekSize()) {
         if (!editor) { while (edOut_.peekSize()) edOut_.pop([](uint8_t) {}); }
         else takeEditorOut(m, m.cycles());
