@@ -644,16 +644,13 @@ void PhyzoEditor::closeWindow() {
     else if (builtin_) builtin_->grabKeyboardFocus();
 }
 
-// Over the whole plugin area (panel and editor unit), at the skin's dp scale (Built-in: fitted to its small size).
+// Its backdrop over the whole plugin area (panel and editor unit), the window centred in it at the skin's dp scale
+// (Built-in: its pixels at 100 % as dp); again on every resize, zoom, skin change and editor unit shown or hidden.
 void PhyzoEditor::placeWindow() {
     if (!window_) return;
     juce::Component* parent = rml_ ? static_cast<juce::Component*>(rml_.get()) : static_cast<juce::Component*>(this);
     if (window_->getParentComponent() != parent) parent->addChildComponent(*window_);
-    const auto area = parent->getLocalBounds();
-    float dpScale;
-    if (rml_) dpScale = float(getWidth()) / float(baseSize().x);
-    else dpScale = std::min(float(area.getWidth()) / 1100.0f, float(area.getHeight()) / 700.0f);
-    window_->place(area, dpScale);
+    window_->place(parent->getLocalBounds(), float(getWidth()) / float(baseSize().x));
     window_->toFront(false);
 }
 

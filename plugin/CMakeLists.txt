@@ -7,7 +7,7 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 if(CMAKE_HOST_APPLE AND NOT CMAKE_OSX_ARCHITECTURES)
   set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "Target architectures")
 endif()
-project(Phyzo VERSION 0.9.0 LANGUAGES C CXX)
+project(Phyzo VERSION 0.9.1 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -178,7 +178,8 @@ if(APPLE)
 endif()
 
 # The plugin window (v0.9.0): theme, right-click routing, rack legends, the tabs and their settings, LIBRARY with a
-# library of made-up hidden machines, project state version 8 (no ROMs; needs a display; CI on macOS).
+# library of made-up hidden machines, project state version 8; its size, place and backdrop (v0.9.1) (no ROMs; needs a
+# display; CI on macOS).
 add_executable(window_test tests/window_test.cpp ${PHYZO_EDITOR_SOURCES})
 target_include_directories(window_test PRIVATE Source)
 target_compile_definitions(window_test PRIVATE

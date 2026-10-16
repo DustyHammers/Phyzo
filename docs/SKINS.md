@@ -207,8 +207,11 @@ end
 
 ## Working on a skin
 
-- Right-click the background (anywhere that is not a learnable control) to open the plugin window; Esc or its round
-  close button closes it. It covers the panel (and the editor unit) and never changes the window's size.
+- Right-click the background (anywhere that is not a learnable control) to open the plugin window; Esc, its round
+  close button or a click on the dimmed area around it closes it. It is drawn 1000 x 610 dp of the skin (smaller only
+  when the plugin area less 14 dp on each side is too small), centred on the panel (and the editor unit), over a
+  backdrop that dims the rest; it never changes the window's size. While it is open the skin gets no mouse events,
+  except in the bottom-right 24-point corner (the resize grip).
 - **F5** (with the plugin focused, the window open or not) or **Reload skin (F5)** in the SKIN tab reloads the skin
   from disk, its UI font included; knob positions are kept.
 - **RmlUi debugger** (SYSTEM tab, Developer; file skins only) shows RmlUi's element inspector and event log.

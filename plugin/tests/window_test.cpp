@@ -4,6 +4,10 @@
 // MIDI tabs driving the same settings the old menu did, the LIBRARY tab against a library service with made-up hidden
 // machines (Save with a name, Delete, Load a bank: the footer's questions and messages, the Memory column's title),
 // and project state version 8 (older versions load with no last-loaded names).
+// Size and place (v0.9.1): the 1180 x 720 dp layout drawn 1000 x 610 dp of the skin, centred in the plugin area (the
+// panel and the editor unit), fitted with 14 dp margins on small windows, re-centred on zoom and unit changes; the
+// backdrop: clicks close the window (an open Save box first cancelled), the panel gets no mouse events, the
+// bottom-right grip still resizes. Mouse input goes through the window system's peer, as a real pointer's does.
 //
 //   window_test <test skin folder> [folder for PNG snapshots]
 #include <juce_audio_processors/juce_audio_processors.h>
@@ -17,6 +21,7 @@
 #include "PluginProcessor.h"
 #include "RmlSkinComponent.h"
 #include "SkinSettings.h"
+#include "WindowScale.h"
 #include "library/syx.h"
 #include "skin_view.h"
 #include "state_io.h"
@@ -49,13 +54,86 @@ juce::StringArray menuTexts(const juce::PopupMenu& m) {
     return out;
 }
 
-void snapshot(juce::Component& c, const juce::File& dir, const juce::String& name) {
-    if (dir == juce::File()) return;
-    const juce::Image img = c.createComponentSnapshot(c.getLocalBounds(), true, 2.0f);
+void writePng(const juce::Image& img, const juce::File& dir, const juce::String& name) {
     juce::File f = dir.getChildFile(name + ".png");
     f.deleteFile();
     juce::FileOutputStream os(f);
     juce::PNGImageFormat().writeImageToStream(img, os);
+}
+void snapshot(juce::Component& c, const juce::File& dir, const juce::String& name) {
+    if (dir == juce::File()) return;
+    writePng(c.createComponentSnapshot(c.getLocalBounds(), true, 2.0f), dir, name);
+}
+// The window and its backdrop over a stand-in for a file skin's panel (its OpenGL drawing is not in component
+// snapshots): grey with lighter blocks where controls would be.
+void snapshotOverPanel(juce::Component& window, const juce::File& dir, const juce::String& name) {
+    if (dir == juce::File()) return;
+    const auto b = window.getLocalBounds();
+    juce::Image img(juce::Image::ARGB, b.getWidth() * 2, b.getHeight() * 2, true);
+    {
+        juce::Graphics g(img);
+        g.addTransform(juce::AffineTransform::scale(2.0f));
+        g.fillAll(juce::Colour(0xff6f737c));
+        g.setColour(juce::Colour(0xff9aa0ab));
+        for (int y = 20; y + 40 < b.getHeight(); y += 70)
+            for (int x = 20; x + 40 < b.getWidth(); x += 70) g.fillEllipse(float(x), float(y), 40, 40);
+        window.paintEntireComponent(g, true);
+    }
+    writePng(img, dir, name);
+}
+
+// Mouse input as the window system delivers it: through the peer, so the component under the pointer gets it.
+struct Mouse {
+    juce::Component& top;
+    juce::int64 t = juce::Time::currentTimeMillis();
+    void send(juce::Point<int> p, juce::ModifierKeys mods) {
+        top.getPeer()->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, p.toFloat(), mods, juce::MouseInputSource::defaultPressure,
+                                        juce::MouseInputSource::defaultOrientation, t += 600);   // never a double-click
+    }
+    void move(juce::Point<int> p) { send(p, {}); }
+    void down(juce::Point<int> p) { send(p, juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier)); }
+    void up(juce::Point<int> p) { send(p, {}); }
+    void click(juce::Point<int> p) { move(p); down(p); up(p); }
+    void drag(juce::Point<int> from, juce::Point<int> to) {
+        move(from); down(from);
+        send(to, juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier));
+        up(to);
+    }
+    void wheel(juce::Point<int> p) {
+        juce::MouseWheelDetails w{};
+        w.deltaY = 0.5f;
+        top.getPeer()->handleMouseWheel(juce::MouseInputSource::InputSourceType::mouse, p.toFloat(), t += 600, w);
+    }
+};
+// Every mouse event a component (the panel) gets.
+struct Counter : juce::MouseListener {
+    int n = 0;
+    void mouseMove(const juce::MouseEvent&) override { ++n; }
+    void mouseDown(const juce::MouseEvent&) override { ++n; }
+    void mouseDrag(const juce::MouseEvent&) override { ++n; }
+    void mouseUp(const juce::MouseEvent&) override { ++n; }
+    void mouseDoubleClick(const juce::MouseEvent&) override { ++n; }
+    void mouseWheelMove(const juce::MouseEvent&, const juce::MouseWheelDetails&) override { ++n; }
+};
+
+// The window as drawn: `u` points per dp of the skin, 1000 x 610 of them (within a point) unless fitted smaller.
+bool drawnAt(const PhyzoWindow& w, float u) {
+    const auto r = w.windowArea();
+    return std::abs(r.getWidth() - PhyzoWindow::kDrawnWidth * u) <= 1.0f && std::abs(r.getHeight() - 610.0f * u) <= 1.0f;
+}
+// Centred in `area` to the point, with at least `margin` points on each side; where the frame is really drawn.
+bool centred(PhyzoWindow& w, juce::Rectangle<int> area, float margin = 0) {
+    const auto r = w.windowArea();
+    const float l = r.getX() - float(area.getX()), rt = float(area.getRight()) - r.getRight();
+    const float t = r.getY() - float(area.getY()), b = float(area.getBottom()) - r.getBottom();
+    const auto drawn = w.getLocalArea(&w.frame(), w.frame().getLocalBounds().toFloat()) + w.getPosition().toFloat();
+    const bool there = std::abs(drawn.getX() - r.getX()) < 0.01f && std::abs(drawn.getY() - r.getY()) < 0.01f &&
+                       std::abs(drawn.getWidth() - r.getWidth()) < 0.01f && std::abs(drawn.getHeight() - r.getHeight()) < 0.01f;
+    const bool layout = w.frame().getWidth() == int(PhyzoWindow::kLayoutW) && w.frame().getHeight() == int(PhyzoWindow::kLayoutH);
+    if (!(std::abs(l - rt) <= 1.0f && std::abs(t - b) <= 1.0f && std::min({l, rt, t, b}) >= margin - 1.0f && there && layout))
+        std::printf("  window at %.1f,%.1f %.1f x %.1f in %d x %d (margins %.1f %.1f %.1f %.1f)\n", r.getX(), r.getY(), r.getWidth(), r.getHeight(),
+                    area.getWidth(), area.getHeight(), l, rt, t, b);
+    return std::abs(l - rt) <= 1.0f && std::abs(t - b) <= 1.0f && std::min({l, rt, t, b}) >= margin - 1.0f && there && layout;
 }
 
 // ---- made-up hidden machines (no OS data): presets and banks carry their names as 16 bytes
@@ -235,6 +313,37 @@ int main(int argc, char** argv) {
         CHECK(covered.getX() == 0 && covered.getY() == 0 && std::abs(covered.getRight() - ed.getWidth()) <= 2 && std::abs(covered.getBottom() - ed.getHeight()) <= 2);
         CHECK(ed.getWidth() == BuiltinView::kWidth && ed.getHeight() == BuiltinView::kHeight);
         snapshot(ed, shots, "builtin-system");
+        // Built-in at 100 % (520 x 316, smaller than the window; its pixels at 100 % are its dp): scaled down uniformly to
+        // fit with 14 dp margins, centred; the layout is still 1180 x 720 dp.
+        CHECK(w.windowArea().getWidth() < PhyzoWindow::kDrawnWidth && centred(w, ed.getLocalBounds(), ui::dp::inset));
+        {
+            const auto r = w.windowArea();
+            CHECK(std::abs(std::min(r.getX(), r.getY()) - ui::dp::inset) <= 1.0f);              // the tighter side: the margin
+            CHECK(std::abs(r.getWidth() / r.getHeight() - PhyzoWindow::kLayoutW / PhyzoWindow::kLayoutH) < 0.01f);
+        }
+        // The backdrop: the panel gets no mouse events; a click there closes the window; the corner still resizes.
+        auto* panel = dynamic_cast<BuiltinView*>(ed.getChildComponent(0));
+        CHECK(panel != nullptr);
+        Counter panelEvents;
+        if (panel) panel->addMouseListener(&panelEvents, true);
+        Mouse mouse{ed};
+        const juce::Point<int> backdrop(4, 4);
+        const juce::Point<int> inWindow = (w.windowArea().getTopLeft() + juce::Point<float>(30, 30) * w.scale()).toInt();   // the title
+        CHECK(ed.getComponentAt(backdrop) == &w && ed.getComponentAt(inWindow) == &w.frame());
+        mouse.move(inWindow); mouse.wheel(inWindow); mouse.click(inWindow);
+        mouse.move(backdrop); mouse.wheel(backdrop);
+        CHECK(ed.windowOpen() && panelEvents.n == 0);
+        mouse.click(backdrop);
+        CHECK(!ed.windowOpen() && panelEvents.n == 0);
+        ed.openWindow(PhyzoWindow::kSystem);
+        const juce::Point<int> grip(ed.getWidth() - 4, ed.getHeight() - 4);
+        CHECK(panel && ed.getComponentAt(grip) == panel);
+        mouse.drag(grip, grip + juce::Point<int>(104, 63));
+        CHECK(ed.windowOpen() && panelEvents.n > 0 && ed.getWidth() > BuiltinView::kWidth);   // the grip's drag: the plugin grew
+        CHECK(centred(w, ed.getLocalBounds(), ui::dp::inset * float(ed.getWidth()) / float(BuiltinView::kWidth)));   // re-centred
+        ed.setZoomStep(100);
+        CHECK(ed.getWidth() == BuiltinView::kWidth && centred(w, ed.getLocalBounds(), ui::dp::inset));
+        if (panel) panel->removeMouseListener(&panelEvents);
         // Esc: the window's (closed); then nothing of ours is open: Esc goes to the host.
         CHECK(w.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)));
         CHECK(!ed.windowOpen());
@@ -269,6 +378,7 @@ int main(int argc, char** argv) {
             zoom->choose(5);                                                     // 150 %
             CHECK(std::abs(ed.scale() - 1.5f) < 1e-4f && std::abs(SkinSettings::scale() - 1.5f) < 1e-4f && zoom->selected() == 5);
             CHECK(ed.getWidth() == juce::roundToInt(BuiltinView::kWidth * 1.5f));
+            CHECK(centred(w, ed.getLocalBounds(), ui::dp::inset * 1.5f));          // a zoom change re-centres it
             snapshot(ed, shots, "builtin-skin-150");
             PhyzoEditor::screenAreaForTest = {0, 0, 800, 600};
             w.refresh();
@@ -342,15 +452,44 @@ int main(int argc, char** argv) {
         CHECK(dynamic_cast<RmlSkinComponent*>(w.getParentComponent()) != nullptr);
         auto* unit = find<ui::Switch>(&w, "editorUnit");
         CHECK(unit && unit->isEnabled() && !unit->isOn());
+        auto* rml = dynamic_cast<RmlSkinComponent*>(w.getParentComponent());
+        CHECK(rml != nullptr);
+        if (rml == nullptr) return 1;
+        // The rack-size area, the editor unit closed: the window is 1000 x 610 dp of the skin, centred to the point, over
+        // a backdrop as large as the plugin.
+        const float u = float(ed.getWidth()) / skin::kBodyWidthDp;
+        CHECK(drawnAt(w, u) && centred(w, rml->getLocalBounds(), ui::dp::inset * u) && w.getBounds() == rml->getLocalBounds());
+        snapshotOverPanel(w, shots, "file-skin-window");
         const int h0 = ed.getHeight();
         if (unit) unit->toggle();
         CHECK(p->editorWanted() && ed.editorUnitShown() && ed.getHeight() > h0);
-        // The window covers the panel and the editor unit: its dp size is the whole body.
-        CHECK(std::abs(float(w.getHeight()) - (skin::kBodyHeightDp + skin::kEditorHeightDp)) < 2.0f);
+        // The editor unit open: centred on the panel and the unit together, the same size.
+        CHECK(rml->getHeight() == ed.getHeight() && drawnAt(w, u) && centred(w, rml->getLocalBounds()) && w.getBounds() == rml->getLocalBounds());
+        snapshotOverPanel(w, shots, "file-skin-window-unit");
+        // A zoom change re-centres it at the new scale.
+        ed.setZoomStep(75);
+        const float u75 = float(ed.getWidth()) / skin::kBodyWidthDp;
+        CHECK(std::abs(u75 - 0.75f * winscale::kFileSkinUnit) < 0.01f && drawnAt(w, u75) && centred(w, rml->getLocalBounds()));
+        ed.setZoomStep(100);
         ed.rackCommand("EDITOR");                                                 // the rack legend: off again
         CHECK(!p->editorWanted() && !ed.editorUnitShown() && ed.getHeight() == h0);
-        CHECK(w.isVisible());                                                     // still open over the smaller panel
-        snapshot(w, shots, "file-skin");
+        CHECK(w.isVisible() && drawnAt(w, u) && centred(w, rml->getLocalBounds()));   // still open, re-centred on the panel
+        // The backdrop: the panel gets no mouse events; a click there closes the window; the corner is the skin's grip.
+        {
+            Counter panelEvents;
+            rml->addMouseListener(&panelEvents, false);
+            Mouse mouse{ed};
+            const juce::Point<int> backdrop(6, ed.getHeight() / 2);
+            const juce::Point<int> inWindow = (w.windowArea().getTopLeft() + juce::Point<float>(30, 30) * w.scale()).toInt();
+            mouse.move(inWindow); mouse.wheel(inWindow); mouse.click(inWindow);
+            mouse.move(backdrop); mouse.wheel(backdrop);
+            CHECK(ed.windowOpen() && panelEvents.n == 0);
+            CHECK(rml->getComponentAt(juce::Point<int>(ed.getWidth() - 4, ed.getHeight() - 4)) == rml);
+            mouse.click(backdrop);
+            CHECK(!ed.windowOpen() && panelEvents.n == 0);
+            rml->removeMouseListener(&panelEvents);
+        }
+        ed.openWindow(PhyzoWindow::kSkin);
         // The SKIN list switches skins (Built-in and back); the window stays open.
         auto* list = find<juce::Component>(&w, "skinList");
         CHECK(list != nullptr);
@@ -433,6 +572,15 @@ int main(int argc, char** argv) {
         ed.rackCommand("SAVE");
         CHECK(waitFor([&] { w.tickForTest(); return f.field() != nullptr; }));
         CHECK(w.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)) && ed.windowOpen() && f.field() == nullptr);
+        // A click on the backdrop while the box is open: the first cancels the box (as Esc), the second closes the window.
+        Mouse mouse{ed};
+        ed.rackCommand("SAVE");
+        CHECK(waitFor([&] { w.tickForTest(); return f.field() != nullptr; }));
+        mouse.click({4, 4});
+        CHECK(ed.windowOpen() && f.field() == nullptr);
+        mouse.click({4, 4});
+        CHECK(!ed.windowOpen());
+        ed.openWindow(PhyzoWindow::kLibrary);
         // Load a bank: the confirmation, the backup, the load, LOADED, the Memory column's title (project state).
         const juce::String bankPath = juce::String((data / "Library" / "My Bank.syx").string());
         w.message("x");
@@ -460,10 +608,20 @@ int main(int argc, char** argv) {
         snapshot(ed, shots, "library-load-confirm-100");
         f.click("Cancel");
         CHECK(f.actionLabels().isEmpty());
+        // A confirmation open: a click on the backdrop cancels it first, the window stays open.
+        w.confirmLoadForTest(bankPath, "My Bank", 1);
+        mouse.click({4, 4});
+        CHECK(ed.windowOpen() && f.actionLabels().isEmpty());
         bool backup = false;
         for (const auto& e : fs::directory_iterator(data / "Library" / "Backups")) backup = backup || e.path().filename().string().rfind("Bank 1 ", 0) == 0;
         CHECK(backup);
         snapshot(ed, shots, "library-loaded");
+        // A rename box open: the first click on the backdrop cancels it (the file keeps its name); the window stays open.
+        const fs::path oldLead = data / "Library" / "Singles" / "Old Lead.syx";
+        w.renameForTest(juce::String(oldLead.string()), "Old Lead");
+        CHECK(w.renamingForTest());
+        mouse.click({4, 4});
+        CHECK(ed.windowOpen() && !w.renamingForTest() && fs::exists(oldLead));
         // Delete: to the Trash after the footer's question.
         CHECK(libtext::deleteConfirm("Old Lead") == "Delete Old Lead? It goes to the Trash.");
         CHECK(s.remove((data / "Library" / "Singles" / "Old Lead.syx").string()) == "Deleted Old Lead (in the Trash)");
