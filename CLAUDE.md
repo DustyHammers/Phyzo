@@ -22,6 +22,10 @@ owner step by step through anything they must do by hand on github.com or on the
    repo has only the skin engine and the text-only test skin (`plugin/skin/tests/skins/`). CI rejects image and font
    files and .rml/.rcss files outside the test skin. Gearmulator's skinning and Lua docs are a design reference
    only: write our own code.
+8. **README.md:** Never change `README.md` unless the prompt explicitly asks for that exact README change. That covers
+   changelog or "What's new" entries, version notes, feature lists and wording fixes alike. Release notes go in the PR
+   description. If a prompt doesn't mention the README, leave it alone. If a change seems to need README text, say so
+   in the report and stop there.
 
 ## Naming and identity
 
