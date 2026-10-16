@@ -160,7 +160,13 @@ struct Model {
     std::string edit;
     bool compare = false;
     int current = 0;
-    bool done = false;                              // the display shows `donE` (after a Dump)
+    bool done = false;                              // the display shows `donE` (after a Dump), for doneMs more
+    double doneMs = 300;
+    // A page other than P nn on the display (an effect, reverb or tempo page; empty: none), in a panel mode that is
+    // not normal; Bank (0x19) brings P nn back (unless pageStays), and on P nn switches banks, as the real OS does.
+    std::string page;
+    int pageMode = 0x0E;
+    bool pageStays = false;
 };
 Model factoryModel() {
     Model m;
@@ -220,7 +226,33 @@ public:
         return true;
     }
     bool compareLit() override { note("compareLit"); return m_.compare; }
-    bool waitForPreset() override { note("waitForPreset"); m_.done = false; return true; }
+    // As the real hidden machine: the shared display wait, over this model's panel.
+    bool waitForPreset() override {
+        note("waitForPreset");
+        struct Panel : PresetPanel {
+            explicit Panel(FakeOps& o) : f(o) {}
+            std::string text() override {
+                if (f.m_.done) return "donE";
+                if (!f.m_.page.empty()) return f.m_.page;
+                char b[16]; std::snprintf(b, sizeof b, "P %02d", f.m_.current + 1); return b;
+            }
+            bool mode(int& m) override { m = f.m_.page.empty() || f.m_.done ? kPanelModeNormal : f.m_.pageMode; return true; }
+            bool press(uint8_t raw) override {
+                char b[16]; std::snprintf(b, sizeof b, "press %02X", raw); f.note(b);
+                if (raw == kRawBank) {
+                    if (f.m_.page.empty()) f.m_.current = (f.m_.current + 32) % 64;   // on P nn: the other bank
+                    else if (!f.m_.pageStays) f.m_.page.clear();
+                }
+                return !f.cancel_;
+            }
+            bool run(double ms) override {
+                if (f.m_.done && (f.m_.doneMs -= ms) <= 0) { f.m_.done = false; f.m_.doneMs = 300; }
+                return !f.cancel_;
+            }
+            FakeOps& f;
+        } panel(*this);
+        return waitForPresetDisplay(panel, kPresetDisplayMs) || fail("the display did not come back to a preset");
+    }
     int displayedPreset() override { return m_.current; }
     // As the real hidden machine: the Dumps wait for the preset display first, and leave `donE` behind.
     bool dumpPreset(std::vector<uint8_t>& msg) override {
@@ -230,7 +262,7 @@ public:
         { std::lock_guard<std::mutex> lk(sh_.mtx); k = sh_.dumps++; }
         if (k == sh_.gateAt) { sh_.atGate = true; while (!sh_.gateOpen && !cancel_) std::this_thread::sleep_for(std::chrono::milliseconds(1)); }
         msg = presetMsg(m_.edit);
-        m_.done = true;
+        m_.done = true; m_.doneMs = 300;
         return true;
     }
     bool dumpBank(int bank, std::vector<uint8_t>& msg, const Progress& progress) override {
@@ -241,7 +273,7 @@ public:
         if (sh_.failBank) return fail("no bank came");
         if (progress) { progress(51210, 102420); progress(102420, 102420); }
         msg = bankMsg(bank, std::vector<std::string>(m_.stored.begin() + bank * 32, m_.stored.begin() + bank * 32 + 32));
-        m_.done = true;
+        m_.done = true; m_.doneMs = 300;
         return true;
     }
     std::string error() const override { return err_; }
@@ -447,7 +479,7 @@ void testService(const fs::path& dir) {
         const size_t files = singlesCount();
         Service::SaveDraft d = draft();
         CHECK(d.compare && d.message.empty() && d.error.empty());       // unsaved edits: "save on the panel first"
-        CHECK((callsSince(sh, "clone") == std::vector<std::string>{"waitForPreset", "compareLit"}));
+        CHECK((callsSince(sh, "clone") == std::vector<std::string>{"compareLit"}));   // before the display wait
         CHECK(singlesCount() == files);
         sh.running.compare = false;
         sh.running.edit = "  Beta/Arp ";
@@ -455,7 +487,7 @@ void testService(const fs::path& dir) {
         sh.running.done = true;                              // right after a panel Dump: the clone shows `donE`
         d = draft();
         CHECK(!d.compare && d.preset == 4 && d.osName == "  Beta/Arp " && d.message == presetMsg("  Beta/Arp "));
-        CHECK((callsSince(sh, "clone") == std::vector<std::string>{"waitForPreset", "compareLit", "readName 0", "dumpPreset"}));
+        CHECK((callsSince(sh, "clone") == std::vector<std::string>{"compareLit", "waitForPreset", "readName 0", "dumpPreset"}));
         s.saveAs(d, "My: Lead?");                            // typed: reserved characters become '_'
         CHECK(waitIdle(s));
         CHECK(has(notices(s), "SAVED  Singles/My_ Lead_.syx"));
@@ -660,6 +692,118 @@ void testWindow(const fs::path& dir) {
     CHECK(sh.sentToMachine.size() == 1 && sh.sentToMachine[0][6] == 1 && backups() == before + 2);
     CHECK(!s.takeLoaded(lb, lf));
     sh.applySent = true;
+
+    // The panel on an effect page (v0.9.0 fix): the clone presses Bank once, comes back to P nn with the same preset,
+    // and Save, Save as file and the bank load's backup all work; the running machine is never pressed.
+    auto presses = [&](const std::string& since) {
+        const auto calls = callsSince(sh, since);
+        return int(std::count(calls.begin(), calls.end(), std::string("press 19")));
+    };
+    {
+        std::lock_guard<std::mutex> lk(sh.mtx);
+        sh.running.page = "InS1"; sh.running.pageMode = 0x0E; sh.running.current = 40;
+        sh.running.edit = "Edited Fx"; sh.running.compare = false;
+    }
+    s.prepareSave();
+    CHECK(waitIdle(s));
+    Service::SaveDraft d;
+    CHECK(s.takeSaveDraft(d) && !d.compare && d.error.empty() && d.preset == 40 && d.osName == "Edited Fx");
+    CHECK((callsSince(sh, "clone") == std::vector<std::string>{"compareLit", "waitForPreset", "press 19", "readName 0", "dumpPreset"}));
+    s.exportBank(1);
+    CHECK(waitIdle(s));
+    int eb = -1; Bytes ex;
+    CHECK(s.takeExport(eb, ex) && eb == 1);
+    CHECK((callsSince(sh, "clone") == std::vector<std::string>{"waitForPreset", "press 19", "programChange 63", "dumpBank 1"}));
+    { std::lock_guard<std::mutex> lk(sh.mtx); sh.calls.clear(); sh.sentToMachine.clear(); }
+    CHECK(s.loadBank((lib / "Big_Pads.syx").string(), 1));
+    CHECK(waitIdle(s));
+    CHECK(has(notices(s), "LOADED Big_Pads INTO BANK 2"));
+    {
+        std::lock_guard<std::mutex> lk(sh.mtx);
+        const auto send = std::find(sh.calls.begin(), sh.calls.end(), "send");
+        const auto press = std::find(sh.calls.begin(), sh.calls.end(), "press 19");
+        CHECK(sh.sentToMachine.size() == 1 && press != sh.calls.end() && press < send);
+        CHECK(std::count(sh.calls.begin(), sh.calls.end(), std::string("press 19")) == 1);   // the backup's clone only
+        CHECK(sh.running.page == "InS1");                // the running machine was never pressed
+    }
+    // Unsaved edits on an effect page: the Compare message, nothing pressed, no display error.
+    { std::lock_guard<std::mutex> lk(sh.mtx); sh.running.compare = true; }
+    s.prepareSave();
+    CHECK(waitIdle(s));
+    CHECK(s.takeSaveDraft(d) && d.compare && d.error.empty());
+    CHECK((callsSince(sh, "clone") == std::vector<std::string>{"compareLit"}));
+    // A page in normal mode (0x01) is never pressed; a page that stays after the press fails after exactly one press.
+    { std::lock_guard<std::mutex> lk(sh.mtx); sh.running.compare = false; sh.running.pageMode = kPanelModeNormal; }
+    s.prepareSave();
+    CHECK(waitIdle(s));
+    CHECK(s.takeSaveDraft(d) && d.error == "NOT SAVED  THE DISPLAY DID NOT COME BACK TO A PRESET");
+    CHECK(presses("clone") == 0);
+    { std::lock_guard<std::mutex> lk(sh.mtx); sh.running.pageMode = 0x0E; sh.running.pageStays = true; }
+    s.prepareSave();
+    CHECK(waitIdle(s));
+    CHECK(s.takeSaveDraft(d) && d.error == "NOT SAVED  THE DISPLAY DID NOT COME BACK TO A PRESET");
+    CHECK(presses("clone") == 1);
+    // P nn showing: no press anywhere.
+    { std::lock_guard<std::mutex> lk(sh.mtx); sh.running.page.clear(); sh.running.pageStays = false; }
+    s.prepareSave();
+    CHECK(waitIdle(s));
+    CHECK(s.takeSaveDraft(d) && d.error.empty() && d.preset == 40 && presses("clone") == 0);
+    s.exportBank(0);
+    CHECK(waitIdle(s));
+    CHECK(s.takeExport(eb, ex) && eb == 0 && presses("clone") == 0);
+}
+
+// The display wait on its own (v0.9.0 fix): every case with a scripted panel.
+void testDisplayWait() {
+    struct Scripted : PresetPanel {
+        std::vector<std::pair<double, std::string>> script;   // from this time on (ms), the display shows this
+        std::string afterBank = "P 07";                      // what Bank brings (on a page)
+        int modeValue = 0x0E;
+        bool modeAnswers = true;
+        double now = 0;
+        bool bankPressed = false;
+        int presses = 0;
+        std::string text() override {
+            if (bankPressed) return afterBank;
+            std::string t;
+            for (const auto& [at, x] : script) if (now >= at) t = x;
+            return t;
+        }
+        bool mode(int& m) override { m = modeValue; return modeAnswers; }
+        bool press(uint8_t raw) override { ++presses; if (raw == kRawBank) bankPressed = true; now += 360; return true; }
+        bool run(double ms) override { now += ms; return true; }
+    };
+    {   // P nn: at once, nothing pressed
+        Scripted p; p.script = {{0, "P 41"}};
+        CHECK(waitForPresetDisplay(p, 5000) && p.presses == 0 && p.now == 0);
+    }
+    {   // donE: waited out, nothing pressed (even in a mode that is not normal)
+        Scripted p; p.script = {{0, "donE"}, {1200, "P 41"}};
+        CHECK(waitForPresetDisplay(p, 5000) && p.presses == 0 && p.now >= 1200);
+    }
+    {   // an effect page (not normal mode): Bank once, then P nn
+        Scripted p; p.script = {{0, "InS1"}};
+        CHECK(waitForPresetDisplay(p, 5000) && p.presses == 1 && p.text() == "P 07");
+    }
+    {   // a blink first, then the page: still one press
+        Scripted p; p.script = {{0, "    "}, {100, "rEv "}};
+        CHECK(waitForPresetDisplay(p, 5000) && p.presses == 1);
+    }
+    {   // normal mode with another display: never pressed; it comes back by itself, or the wait fails
+        Scripted p; p.modeValue = kPanelModeNormal; p.script = {{0, "c 64"}, {800, "P 12"}};
+        CHECK(waitForPresetDisplay(p, 5000) && p.presses == 0);
+        Scripted q; q.modeValue = kPanelModeNormal; q.script = {{0, "c 64"}};
+        CHECK(!waitForPresetDisplay(q, 2000) && q.presses == 0);
+    }
+    {   // no answer to the mode read: never pressed
+        Scripted p; p.modeAnswers = false; p.script = {{0, "InS1"}};
+        CHECK(!waitForPresetDisplay(p, 2000) && p.presses == 0);
+    }
+    {   // the page stays after the press: fails after exactly one press
+        Scripted p; p.script = {{0, "tEMP"}}; p.afterBank = "tEMP";
+        CHECK(!waitForPresetDisplay(p, 2000) && p.presses == 1);
+    }
+    CHECK(isPresetDisplay("P 01") && isPresetDisplay("P 64") && !isPresetDisplay("donE") && !isPresetDisplay("P 1") && !isPresetDisplay("bAn1"));
 }
 }  // namespace
 
@@ -672,6 +816,7 @@ int main() {
     testScan(dir);
     testService(dir);
     testWindow(dir);
+    testDisplayWait();
     fs::remove_all(dir);
     std::printf("library_test: %s\n", failures ? "FAILED" : "passed");
     return failures ? 1 : 0;

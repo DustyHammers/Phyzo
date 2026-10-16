@@ -52,15 +52,15 @@ void Service::enqueue(Job job, bool front) {
     cv_.notify_all();
 }
 
-void Service::open() { Job j{Job::Type::Refresh}; enqueue(std::move(j), false); }
-void Service::prepareSave() { Job j{Job::Type::PrepareSave}; enqueue(std::move(j), true); }
+void Service::open() { Job j; j.type = Job::Type::Refresh; enqueue(std::move(j), false); }
+void Service::prepareSave() { Job j; j.type = Job::Type::PrepareSave; enqueue(std::move(j), true); }
 void Service::saveAs(const SaveDraft& draft, const std::string& name) {
-    Job j{Job::Type::SaveAs};
+    Job j; j.type = Job::Type::SaveAs;
     j.draft = draft; j.name = name;
     enqueue(std::move(j), true);
 }
-void Service::exportBank(int bank) { Job j{Job::Type::Export}; j.bank = bank; enqueue(std::move(j), true); }
-void Service::import(const std::vector<std::string>& paths) { Job j{Job::Type::Import}; j.paths = paths; enqueue(std::move(j), true); }
+void Service::exportBank(int bank) { Job j; j.type = Job::Type::Export; j.bank = bank; enqueue(std::move(j), true); }
+void Service::import(const std::vector<std::string>& paths) { Job j; j.type = Job::Type::Import; j.paths = paths; enqueue(std::move(j), true); }
 
 void Service::cancelAll() {
     {
@@ -101,7 +101,7 @@ bool Service::loadBank(const std::string& path, int bank) {
         bankJob_.bank = bank;
         bankJob_.file = title;
     }
-    Job j{Job::Type::LoadBank};
+    Job j; j.type = Job::Type::LoadBank;
     j.path = path; j.bank = bank;
     enqueue(std::move(j), true);
     return true;
@@ -276,7 +276,10 @@ void Service::refresh() {
         }
     }
     for (const std::string& rel : bad) notice(fs::path(rel).filename().string() + "  NO PRESET OR BANK IN THIS FILE");
-    for (const auto& [path, md5] : todo) enqueue({Job::Type::Index, path, md5, 0, {}}, false);
+    for (const auto& [path, md5] : todo) {
+        Job j; j.type = Job::Type::Index; j.path = path; j.md5 = md5;
+        enqueue(std::move(j), false);
+    }
     changed();
 }
 
@@ -377,9 +380,10 @@ void Service::doPrepareSave() {
     std::string err;
     std::unique_ptr<Ops> ops = state.empty() ? nullptr : machines_->clone(state, cancel_, err);
     if (!ops) { d.error = "NOT SAVED  THE SYNTH IS NOT RUNNING"; done(); return; }
-    // The clone shows what the panel showed (e.g. `donE` right after a panel Dump): first the preset display.
-    if (!ops->waitForPreset()) { d.error = "NOT SAVED  " + upper(ops->error()); done(); return; }
+    // Unsaved edits first (the LED does not depend on what the display shows); then the preset display: the clone shows
+    // what the panel showed (`donE` right after a panel Dump, or an effect page: waitForPresetDisplay).
     if (ops->compareLit()) { d.compare = true; done(); return; }
+    if (!ops->waitForPreset()) { d.error = "NOT SAVED  " + upper(ops->error()); done(); return; }
     d.preset = ops->displayedPreset();
     if (!ops->readName(0, d.osName) || !ops->dumpPreset(d.message)) {
         d.message.clear();

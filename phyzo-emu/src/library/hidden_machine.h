@@ -17,11 +17,32 @@ namespace library {
 
 // Panel ids (the raw codes of Engine::pressRaw) and the Compare LED code (Engine::led), from the rack skin's main
 // document. The Compare LED is lit while the edit buffer differs from the stored preset: unsaved edits, or a received
-// preset in Compare.
-constexpr uint8_t kRawDump = 0x0C, kRawYes = 0x0D;
+// preset in Compare. Bank (0x19) on an effect, reverb or tempo page returns the display to P nn with the same preset
+// and edit buffer (verified on the real OS); on P nn it switches banks.
+constexpr uint8_t kRawDump = 0x0C, kRawYes = 0x0D, kRawBank = 0x19;
 constexpr uint8_t kLedCompare = 0x16;
+constexpr int kPanelModeNormal = 0x01;              // the OS's panel mode (0x0BE01A8B, as the editor's arp edits read it)
+constexpr double kPresetDisplayMs = 5000;           // longest wait for the display to show a preset again
 
 using Progress = std::function<void(size_t done, size_t total)>;
+
+// The panel as waitForPresetDisplay sees it: a hidden machine's (a clone or a fresh machine; never the running
+// machine), or a test's fake.
+class PresetPanel {
+public:
+    virtual ~PresetPanel() = default;
+    virtual std::string text() = 0;                  // the display now (blank during a blink)
+    virtual bool mode(int& mode) = 0;                // the OS's panel mode; false: no answer
+    virtual bool press(uint8_t raw) = 0;             // held and released like the other presses; false: stopped
+    virtual bool run(double ms) = 0;                 // machine time passes; false: cancelled or stopped
+};
+bool isPresetDisplay(const std::string& text);      // "P nn"
+// Waits until the display shows a preset (P nn), at most limitMs. `donE` (after a Dump) clears by itself and is waited
+// out. Any other display that is not P nn (an effect, reverb or tempo page) gets the Bank button pressed once, which
+// brings P nn back with the same preset and edit buffer; only while the panel mode is not normal (0x01), never while
+// P nn shows (there Bank switches banks), and never more than once. After the press it waits limitMs again. False:
+// still no P nn.
+bool waitForPresetDisplay(PresetPanel& panel, double limitMs, double stepMs = 5);
 
 // What a library job asks of a hidden machine (HiddenMachine; tests use a fake). Every call waits on the OS (its
 // display, its MIDI output) rather than a fixed delay, within a limit; false if the OS did not answer, with error().
@@ -34,7 +55,8 @@ public:
     virtual bool readName(uint16_t number, std::string& name) = 0;   // trimmed
     virtual bool compareLit() = 0;
     // Waits until the display shows a preset (P nn): after a Dump the OS shows `donE` for a while, and a clone starts
-    // with whatever the panel showed. A Dump pressed before that only clears `donE` and enters no Dump list.
+    // with whatever the panel showed (an effect, reverb or tempo page too: waitForPresetDisplay). A Dump pressed before
+    // that only clears `donE` and enters no Dump list.
     virtual bool waitForPreset() = 0;
     // The preset the display shows (0-63, after waitForPreset); -1 if it shows none.
     virtual int displayedPreset() { return -1; }

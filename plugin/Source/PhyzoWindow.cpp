@@ -26,10 +26,12 @@ juce::Font mono(float px) {
     return juce::Font(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(), px, juce::Font::plain).withPointHeight(px));
 }
 
-// A settings row: the label, a muted detail, a control at the right (a child owned by the page).
+// A settings row: the label, a muted detail, a control at the right (a child owned by the page). With detailBelow, the
+// detail goes under the label and wraps to as many lines as it needs (heightFor).
 class SettingRow : public juce::Component {
 public:
-    SettingRow(const ui::Theme& t, juce::String label) : theme_(t), label_(std::move(label)) {}
+    SettingRow(const ui::Theme& t, juce::String label, bool detailBelow = false)
+        : theme_(t), label_(std::move(label)), below_(detailBelow) {}
     void setDetail(const juce::String& d) { if (d != detail_) { detail_ = d; repaint(); } }
     void setLabel(const juce::String& l) { if (l != label_) { label_ = l; repaint(); } }
     const juce::String& detail() const { return detail_; }
@@ -37,18 +39,32 @@ public:
     void resized() override {
         if (control_) control_->setBounds(juce::Rectangle<float>(float(getWidth()) - 12 - cw_, (float(getHeight()) - ch_) / 2, cw_, ch_).toNearestInt());
     }
+    // The row's height at `width` (detailBelow: the label line, then the detail's lines).
+    float heightFor(float width) const {
+        if (!below_ || detail_.isEmpty()) return ui::dp::fileRow;
+        return 12 + kLabelLine + 2 + ui::wrappedHeight(detail_, theme_.font(ui::dp::fileText), textWidth(width)) + 12;
+    }
     void paint(juce::Graphics& g) override {
         const auto r = getLocalBounds().toFloat();
         ui::drawRow(g, r.reduced(0.5f), ui::dp::fileRadius, false);
         auto inner = r.reduced(14, 0);
         if (control_) inner.removeFromRight(cw_ + 12);
+        if (below_ && detail_.isNotEmpty()) {
+            inner = inner.withTrimmedTop(12);
+            ui::drawText(g, label_, theme_.font(ui::dp::buttonText), inner.removeFromTop(kLabelLine), ui::colours::text);
+            ui::drawWrapped(g, detail_, theme_.font(ui::dp::fileText), inner.withTrimmedTop(2), ui::colours::muted);
+            return;
+        }
         ui::drawText(g, label_, theme_.font(ui::dp::buttonText), inner.removeFromLeft(kLabelW), ui::colours::text);
         ui::drawText(g, detail_, theme_.font(ui::dp::fileText), inner, ui::colours::muted);
     }
 
 private:
+    static constexpr float kLabelLine = 20;
+    float textWidth(float width) const { return width - 28 - (control_ ? cw_ + 12 : 0); }
     const ui::Theme& theme_;
     juce::String label_, detail_;
+    bool below_;
     juce::Component* control_ = nullptr;
     float cw_ = 0, ch_ = 0;
 };
@@ -333,7 +349,7 @@ juce::String syncExplanation(midiclock::Mode m) {
 class PhyzoWindow::MidiPage : public juce::Component {
 public:
     explicit MidiPage(PhyzoWindow& w)
-        : w_(w), portRow_(w.theme_, "Virtual port"), hostRow_(w.theme_, "Send MIDI to host"), portSwitch_(w.theme_), hostSwitch_(w.theme_),
+        : w_(w), portRow_(w.theme_, "Virtual port", true), hostRow_(w.theme_, "Send MIDI to host", true), portSwitch_(w.theme_), hostSwitch_(w.theme_),
           sync_(w.theme_), table_(w.theme_, w.proc_), saveDefault_(w.theme_, "Save as default"), clearDefault_(w.theme_, "Clear default"),
           forgetAll_(w.theme_, "Forget all") {
         setComponentID("midi");
@@ -372,7 +388,7 @@ public:
         hostSwitch_.setOn(SkinSettings::midiToHost());
         sync_.setSelected(int(w_.proc_.syncMode()));
         const juce::String text = syncExplanation(w_.proc_.syncMode());
-        if (text != syncText_) { syncText_ = text; repaint(); }
+        if (text != syncText_) { syncText_ = text; resized(); repaint(); }
         table_.refresh();
         clearDefault_.setEnabled(SkinSettings::midiLearnDefaults().isNotEmpty());
         forgetAll_.setEnabled(!w_.proc_.learn().bindings().empty());
@@ -382,13 +398,14 @@ public:
         auto left = r.removeFromLeft(std::min(560.0f, r.getWidth() * 0.42f));
         r.removeFromLeft(ui::dp::gap * 2);
         headings_[0] = left.removeFromTop(kHeadingH);
-        portRow_.setBounds(left.removeFromTop(ui::dp::fileRow).toNearestInt());
+        portRow_.setBounds(left.removeFromTop(portRow_.heightFor(left.getWidth())).toNearestInt());
         left.removeFromTop(kRowGap);
-        hostRow_.setBounds(left.removeFromTop(ui::dp::fileRow).toNearestInt());
+        hostRow_.setBounds(left.removeFromTop(hostRow_.heightFor(left.getWidth())).toNearestInt());
         left.removeFromTop(18);
         headings_[1] = left.removeFromTop(kHeadingH);
         sync_.setBounds(left.removeFromTop(ui::dp::button).toNearestInt());
-        syncLine_ = left.removeFromTop(30);
+        // The explanation wraps to as many lines as it needs (never cut).
+        syncLine_ = left.removeFromTop(6 + ui::wrappedHeight(syncText_, w_.theme_.font(ui::dp::fileText), left.getWidth()));
         headings_[2] = r.removeFromTop(kHeadingH);
         hint_ = r.removeFromBottom(26);
         auto buttons = r.removeFromBottom(ui::dp::button);
@@ -404,7 +421,7 @@ public:
         drawHeading(g, w_.theme_, "PORTS", headings_[0].withTrimmedBottom(8));
         drawHeading(g, w_.theme_, "SYNC TO HOST TEMPO", headings_[1].withTrimmedBottom(8));
         drawHeading(g, w_.theme_, "MIDI LEARN", headings_[2].withTrimmedBottom(8));
-        ui::drawText(g, syncText_, w_.theme_.font(ui::dp::fileText), syncLine_.withTrimmedTop(6), ui::colours::muted);
+        ui::drawWrapped(g, syncText_, w_.theme_.font(ui::dp::fileText), syncLine_.withTrimmedTop(6), ui::colours::muted);
         ui::drawText(g, "right-click a knob or button to learn it", w_.theme_.font(ui::dp::fileText), hint_.withTrimmedTop(6), ui::colours::muted);
     }
 
@@ -729,7 +746,7 @@ public:
                 ui::drawRow(g, r, ui::dp::fileRadius, false);
                 auto inner = r.reduced(14, 10);
                 const auto ledArea = inner.removeFromLeft(14);
-                ui::drawLed(g, {ledArea.getCentreX(), inner.getY() + 9}, 4.0f, libtext::inBank(playing, b));
+                ui::drawLed(g, {ledArea.getCentreX(), r.getCentreY()}, 4.0f, libtext::inBank(playing, b));   // centred on the row
                 inner.removeFromLeft(8);
                 auto top = inner.removeFromTop(inner.getHeight() / 2);
                 const juce::String name = u8(libtext::bankName(b));

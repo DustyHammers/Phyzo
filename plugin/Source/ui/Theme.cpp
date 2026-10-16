@@ -40,6 +40,26 @@ void drawText(juce::Graphics& g, const juce::String& text, const juce::Font& fon
     g.drawText(ellipsize(text, font, area.getWidth()), area, just, false);
 }
 
+namespace {
+juce::GlyphArrangement wrapped(const juce::String& text, const juce::Font& font, float x, float y, float width) {
+    juce::GlyphArrangement ga;
+    ga.addJustifiedText(font, text, x, y + font.getAscent(), std::max(1.0f, width), juce::Justification::topLeft, 0.0f);
+    return ga;
+}
+}  // namespace
+
+float wrappedHeight(const juce::String& text, const juce::Font& font, float width) {
+    if (text.isEmpty()) return 0;
+    const juce::GlyphArrangement ga = wrapped(text, font, 0, 0, width);
+    return std::max(font.getHeight(), ga.getBoundingBox(0, -1, true).getBottom());
+}
+
+void drawWrapped(juce::Graphics& g, const juce::String& text, const juce::Font& font, juce::Rectangle<float> area, juce::Colour colour) {
+    if (text.isEmpty() || area.getWidth() <= 0) return;
+    g.setColour(colour);
+    wrapped(text, font, area.getX(), area.getY(), area.getWidth()).draw(g);
+}
+
 juce::Path arrowPath(juce::Rectangle<float> box) {
     const float s = std::min(box.getWidth(), box.getHeight());
     const auto c = box.getCentre();

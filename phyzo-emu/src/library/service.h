@@ -120,7 +120,7 @@ public:
 
 private:
     struct Job {
-        enum class Type { Refresh, Index, PrepareSave, SaveAs, Export, Import, LoadBank } type;
+        enum class Type { Refresh, Index, PrepareSave, SaveAs, Export, Import, LoadBank } type = Type::Refresh;
         std::string path, md5; int bank = 0; std::vector<std::string> paths;
         SaveDraft draft; std::string name;
     };

@@ -242,6 +242,7 @@ void Footer::resized() {
         buttons_[i]->setBounds(juce::Rectangle<float>(r.getRight() - w, by, w, bh).toNearestInt());
         r.removeFromRight(w + 10);
     }
+    textArea_ = r.withTrimmedTop(6).withTrimmedBottom(6);
     // The parts in order; a field takes 260 dp (less if it must); the last text part before the room runs out ends in "…".
     partBounds_.clear();
     const juce::Font f = theme_.font(dp::buttonText);
@@ -257,6 +258,17 @@ void Footer::resized() {
 
 void Footer::paint(juce::Graphics& g) {
     const juce::Font f = theme_.font(dp::buttonText);
+    if (!field_.isVisible() && !parts_.empty()) {     // text alone: whole, on up to three lines
+        juce::String text;
+        bool muted = true;
+        for (const Part& p : parts_) { text << p.text; muted = muted && p.muted; }
+        juce::GlyphArrangement ga;
+        ga.addFittedText(f, text, textArea_.getX(), textArea_.getY(), textArea_.getWidth(), textArea_.getHeight(),
+                         juce::Justification::centredLeft, 3, 1.0f);
+        g.setColour(muted ? colours::muted : colours::text);
+        ga.draw(g);
+        return;
+    }
     for (size_t i = 0; i < parts_.size() && i < partBounds_.size(); ++i)
         if (!parts_[i].field) drawText(g, parts_[i].text, f, partBounds_[i], parts_[i].muted ? colours::muted : colours::text);
 }

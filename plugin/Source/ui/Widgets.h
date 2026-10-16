@@ -113,8 +113,8 @@ private:
     const Theme& theme_;
 };
 
-// The footer's line: text parts (one of them may be a text field) on the left, buttons on the right. Text that does
-// not fit ends in "…".
+// The footer's line: text parts (one of them may be a text field) on the left, buttons on the right. Text alone (no
+// field) wraps to up to three lines; with a field, text that does not fit ends in "…".
 class Footer : public juce::Component {
 public:
     explicit Footer(const Theme& theme);
@@ -138,6 +138,7 @@ private:
     std::vector<std::unique_ptr<Button>> buttons_;
     juce::TextEditor field_;
     std::vector<juce::Rectangle<float>> partBounds_;
+    juce::Rectangle<float> textArea_;                // text alone: where it wraps
 };
 
 // The window: an overlay over the whole plugin area, the window inset by dp::inset with its header (title, tabs,

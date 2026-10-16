@@ -35,10 +35,9 @@ inline std::string count(const library::Service::SourceView& v) {
 // A preset in the PRESETS column: "nn  name" (numbered from 01).
 inline std::string presetCell(int index, const std::string& name) { return twoDigits(index + 1) + "  " + name; }
 
-// The Memory column: the bank's title (the file last loaded into it in this project, else its range) and detail.
-inline std::string bankTitle(int bank, const std::string& lastLoaded) {
-    return lastLoaded.empty() ? "Presets " + bankRange(bank) : lastLoaded;
-}
+// The Memory column: after "Bank N", the file last loaded into it in this project (empty: none, the row shows
+// "Bank N" only), then the detail line.
+inline std::string bankTitle(int /*bank*/, const std::string& lastLoaded) { return lastLoaded; }
 inline std::string bankDetail(int bank, int playing) {
     return "presets " + bankRange(bank) + (inBank(playing, bank) ? std::string(kMid) + "playing " + presetNumber(playing) : std::string());
 }
@@ -47,6 +46,7 @@ inline std::string bankDetail(int bank, int playing) {
 inline std::string loadConfirm(const std::string& file, int bank, int playing) {
     std::string s = "Load \"" + file + "\" into " + bankName(bank) + " (presets " + bankRange(bank) + ")? " + bankName(bank) + " is backed up first.";
     if (inBank(playing, bank)) s += " " + presetNumber(playing) + " will change; unsaved edits on it will be lost.";
+    s += " MIDI input waits until it finishes (about 35 s).";   // a bank takes about 33 s at cable speed
     return s;
 }
 inline std::string savePrefix(int preset) { return "Save " + (preset >= 0 ? presetNumber(preset) : std::string("the preset")) + " to Singles as"; }

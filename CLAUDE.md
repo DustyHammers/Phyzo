@@ -131,6 +131,9 @@ owner step by step through anything they must do by hand on github.com or on the
     (`Engine::libraryInput`; the OS puts it in Compare; Save on the panel keeps it).
   - Files are read by hidden machines on a worker thread, one job at a time in the process. Fresh machines boot the
     v0.8.3 way; clones restore the running machine's snapshot, which is never paused, pressed or read otherwise.
+    Every clone job first waits for `P nn` (`waitForPresetDisplay`): `donE` is waited out; any other display (an
+    effect, reverb or tempo page) gets Bank 0x19 pressed once in the clone, never on `P nn` (it switches banks there),
+    never while the panel mode (0x0BE01A8B) reads 0x01, never twice.
   - The machines are driven only through the OS: panel Dump 0x0C and +/Yes 0x0D, program changes, SysEx in, name
     reads (#0, 0x40 + n).
   - Index cache: `cache/library/<file MD5>.idx` (so Rename reads nothing again). Factory bank files:

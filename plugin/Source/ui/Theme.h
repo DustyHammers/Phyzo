@@ -48,6 +48,10 @@ float textWidth(const juce::Font& font, const juce::String& text);
 void drawText(juce::Graphics& g, const juce::String& text, const juce::Font& font, juce::Rectangle<float> area, juce::Colour colour,
               juce::Justification just = juce::Justification::centredLeft);
 
+// Explanations that must be read whole: as many lines as `width` needs (names and labels use drawText's "…").
+float wrappedHeight(const juce::String& text, const juce::Font& font, float width);
+void drawWrapped(juce::Graphics& g, const juce::String& text, const juce::Font& font, juce::Rectangle<float> area, juce::Colour colour);
+
 // Symbols drawn as paths, never as font glyphs: the arrow (▸), the cross (✕), the tick (✓), a dot, an LED.
 juce::Path arrowPath(juce::Rectangle<float> box);    // a right-pointing triangle centred in box
 void drawArrow(juce::Graphics& g, juce::Rectangle<float> box, juce::Colour colour);

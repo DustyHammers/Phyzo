@@ -189,9 +189,10 @@ does. So LFO, arpeggiator and random timings differ from 0.8.2 renders; every pr
   the synth over MIDI does, and nothing in the synth's memory changes (a small blue dot marks it while the Compare LED
   is lit). Press **Save** on the panel to keep it in a slot. Right-click a single for Rename…, Delete, Show in Finder.
 - **MEMORY** (right): the synth's Bank 1 (presets 1–32) and Bank 2 (33–64). The red dot is lit for the bank holding the
-  preset that is playing; the title is the file you last loaded into that bank in this project.
+  preset that is playing; next to **Bank N** is the file you last loaded into that bank in this project.
   - **Load…**: choose a bank file (or **Other file…**). The footer asks first; if the playing preset is in that bank,
-    it says that preset will change and unsaved edits on it are lost. Phyzo first saves the bank as it is to
+    it says that preset will change and unsaved edits on it are lost, and that MIDI input waits until the load is
+    finished (about 35 s). Phyzo first saves the bank as it is to
     `Library/Backups/Bank N <date> <time>.syx`, then sends the file to the synth (about 33 seconds, as over a MIDI
     cable; you can keep playing). **Cancel** works while the backup is made. When the synth has the new names, the
     footer says `LOADED … INTO BANK N`.
@@ -200,6 +201,8 @@ does. So LFO, arpeggiator and random timings differ from 0.8.2 renders; every pr
   asks `Save Pnn to Singles as [name] .syx` with the preset's own name filled in; type a name and press Enter (or
   **Save**); Esc cancels. It refuses while the Compare LED is lit (save on the panel first). A file is never
   overwritten (` 2` is added).
+- Save, Save as file and Load also work while the panel shows an effect, reverb or tempo page: the hidden copy of the
+  synth that does the work presses Bank once to get back to the preset display. Your own panel is never touched.
 - **The factory bank files:** the first time the tab opens, Phyzo makes them once from your own OS (about 2 minutes;
   the factory rows and the footer show the progress) in `Library/Factory/`. They're made from your OS, so don't share
   them.

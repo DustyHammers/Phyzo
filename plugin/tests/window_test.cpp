@@ -204,6 +204,8 @@ int main(int argc, char** argv) {
         CHECK(cut.endsWith(juce::String::fromUTF8("\xe2\x80\xa6")) && ui::textWidth(f, cut) <= 80 && cut.length() < longText.length());
         CHECK(ui::ellipsize("Pad", f, 200) == "Pad");
         CHECK(ui::ellipsize(longText, f, 1).isEmpty());
+        // Explanations wrap to as many lines as they need (v0.9.0 fix): taller when narrow, one line when wide.
+        CHECK(ui::wrappedHeight(longText, f, 120) > 2.5f * f.getHeight() && std::abs(ui::wrappedHeight("Pad", f, 400) - f.getHeight()) < 2);
         std::printf("window_test: theme font and fallback, ellipsis\n");
     }
 
@@ -438,7 +440,8 @@ int main(int argc, char** argv) {
         CHECK(pageComp != nullptr);
         // The confirmation Load... > a file asks (with the playing preset in the bank: it will change).
         CHECK(libtext::loadConfirm("My Bank", 0, -1) ==
-              juce::String::fromUTF8("Load \"My Bank\" into Bank 1 (presets 1\xe2\x80\x93" "32)? Bank 1 is backed up first.").toStdString());
+              juce::String::fromUTF8("Load \"My Bank\" into Bank 1 (presets 1\xe2\x80\x93" "32)? Bank 1 is backed up first. "
+                                     "MIDI input waits until it finishes (about 35 s).").toStdString());
         CHECK(libtext::loadConfirm("My Bank", 1, 39).find("P40 will change; unsaved edits on it will be lost.") != std::string::npos);
         CHECK(libtext::loadConfirm("My Bank", 0, 39).find("will change") == std::string::npos);
         CHECK(s.loadBank(bankPath.toStdString(), 0));
@@ -446,7 +449,17 @@ int main(int argc, char** argv) {
         settle();
         CHECK(sh.sent.size() == 1 && sh.sent[0][6] == 0);
         CHECK(waitFor([&] { w.tickForTest(); return p->lastLoaded(0) == "My Bank"; }));
-        CHECK(libtext::bankTitle(0, p->lastLoaded(0).toStdString()) == "My Bank" && libtext::bankTitle(1, "") == juce::String::fromUTF8("Presets 33\xe2\x80\x93" "64").toStdString());
+        CHECK(libtext::bankTitle(0, p->lastLoaded(0).toStdString()) == "My Bank" && libtext::bankTitle(1, "").empty());   // "Bank 2" alone
+        CHECK(libtext::bankDetail(1, 39) == juce::String::fromUTF8("presets 33\xe2\x80\x93" "64 \xc2\xb7 playing P40").toStdString());
+        // The confirmation in the footer, whole (it wraps), with Load and Cancel.
+        w.confirmLoadForTest(bankPath, "My Bank", 1);
+        CHECK(f.text() == juce::String::fromUTF8(libtext::loadConfirm("My Bank", 1, p->playingPreset()).c_str()));
+        CHECK(f.text().contains("MIDI input waits until it finishes (about 35 s).") && (f.actionLabels() == juce::StringArray{"Load", "Cancel"}));
+        snapshot(ed, shots, "library-load-confirm");
+        ed.setSize(BuiltinView::kWidth, BuiltinView::kHeight);
+        snapshot(ed, shots, "library-load-confirm-100");
+        f.click("Cancel");
+        CHECK(f.actionLabels().isEmpty());
         bool backup = false;
         for (const auto& e : fs::directory_iterator(data / "Library" / "Backups")) backup = backup || e.path().filename().string().rfind("Bank 1 ", 0) == 0;
         CHECK(backup);

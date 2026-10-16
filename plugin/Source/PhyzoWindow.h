@@ -38,6 +38,7 @@ public:
     ui::Frame& frame() { return frame_; }
     juce::Component* page(int tab);
     void tickForTest() { timerCallback(); }
+    void confirmLoadForTest(const juce::String& path, const juce::String& file, int bank) { confirmLoad(path, file, bank); }
 
     void resized() override;
     bool keyPressed(const juce::KeyPress&) override;

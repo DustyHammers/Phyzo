@@ -43,8 +43,14 @@ stored preset.
 - **Fresh machines:** boot with the factory user memory seeded before boot (Step 1). The first boot's state is kept,
   and later fresh machines are restored from it.
 - **Clones:** restore the running machine's state, taken the same way as for the host (a snapshot at a block
-  boundary). The running machine is never paused, pressed or read for a clone. A clone shows what the panel showed
-  (for example `donE` right after a panel Dump), so every clone job first waits until its display shows `P nn`.
+  boundary). The running machine is never paused, pressed or read for a clone. A clone shows what the panel showed,
+  so every clone job first waits until its display shows `P nn` (`waitForPresetDisplay`, v0.9.0 fix):
+  - `donE` (right after a panel Dump) clears by itself and is waited out;
+  - any other display that is not `P nn` (an effect, reverb or tempo page: the user tweaked effects before saving)
+    gets the **Bank** button (0x19) pressed **once** in the clone, which brings back `P nn` with the same preset and
+    edit buffer (verified on the real OS). Never while `P nn` shows (there Bank switches banks), never while the OS's
+    panel mode (0x0BE01A8B, read as the editor's arp edits read it) is normal (0x01), never more than once;
+  - still no `P nn` within 5 s (after the press, 5 s again): the job fails as before.
 - **One job at a time:** in the whole process (instances take turns). Jobs are queued and can be cancelled, and they
   stop when the plugin closes. Save, Save as file, Import and a bank load go to the front of the queue.
 
@@ -95,17 +101,20 @@ are made the first time.
   - A preset the OS did not take is shown muted; clicking it says `nn  name  NOT ACCEPTED BY THE OS`.
   - Right-click a single: **Rename…**, **Delete**, **Show in Finder**.
 - **MEMORY · 2 BANKS** (300 dp): Bank 1 and Bank 2, each with an LED (lit while the playing preset, the display's
-  `P nn`, is in that bank), its title (the file last loaded into it in this project, else `Presets 1–32` /
-  `Presets 33–64`) and a muted detail (`presets 1–32 · playing P05`). Under each: **Load…** and **Save as file…**.
+  `P nn`, is in that bank; centred on the row), **Bank N** and the file last loaded into it in this project (none:
+  `Bank N` alone), and a muted detail (`presets 1–32 · playing P05`). Under each: **Load…** and **Save as file…**.
   The last-loaded names are saved with the project (processor state version 8; older projects: none).
 - **Footer:** the window's messages (the library's, MIDI learn's), confirmations, progress and the Save name box,
-  whatever tab shows. Messages arriving while no window shows them wait for it.
+  whatever tab shows. Messages arriving while no window shows them wait for it. Text alone wraps to up to three
+  lines (a confirmation is never cut).
 
 ### Save with a name (the rack legend SAVE)
 
 - The window opens on LIBRARY. If the Compare LED is lit (unsaved edits, or a library preset in Compare):
   `UNSAVED EDITS  SAVE ON THE PANEL FIRST`, and nothing more.
-- Otherwise a clone checks the LED again, reads the current preset's number and name and dumps it; the footer asks
+- Otherwise a clone checks the LED again (before anything else, so unsaved edits on an effect page get this message,
+  not a display error), waits for `P nn` (see Clones), reads the current preset's number and name and dumps it; the
+  footer asks
   `Save Pnn to Singles as [name] .syx` with **Save** and **Cancel**. The box starts with the OS's name, trimmed, and
   has the focus; Enter saves, Esc or Cancel cancels.
 - The name is made safe (`_` for reserved characters); an empty name is the OS's name; an existing file is never
@@ -125,7 +134,8 @@ are made the first time.
 1. **Load…** opens a menu: the header `Load into Bank N`, every bank file (factory, banks, backups), then **Other
    file…** (an open dialog; the file must hold exactly one bank, else `<file> has no bank`).
 2. The footer asks: `Load "<file>" into Bank N (presets a–b)? Bank N is backed up first.`, adding
-   `Pnn will change; unsaved edits on it will be lost.` when the playing preset is in Bank N; **Load** and **Cancel**.
+   `Pnn will change; unsaved edits on it will be lost.` when the playing preset is in Bank N, then
+   `MIDI input waits until it finishes (about 35 s).`; **Load** and **Cancel**.
 3. **Backup:** a clone dumps Bank N to `Library/Backups/Bank N YYYY-MM-DD HHMM.syx` (never overwriting). If the
    backup fails, nothing is loaded. The footer shows `Backing up Bank N…` with **Cancel** (cancelling sends nothing).
 4. **Load:** the file's bank message with byte 6 set to the target bank and nothing else changed goes into the
