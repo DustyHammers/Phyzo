@@ -90,9 +90,13 @@ folder `rack` with `rack.rml` in it is the skin "rack" (with its .rcss, .lua, im
 **Built-in** is always available. Phyzo starts with "rack" if it is there, otherwise with Built-in.
 
 **The Phyzo window.** Right-click the background of the panel (anywhere that is not a knob or a panel button) to open
-the Phyzo window over the panel. It has four tabs, **SYSTEM · LIBRARY · SKIN · MIDI**; **Esc** or the round **✕**
-at the top right closes it. Its line at the bottom (the footer) shows messages, questions and progress. Its text uses
-the skin's own UI font when the skin names one, otherwise the system's.
+the Phyzo window. It opens in the middle of the plugin (the panel and the editor unit together), and the rest of the
+plugin is dimmed behind it. It has four tabs, **SYSTEM · LIBRARY · SKIN · MIDI**; **Esc**, the round **✕** at the top
+right, or a click on the dimmed area closes it. If a name box (Save, Rename) or a question is open, the first click on
+the dimmed area (or Esc) cancels it and the window stays open. The panel doesn't react to the mouse while the window
+is open; the small grip in the bottom-right corner still resizes the plugin. Its line at the bottom (the footer) shows
+messages, questions and progress. Its text uses the skin's own UI font when the skin names one, otherwise the
+system's.
 
 - **SYSTEM**: this Phyzo (version, plugin format), whether the OS and wave ROMs were found, the data folder
   (**Show** opens it) and the startup log `Phyzo-log.txt` (**Show**). Developer: **RmlUi debugger** (file skins) and
@@ -109,7 +113,8 @@ the skin's own UI font when the skin names one, otherwise the system's.
   On a 1080-point display the window with the editor unit fits up to about 110 %.
 - **LIBRARY**: see **Preset library** below; **MIDI**: see section 8.
 
-The Phyzo window never changes the plugin's size. With the small Built-in skin it is drawn smaller to fit.
+The Phyzo window never changes the plugin's size. It follows the zoom, and when the plugin is too small for it (the
+Built-in skin, low zoom) it is drawn smaller to fit.
 
 In the editor unit:
 

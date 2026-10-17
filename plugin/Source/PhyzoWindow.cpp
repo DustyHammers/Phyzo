@@ -880,6 +880,7 @@ PhyzoWindow::PhyzoWindow(PhyzoEditor& editor, PhyzoProcessor& proc, const ui::Th
     : editor_(editor), proc_(proc), theme_(theme), menus_(menus), frame_(theme, "PHYZO", {"SYSTEM", "LIBRARY", "SKIN", "MIDI"}) {
     setComponentID("phyzoWindow");
     setWantsKeyboardFocus(true);
+    setMouseClickGrabsKeyboardFocus(false);          // a click on the backdrop leaves an open box its focus (cancelled first)
     addAndMakeVisible(frame_);
     system_ = std::make_unique<SystemPage>(*this);
     skin_ = std::make_unique<SkinPage>(*this);
@@ -935,23 +936,34 @@ void PhyzoWindow::refresh() {
     repaint();
 }
 
-void PhyzoWindow::place(juce::Rectangle<int> area, float dpScale) {
-    dpScale_ = dpScale > 0 ? dpScale : 1.0f;
-    setTransform(juce::AffineTransform::scale(dpScale_).translated(float(area.getX()), float(area.getY())));
-    setBounds(0, 0, juce::roundToInt(float(area.getWidth()) / dpScale_), juce::roundToInt(float(area.getHeight()) / dpScale_));
-    menus_.setScale(dpScale_);
+void PhyzoWindow::place(juce::Rectangle<int> area, float pointsPerDp) {
+    pointsPerDp_ = pointsPerDp > 0 ? pointsPerDp : 1.0f;
+    setBounds(area);
+    placement_ = ui::placeCentred(getLocalBounds(), pointsPerDp_, {kLayoutW, kLayoutH}, kDrawnWidth, ui::dp::inset);
+    frame_.setTransform(juce::AffineTransform::scale(placement_.scale).translated(placement_.bounds.getX(), placement_.bounds.getY()));
+    menus_.setScale(placement_.scale);
+    repaint();
 }
 
 void PhyzoWindow::resized() {
-    frame_.setBounds(getLocalBounds());
+    frame_.setBounds(0, 0, int(kLayoutW), int(kLayoutH));
     const auto body = frame_.bodyBounds();
     for (int t = 0; t < 4; ++t) page(t)->setBounds(body);
 }
 
+void PhyzoWindow::paint(juce::Graphics& g) {
+    ui::drawBackdrop(g, getLocalBounds().toFloat(), placement_.bounds, pointsPerDp_ * placement_.fit);
+}
+
 // The plugin area's bottom-right corner stays with the skin (its resize grip).
 bool PhyzoWindow::hitTest(int x, int y) {
-    const float corner = 24.0f / dpScale_;
-    return !(float(x) >= float(getWidth()) - corner && float(y) >= float(getHeight()) - corner);
+    return !(x >= getWidth() - kGripSize && y >= getHeight() - kGripSize);
+}
+
+// A click on the backdrop: as Esc (an open box or question cancelled first, then the window closed).
+void PhyzoWindow::mouseDown(const juce::MouseEvent&) {
+    if (cancelEditing()) grabKeyboardFocus();
+    else editor_.closeWindow();
 }
 
 bool PhyzoWindow::keyPressed(const juce::KeyPress& k) {
@@ -962,6 +974,11 @@ bool PhyzoWindow::keyPressed(const juce::KeyPress& k) {
     }
     return false;
 }
+
+void PhyzoWindow::renameForTest(const juce::String& path, const juce::String& name) {
+    library_->renameAt(*library_, {10, 10, 200, 30}, path, name);
+}
+bool PhyzoWindow::renamingForTest() const { return library_->edit_.active(); }
 
 bool PhyzoWindow::cancelEditing() {
     if (library_->cancelEdit()) return true;

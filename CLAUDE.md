@@ -84,7 +84,12 @@ owner step by step through anything they must do by hand on github.com or on the
   Built-in). The plugin window (v0.9.0, `PhyzoWindow.*`): over the panel and the editor unit, never changing the
   plugin's size; tabs SYSTEM, LIBRARY, SKIN, MIDI (the old menu's Skin, Reload, Zoom, Editor, MIDI and Developer moved
   there) and a footer for messages, questions and progress; Esc or its round close button closes it (Esc goes to the
-  host only when no window, menu or inline edit is open). Its shared, themeable parts are in `plugin/Source/ui/` (no
+  host only when no window, menu or inline edit is open). Size and place (v0.9.1): laid out at 1180 x 720 dp, drawn
+  1000 x 610 dp of the skin (scale 1000/1180 on the skin's dp scale; Built-in: its 100 % pixels as dp), centred in the
+  whole plugin area, scaled down uniformly only when the area less 14 dp a side is too small; recomputed in
+  `PhyzoEditor::placeWindow` on resize, zoom and editor unit changes. Its backdrop (the window component itself) dims
+  the rest (black 45 %) with the window's shadow, takes every mouse event (the panel gets none, wheel included) except
+  the bottom-right 24-point grip, and a click on it acts as Esc (an open box or question is cancelled first). Its shared, themeable parts are in `plugin/Source/ui/` (no
   plugin includes): the font is the skin's `<meta name="ui-font">` file (loaded with JUCE on load and F5), else JUCE's
   default sans; never commit a font. Rack legends `<legend action="rack" value="EDITOR|SAVE">` (`skin_view.cpp`)
   toggle the editor unit / open Save with a name; `action="library"` is obsolete (unavailable, one skin-log line).

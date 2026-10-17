@@ -149,7 +149,7 @@ jobs:
         run: build/plugin/midi_learn_plugin_test
       - name: Sync to host tempo in the plugin (project state v7, MIDI tab, clock with a fake playhead; no ROMs)
         run: build/plugin/midi_clock_plugin_test
-      - name: Plugin window (theme, right-click, rack legends, tabs, LIBRARY with fake machines, state v8; no ROMs)
+      - name: Plugin window (theme, right-click, rack legends, tabs, size and place, backdrop, LIBRARY with fake machines, state v8; no ROMs)
         run: build/plugin/window_test plugin/skin/tests/skins/test
       - name: Plugin test tools under Rosetta (x86_64)
         if: steps.rosetta.outputs.available == 'true'

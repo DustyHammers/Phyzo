@@ -7,6 +7,11 @@
 //  - MIDI: the virtual port, MIDI to the host, Sync to host tempo, the MIDI learn bindings.
 // The footer carries the window's messages, confirmations, progress and the Save name box, whatever tab shows.
 // It never changes the plugin's size; Esc or the round close button closes it.
+// Size and place (v0.9.1): laid out at kLayoutW x kLayoutH dp and drawn kDrawnWidth dp of the skin wide (the layout
+// scaled uniformly), centred in the plugin area (the panel and the editor unit), scaled down only when the area less
+// ui::dp::inset on each side is too small. The rest of the area is the window's backdrop: dimmed, with the window's
+// shadow; a click there closes the window as Esc does (an open box or question is cancelled first); the panel under
+// it gets no mouse events, except in the plugin's bottom-right corner (the skin's resize grip).
 #pragma once
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <memory>
@@ -19,6 +24,8 @@ class PhyzoProcessor;
 class PhyzoWindow : public juce::Component, private juce::Timer {
 public:
     enum Tab { kSystem = 0, kLibrary = 1, kSkin = 2, kMidi = 3 };
+    static constexpr float kLayoutW = 1180, kLayoutH = 720, kDrawnWidth = 1000;
+    static constexpr int kGripSize = 24;             // the plugin's bottom-right corner, in points: the skin's grip
     PhyzoWindow(PhyzoEditor& editor, PhyzoProcessor& proc, const ui::Theme& theme, ui::MenuLookAndFeel& menus);
     ~PhyzoWindow() override;
 
@@ -31,18 +38,28 @@ public:
     void message(const juce::String& text);
     void refresh();                                  // re-read what the tabs show (a setting changed, the skin, the font)
     bool cancelEditing();                            // Esc: an inline rename or a footer question closed (false: none)
-    // Lays the window out over `area` (the plugin's area in the parent) at `dpScale` points per dp.
-    void place(juce::Rectangle<int> area, float dpScale);
+    // The backdrop over `area` (the plugin's area in the parent) and the window centred in it; `pointsPerDp`: points
+    // per dp of the skin (Built-in: per pixel of its 100 % size).
+    void place(juce::Rectangle<int> area, float pointsPerDp);
+    // The window as drawn, in the parent's coordinates; its points per layout dp.
+    juce::Rectangle<float> windowArea() const { return placement_.bounds + getPosition().toFloat(); }
+    float scale() const { return placement_.scale; }
 
     // Tests
     ui::Frame& frame() { return frame_; }
     juce::Component* page(int tab);
     void tickForTest() { timerCallback(); }
     void confirmLoadForTest(const juce::String& path, const juce::String& file, int bank) { confirmLoad(path, file, bank); }
+    void renameForTest(const juce::String& path, const juce::String& name);   // the inline Rename box, as its menu item
+    bool renamingForTest() const;
 
     void resized() override;
+    void paint(juce::Graphics&) override;            // the backdrop
     bool keyPressed(const juce::KeyPress&) override;
     bool hitTest(int x, int y) override;
+    void mouseDown(const juce::MouseEvent&) override;
+    void mouseWheelMove(const juce::MouseEvent&, const juce::MouseWheelDetails&) override {}   // never to the panel
+    void mouseMagnify(const juce::MouseEvent&, float) override {}
     void visibilityChanged() override;               // its timer runs only while it shows
 
 private:
@@ -72,7 +89,8 @@ private:
     std::unique_ptr<MidiPage> midi_;
     std::unique_ptr<LibraryPage> library_;
     int tab_ = kSystem;
-    float dpScale_ = 1.0f;
+    ui::Placement placement_;
+    float pointsPerDp_ = 1.0f;
 
     Ask ask_ = Ask::None;
     library::Service::SaveDraft draft_;

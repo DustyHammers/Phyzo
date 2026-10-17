@@ -116,17 +116,19 @@ are made the first time.
   not a display error), waits for `P nn` (see Clones), reads the current preset's number and name and dumps it; the
   footer asks
   `Save Pnn to Singles as [name] .syx` with **Save** and **Cancel**. The box starts with the OS's name, trimmed, and
-  has the focus; Enter saves, Esc or Cancel cancels.
+  has the focus; Enter saves, Esc or Cancel cancels (so does a click on the dimmed area around the window, v0.9.1;
+  the next click there closes the window).
 - The name is made safe (`_` for reserved characters); an empty name is the OS's name; an existing file is never
   overwritten (` 2` …). The file holds the dump's bytes unchanged. Then `SAVED  Singles/<name>.syx`.
 
 ### Rename and Delete
 
-- **Rename** is inline: Enter commits, Esc (or leaving the box) cancels. Only the file name changes (the folder
+- **Rename** is inline: Enter commits, Esc (or leaving the box, or a click on the dimmed area around the window)
+  cancels. Only the file name changes (the folder
   stays); it is made safe as Save's; an existing name is refused with a footer message. The index is keyed by the
   file's MD5, so nothing is read again.
-- **Delete** asks in the footer: `Delete <name>? It goes to the Trash.` with **Delete** and **Cancel**; the file is
-  moved to the Trash.
+- **Delete** asks in the footer: `Delete <name>? It goes to the Trash.` with **Delete** and **Cancel** (Esc or a click
+  on the dimmed area cancels too); the file is moved to the Trash.
 - The factory files are never renamed or deleted.
 
 ### Load a bank into Bank 1 or Bank 2
